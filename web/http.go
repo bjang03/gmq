@@ -119,8 +119,9 @@ func (s *httpServer) GetEngine() *gin.Engine {
 }
 
 // RegisterStaticRoutes 注册静态文件路由
+// 只注册 /ui 前缀，自动处理 ui 目录下的所有文件
 func RegisterStaticRoutes(engine *gin.Engine) {
-	// 注册页面路由
+	// 首页路由 - 返回 index.html
 	engine.GET("/", func(c *gin.Context) {
 		data, err := uiFS.ReadFile("ui/html/index.html")
 		if err != nil {
@@ -131,27 +132,67 @@ func RegisterStaticRoutes(engine *gin.Engine) {
 		c.String(200, string(data))
 	})
 
-	// CSS
-	engine.GET("/css/style.css", func(c *gin.Context) {
-		data, err := uiFS.ReadFile("ui/css/style.css")
-		if err != nil {
-			c.String(500, "Error: %v", err)
+	// 静态文件服务 - /ui/*filepath 自动映射到 ui 目录下的文件
+	engine.GET("/ui/*filepath", func(c *gin.Context) {
+		filepath := c.Param("filepath")
+		if filepath == "" || filepath == "/" {
+			c.String(404, "Not found")
 			return
 		}
-		c.Header("Content-Type", "text/css; charset=utf-8")
-		c.String(200, string(data))
-	})
 
-	// JS
-	engine.GET("/js/app.js", func(c *gin.Context) {
-		data, err := uiFS.ReadFile("ui/js/app.js")
+		// 移除开头的 /
+		if filepath[0] == '/' {
+			filepath = filepath[1:]
+		}
+
+		// 构建完整的 embed 路径
+		fullPath := "ui/" + filepath
+
+		data, err := uiFS.ReadFile(fullPath)
 		if err != nil {
-			c.String(500, "Error: %v", err)
+			c.String(404, "Not found: %s", filepath)
 			return
 		}
-		c.Header("Content-Type", "application/javascript; charset=utf-8")
+
+		// 根据文件扩展名设置 Content-Type
+		contentType := getContentType(filepath)
+		c.Header("Content-Type", contentType)
 		c.String(200, string(data))
 	})
+}
+
+// getContentType 根据文件扩展名返回 Content-Type
+func getContentType(filepath string) string {
+	ext := ""
+	if i := len(filepath) - 1; i >= 0 {
+		for j := i; j >= 0; j-- {
+			if filepath[j] == '.' {
+				ext = filepath[j:]
+				break
+			}
+		}
+	}
+
+	switch ext {
+	case ".html":
+		return "text/html; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".js":
+		return "application/javascript; charset=utf-8"
+	case ".json":
+		return "application/json; charset=utf-8"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".svg":
+		return "image/svg+xml"
+	default:
+		return "text/plain; charset=utf-8"
+	}
 }
 
 // Success 成功响应（默认状态码200，自定义消息和数据）

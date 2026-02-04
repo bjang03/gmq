@@ -1,4 +1,3 @@
-// Package gmq NATS消息中间件实现
 package components
 
 import (
@@ -16,6 +15,11 @@ func init() {
 type NatsPubMessage struct {
 	core.PubMessage
 	DelaySeconds int // 延迟时间(秒)
+}
+
+func (n NatsPubMessage) GetGmqPublishMsgType() {
+	//TODO implement me
+	panic("implement me")
 }
 
 // NatsSubMessage NATS订阅消息结构，支持持久化订阅和延迟消费

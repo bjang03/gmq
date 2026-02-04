@@ -40,7 +40,7 @@ type Gmq interface {
 	// GmqPublish 发布消息
 	GmqPublish(ctx context.Context, msg Publish) error
 	// GmqSubscribe 订阅消息
-	GmqSubscribe(ctx context.Context, msg Subscribe) error
+	GmqSubscribe(ctx context.Context, msg any) error
 	// GmqPing 检测连接状态
 	GmqPing(ctx context.Context) bool
 	// GmqConnect 重连

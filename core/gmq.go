@@ -1,5 +1,5 @@
 // Package gmq 提供统一的消息队列抽象接口，支持多种消息中间件(NATS、Redis-Stream、RabbitMQ等)
-package gmq
+package core
 
 import (
 	"context"

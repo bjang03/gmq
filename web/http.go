@@ -1,4 +1,4 @@
-package gmq
+package web
 
 import "net/http"
 

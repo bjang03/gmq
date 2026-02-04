@@ -21,7 +21,6 @@ type NatsPubMessage struct {
 type NatsSubMessage struct {
 	SubMessage[any]
 	Durable      bool   // 是否持久化订阅
-	DelayTime    int    // 延迟时间(秒)
 	ConsumerName string // 消费者名称
 }
 

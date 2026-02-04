@@ -47,6 +47,24 @@ type Gmq interface {
 	GmqConnect(ctx context.Context) error
 	// GmqClose 关闭连接
 	GmqClose(ctx context.Context) error
+	// GetMetrics 获取监控指标
+	GetMetrics(ctx context.Context) *Metrics
+}
+
+// Metrics 监控指标
+type Metrics struct {
+	Name             string  // 消息队列名称
+	Status           string  // 连接状态：connected/disconnected
+	ConnectedAt      string  // 连接时间
+	MessageCount     int64   // 已处理消息总数
+	PublishCount     int64   // 发布消息数
+	SubscribeCount   int64   // 订阅消息数
+	PendingMessages  int64   // 待处理消息数
+	PublishFailed    int64   // 发布失败数
+	SubscribeFailed  int64   // 订阅失败数
+	AverageLatency   float64 // 平均延迟(毫秒)
+	LastPingLatency  float64 // 最近一次ping延迟(毫秒)
+	ThroughputPerSec float64 // 每秒吞吐量
 }
 
 // GmqPlugins 已注册的消息队列插件集合

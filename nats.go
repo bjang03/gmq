@@ -19,7 +19,7 @@ type NatsPubMessage struct {
 
 // NatsSubMessage NATS订阅消息结构，支持持久化订阅和延迟消费
 type NatsSubMessage struct {
-	SubMessage
+	SubMessage[any]
 	Durable      bool   // 是否持久化订阅
 	DelayTime    int    // 延迟时间(秒)
 	ConsumerName string // 消费者名称

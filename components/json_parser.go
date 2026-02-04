@@ -1,5 +1,5 @@
 // Package gmq JSON数据解析器实现
-package gmq
+package components
 
 import "encoding/json"
 

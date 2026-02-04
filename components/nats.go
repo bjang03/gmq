@@ -1,25 +1,26 @@
 // Package gmq NATS消息中间件实现
-package gmq
+package components
 
 import (
 	"context"
 
+	"github.com/bjang03/gmq/core"
 	"github.com/nats-io/nats.go"
 )
 
 func init() {
-	GmqRegister("nats", &natsMsg{})
+	core.GmqRegister("nats", &natsMsg{})
 }
 
 // NatsPubMessage NATS发布消息结构，支持延迟消息
 type NatsPubMessage struct {
-	PubMessage
+	core.PubMessage
 	DelaySeconds int // 延迟时间(秒)
 }
 
 // NatsSubMessage NATS订阅消息结构，支持持久化订阅和延迟消费
 type NatsSubMessage struct {
-	SubMessage[any]
+	core.SubMessage[any]
 	Durable      bool   // 是否持久化订阅
 	ConsumerName string // 消费者名称
 }
@@ -49,11 +50,11 @@ func (c *natsMsg) GmqClose(ctx context.Context) (err error) {
 }
 
 // GmqPublish 发布NATS消息
-func (c *natsMsg) GmqPublish(ctx context.Context, msg Publish) (err error) {
+func (c *natsMsg) GmqPublish(ctx context.Context, msg core.Publish) (err error) {
 	return
 }
 
 // GmqSubscribe 订阅NATS消息
-func (c *natsMsg) GmqSubscribe(ctx context.Context, msg Subscribe) (err error) {
+func (c *natsMsg) GmqSubscribe(ctx context.Context, msg core.Subscribe) (err error) {
 	return
 }

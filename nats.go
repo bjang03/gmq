@@ -14,7 +14,7 @@ func init() {
 // NatsPubMessage NATS发布消息结构，支持延迟消息
 type NatsPubMessage struct {
 	PubMessage
-	DelayTime int // 延迟时间(秒)
+	DelaySeconds int // 延迟时间(秒)
 }
 
 // NatsSubMessage NATS订阅消息结构，支持持久化订阅和延迟消费

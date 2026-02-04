@@ -6,13 +6,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var ginServer *gin.Engine
+
 func init() {
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.Default()
-	r.Use(middleware.ResponseMiddleware())
-	Get("/subscribe", controller.Publish)
-	r.GET("/subscribe", middleware.Wrap(controller.Subscribe))
+	ginServer = gin.Default()
+	Use(middleware.ResponseMiddleware())
+
+	// 注册路由
+	Post("/publish", controller.Publish)
+	Post("/subscribe", controller.Subscribe)
+	Get("/subscribe", controller.Subscribe)
+
 	go func() {
-		_ = r.Run(":1688")
+		_ = Run(":1688")
 	}()
 }

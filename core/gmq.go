@@ -50,7 +50,7 @@ type Gmq interface {
 }
 
 // GmqPlugins 已注册的消息队列插件集合
-var GmqPlugins map[string]Gmq
+var GmqPlugins = make(map[string]Gmq)
 
 // GmqRegister 注册消息队列插件
 // 启动后台协程自动维护连接状态，每10秒检测一次，断线自动重连

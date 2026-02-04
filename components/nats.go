@@ -59,6 +59,6 @@ func (c *natsMsg) GmqPublish(ctx context.Context, msg core.Publish) (err error) 
 }
 
 // GmqSubscribe 订阅NATS消息
-func (c *natsMsg) GmqSubscribe(ctx context.Context, msg core.Subscribe) (err error) {
+func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	return
 }

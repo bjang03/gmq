@@ -13,38 +13,52 @@ type Response struct {
 	Data any    `json:"data"` // 业务数据（成功时返回，失败时可为nil）
 }
 
+type httpServer struct {
+	engine *gin.Engine
+}
+
+var HttpServer *httpServer
+
+func init() {
+	gin.SetMode(gin.ReleaseMode)
+	HttpServer = &httpServer{
+		engine: gin.Default(),
+	}
+	HttpServer.Use(middleware.ResponseMiddleware())
+}
+
 // Get 注册GET路由，使用中间件自动处理controller方法
-func Get(path string, controller interface{}, handlerMiddlewares ...gin.HandlerFunc) {
+func (s *httpServer) Get(path string, controller interface{}, handlerMiddlewares ...gin.HandlerFunc) {
 	middlewares := append(handlerMiddlewares, middleware.ControllerAdapter(controller))
-	ginServer.GET(path, middlewares...)
+	s.engine.GET(path, middlewares...)
 }
 
 // Post 注册POST路由，使用中间件自动处理controller方法
-func Post(path string, controller interface{}, handlerMiddlewares ...gin.HandlerFunc) {
+func (s *httpServer) Post(path string, controller interface{}, handlerMiddlewares ...gin.HandlerFunc) {
 	middlewares := append(handlerMiddlewares, middleware.ControllerAdapter(controller))
-	ginServer.POST(path, middlewares...)
+	s.engine.POST(path, middlewares...)
 }
 
 // Put 注册PUT路由，使用中间件自动处理controller方法
-func Put(path string, controller interface{}, handlerMiddlewares ...gin.HandlerFunc) {
+func (s *httpServer) Put(path string, controller interface{}, handlerMiddlewares ...gin.HandlerFunc) {
 	middlewares := append(handlerMiddlewares, middleware.ControllerAdapter(controller))
-	ginServer.PUT(path, middlewares...)
+	s.engine.PUT(path, middlewares...)
 }
 
 // Delete 注册DELETE路由，使用中间件自动处理controller方法
-func Delete(path string, controller interface{}, handlerMiddlewares ...gin.HandlerFunc) {
+func (s *httpServer) Delete(path string, controller interface{}, handlerMiddlewares ...gin.HandlerFunc) {
 	middlewares := append(handlerMiddlewares, middleware.ControllerAdapter(controller))
-	ginServer.DELETE(path, middlewares...)
+	s.engine.DELETE(path, middlewares...)
 }
 
 // Use 注册全局中间件
-func Use(middlewares ...gin.HandlerFunc) {
-	ginServer.Use(middlewares...)
+func (s *httpServer) Use(middlewares ...gin.HandlerFunc) {
+	s.engine.Use(middlewares...)
 }
 
 // Run 启动HTTP服务
-func Run(addr ...string) error {
-	return ginServer.Run(addr...)
+func (s *httpServer) Run(addr ...string) error {
+	return s.engine.Run(addr...)
 }
 
 // Success 成功响应（默认状态码200，自定义消息和数据）

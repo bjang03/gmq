@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -48,7 +49,7 @@ func main() {
 
 	// 在协程中启动服务器
 	go func() {
-		if err := web.HttpServer.Run(addr); err != nil && err != http.ErrServerClosed {
+		if err := web.HttpServer.Run(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("Server failed to start: %v", err)
 		}
 	}()
@@ -63,6 +64,11 @@ func main() {
 	// 优雅关闭上下文
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// 关闭HTTP服务器
+	if err := web.HttpServer.Shutdown(ctx); err != nil {
+		log.Printf("Error shutting down HTTP server: %v", err)
+	}
 
 	// 关闭所有消息队列连接
 	if err := core.Shutdown(ctx); err != nil {

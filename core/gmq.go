@@ -3,6 +3,8 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,16 +47,16 @@ type Parser interface {
 
 // Gmq 消息队列统一接口定义
 type Gmq interface {
+	// GmqConnect 连接消息队列
+	GmqConnect(ctx context.Context) error
 	// GmqPublish 发布消息
 	GmqPublish(ctx context.Context, msg Publish) error
-	// GmqSubscribe 订阅消息
-	GmqSubscribe(ctx context.Context, msg any) error
-	// GmqUnsubscribe 取消订阅
-	GmqUnsubscribe(ctx context.Context, topic, consumerName string) error
+	// GmqSubscribe 订阅消息，返回订阅对象
+	GmqSubscribe(ctx context.Context, msg any) (interface{}, error)
+	// GmqUnsubscribe 取消订阅，传入订阅对象
+	GmqUnsubscribe(ctx context.Context, topic, consumerName string, subObj interface{}) error
 	// GmqPing 检测连接状态
 	GmqPing(ctx context.Context) bool
-	// GmqConnect 重连
-	GmqConnect(ctx context.Context) error
 	// GmqClose 关闭连接
 	GmqClose(ctx context.Context) error
 	// GetMetrics 获取监控指标
@@ -106,6 +108,12 @@ type GmqPipeline struct {
 	metrics         pipelineMetrics
 	connectedAt     int64 // Unix timestamp in seconds, atomic access
 	lastPingLatency int64 // milliseconds, atomic access
+
+	// 并发控制 - 统一管理所有并发访问
+	mu sync.RWMutex
+
+	// 订阅管理 - 统一管理所有订阅对象（包括状态和具体的订阅引用）
+	subscriptions map[string]interface{} // key 为 topic:consumerName，value 为具体的订阅对象
 }
 
 // pipelineMetrics 管道监控指标
@@ -130,6 +138,9 @@ func newGmqPipeline(name string, plugin Gmq) *GmqPipeline {
 
 // GmqPublish 发布消息（带统一监控和重试）
 func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
 	start := time.Now()
 	var err error
 
@@ -172,6 +183,20 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) error {
 	start := time.Now()
 	var err error
 
+	// 提取 topic 和 consumerName（从 msg 中解析）
+	topic, consumerName := p.extractSubscriptionInfo(msg)
+	subKey := p.getSubKey(topic, consumerName)
+
+	// 检查是否已订阅
+	p.mu.RLock()
+	_, alreadySubscribed := p.subscriptions[subKey]
+	p.mu.RUnlock()
+
+	if alreadySubscribed {
+		return fmt.Errorf("already subscribed to topic: %s", topic)
+	}
+
+	var subObj interface{}
 	// 带重试的订阅
 	for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
 		if attempt > 0 {
@@ -185,34 +210,96 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) error {
 			}
 		}
 
-		err = p.plugin.GmqSubscribe(ctx, msg)
+		subObj, err = p.plugin.GmqSubscribe(ctx, msg)
 		if err == nil {
 			break
 		}
 	}
 
+	if err != nil {
+		// 记录指标
+		latency := int64(time.Since(start).Milliseconds())
+		atomic.AddInt64(&p.metrics.totalLatency, latency)
+		atomic.AddInt64(&p.metrics.latencyCount, 1)
+		atomic.AddInt64(&p.metrics.subscribeFailed, 1)
+		return err
+	}
+
+	// 保存订阅对象到管道层
+	p.mu.Lock()
+	if subObj != nil {
+		p.subscriptions[subKey] = subObj
+	} else {
+		p.subscriptions[subKey] = true
+	}
+	p.mu.Unlock()
+
 	// 记录指标
 	latency := int64(time.Since(start).Milliseconds())
 	atomic.AddInt64(&p.metrics.totalLatency, latency)
 	atomic.AddInt64(&p.metrics.latencyCount, 1)
+	atomic.AddInt64(&p.metrics.subscribeCount, 1)
 
-	if err != nil {
-		atomic.AddInt64(&p.metrics.subscribeFailed, 1)
-	} else {
-		atomic.AddInt64(&p.metrics.subscribeCount, 1)
-		// 注意：订阅成功不应该增加 MessageCount，只有实际处理消息时才增加
-	}
-
-	return err
+	return nil
 }
 
 // GmqUnsubscribe 取消订阅
 func (p *GmqPipeline) GmqUnsubscribe(ctx context.Context, topic, consumerName string) error {
-	return p.plugin.GmqUnsubscribe(ctx, topic, consumerName)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	subKey := p.getSubKey(topic, consumerName)
+
+	// 从管道层获取订阅对象
+	subObj, exists := p.subscriptions[subKey]
+	if exists {
+		delete(p.subscriptions, subKey)
+	}
+
+	if !exists {
+		return fmt.Errorf("subscription not found for topic: %s", topic)
+	}
+
+	// 调用插件层取消订阅，传入订阅对象供插件使用
+	return p.plugin.GmqUnsubscribe(ctx, topic, consumerName, subObj)
+}
+
+// extractSubscriptionInfo 从订阅消息中提取 topic 和 consumerName
+func (p *GmqPipeline) extractSubscriptionInfo(msg any) (topic, consumerName string) {
+	// 使用反射提取信息，避免硬编码类型
+	val := reflect.ValueOf(msg)
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+
+	if val.Kind() == reflect.Struct {
+		queueNameField := val.FieldByName("QueueName")
+		consumerNameField := val.FieldByName("ConsumerName")
+
+		if queueNameField.IsValid() && queueNameField.Kind() == reflect.String {
+			topic = queueNameField.String()
+		}
+		if consumerNameField.IsValid() && consumerNameField.Kind() == reflect.String {
+			consumerName = consumerNameField.String()
+		}
+	}
+
+	return topic, consumerName
+}
+
+// getSubKey 生成订阅的唯一key
+func (p *GmqPipeline) getSubKey(topic, consumerName string) string {
+	if consumerName != "" {
+		return topic + ":" + consumerName
+	}
+	return topic
 }
 
 // GmqPing 检测连接状态
 func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
 	start := time.Now()
 	connected := p.plugin.GmqPing(ctx)
 	latency := int64(time.Since(start).Milliseconds())
@@ -222,6 +309,9 @@ func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
 
 // GmqConnect 连接消息队列
 func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	err := p.plugin.GmqConnect(ctx)
 	if err == nil {
 		atomic.StoreInt64(&p.connectedAt, time.Now().Unix())
@@ -231,6 +321,9 @@ func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
 
 // GmqClose 关闭连接
 func (p *GmqPipeline) GmqClose(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	return p.plugin.GmqClose(ctx)
 }
 

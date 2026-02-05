@@ -90,9 +90,11 @@ var GmqPlugins = make(map[string]*GmqPipeline)
 
 // GmqPipeline 消息队列管道包装器，用于统一监控指标处理
 type GmqPipeline struct {
-	name    string
-	plugin  Gmq
-	metrics pipelineMetrics
+	name            string
+	plugin          Gmq
+	metrics         pipelineMetrics
+	connectedAt     time.Time
+	lastPingLatency float64
 }
 
 // pipelineMetrics 管道监控指标
@@ -162,12 +164,19 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) error {
 
 // GmqPing 检测连接状态
 func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
-	return p.plugin.GmqPing(ctx)
+	start := time.Now()
+	connected := p.plugin.GmqPing(ctx)
+	p.lastPingLatency = float64(time.Since(start).Milliseconds())
+	return connected
 }
 
 // GmqConnect 连接消息队列
 func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
-	return p.plugin.GmqConnect(ctx)
+	err := p.plugin.GmqConnect(ctx)
+	if err == nil {
+		p.connectedAt = time.Now()
+	}
+	return err
 }
 
 // GmqClose 关闭连接
@@ -201,10 +210,16 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		errorRate = float64(publishFailed+subscribeFailed) / float64(totalOps) * 100
 	}
 
-	// 计算吞吐量（每秒）- 使用插件层的连接时间
+	// 使用管道层的连接时间
+	var uptimeSeconds int64
+	var connectedAtStr string
+	if !p.connectedAt.IsZero() {
+		uptimeSeconds = int64(time.Since(p.connectedAt).Seconds())
+		connectedAtStr = p.connectedAt.Format("2006-01-02 15:04:05")
+	}
+
+	// 计算吞吐量（每秒）
 	var throughputPerSec, publishPerSec, subscribePerSec float64
-	// 优先使用插件层的连接时间，如果没有则使用管道层的
-	uptimeSeconds := pluginMetrics.UptimeSeconds
 	if uptimeSeconds > 0 {
 		duration := float64(uptimeSeconds)
 		throughputPerSec = float64(messageCount) / duration
@@ -212,13 +227,13 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		subscribePerSec = float64(subscribeCount) / duration
 	}
 
-	// 合并指标（插件提供基础信息，管道层提供客户端统计）
+	// 合并指标（插件提供基础信息，管道层提供客户端统计和连接信息）
 	return &Metrics{
 		Name:             p.name,
 		Type:             pluginMetrics.Type,
 		Status:           pluginMetrics.Status,
 		ServerAddr:       pluginMetrics.ServerAddr,
-		ConnectedAt:      pluginMetrics.ConnectedAt,
+		ConnectedAt:      connectedAtStr,
 		UptimeSeconds:    uptimeSeconds,
 		MessageCount:     messageCount,
 		PublishCount:     publishCount,
@@ -232,7 +247,7 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		BytesIn:          pluginMetrics.BytesIn,
 		BytesOut:         pluginMetrics.BytesOut,
 		AverageLatency:   avgLatency,
-		LastPingLatency:  pluginMetrics.LastPingLatency,
+		LastPingLatency:  p.lastPingLatency,
 		MaxLatency:       pluginMetrics.MaxLatency,
 		MinLatency:       pluginMetrics.MinLatency,
 		ThroughputPerSec: throughputPerSec,

@@ -3,7 +3,6 @@ package web
 import (
 	"embed"
 	"fmt"
-	"net/http"
 
 	"github.com/bjang03/gmq/web/middleware"
 	"github.com/gin-gonic/gin"
@@ -39,12 +38,6 @@ func init() {
 	}
 	HttpServer.engine.Use(gin.Recovery())
 	HttpServer.engine.Use(middleware.ResponseMiddleware())
-}
-
-// RegisterRoutes 注册所有业务路由
-// 在 main.go 中调用，用于注册业务路由
-func RegisterRoutes(registerFunc func()) {
-	registerFunc()
 }
 
 // SetPrintRoutes 设置是否打印路由信息
@@ -193,19 +186,4 @@ func getContentType(filepath string) string {
 	default:
 		return "text/plain; charset=utf-8"
 	}
-}
-
-// Success 成功响应（默认状态码200，自定义消息和数据）
-func Success(c *gin.Context, data interface{}) {
-	c.JSON(http.StatusOK, Response{
-		Code: 200,
-		Data: data,
-	})
-}
-
-func Fail(c *gin.Context, msg string) {
-	c.JSON(http.StatusOK, Response{
-		Code: 500,
-		Msg:  msg,
-	})
 }

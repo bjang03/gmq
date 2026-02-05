@@ -12,22 +12,27 @@ type MonitorReq struct {
 }
 
 // GetMetrics 获取监控指标
-func GetMetrics(c *gin.Context, req *MonitorReq) (res interface{}, err error) {
+func GetMetrics(c *gin.Context, req MonitorReq) (res interface{}, err error) {
+	// 空名称时返回空结果而不是nil，避免中断请求处理
 	if req.Name == "" {
-		return nil, nil
+		return make(map[string]*core.Metrics), nil
 	}
 
 	pipeline, exists := core.GetGmq(req.Name)
 	if !exists {
-		return nil, nil
+		return make(map[string]*core.Metrics), nil
 	}
 
 	metrics := pipeline.GetMetrics(c.Request.Context())
-	return metrics, nil
+	result := map[string]*core.Metrics{
+		req.Name: metrics,
+	}
+	return result, nil
 }
 
 // GetAllMetrics 获取所有消息队列的监控指标
-func GetAllMetrics(ctx context.Context, req *MonitorReq) (res interface{}, err error) {
+func GetAllMetrics(ctx context.Context, req MonitorReq) (res interface{}, err error) {
+	// req参数在此方法中未使用，但保留以符合中间件签名要求
 	result := make(map[string]*core.Metrics)
 
 	for name, pipeline := range core.GetAllGmq() {

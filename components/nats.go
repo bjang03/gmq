@@ -190,8 +190,14 @@ const messageHandleTimeout = 30 * time.Second
 
 // handleMessage 处理消息
 func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
+	// 如果设置了AutoAck，自动确认消息
+	if natsMsg.AutoAck {
+		if err := m.Ack(); err != nil {
+			log.Printf("[NATS] Failed to auto-ack message: %v", err)
+		}
+	}
+
 	if natsMsg.HandleFunc == nil {
-		_ = m.Ack()
 		return
 	}
 
@@ -200,12 +206,17 @@ func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m 
 	defer cancel()
 
 	if err := natsMsg.HandleFunc(msgCtx, m.Data); err != nil {
-		// 处理失败，不确认消息，让服务器重发
+		// 处理失败，如果不是AutoAck模式，不确认消息让服务器重发
+		log.Printf("[NATS] Message handler error: %v", err)
 		return
 	}
 
-	// 处理成功，确认消息
-	_ = m.Ack()
+	// 处理成功，如果不是AutoAck模式，手动确认消息
+	if !natsMsg.AutoAck {
+		if err := m.Ack(); err != nil {
+			log.Printf("[NATS] Failed to ack message after successful handling: %v", err)
+		}
+	}
 }
 
 // GetMetrics 获取基础监控指标

@@ -3,6 +3,7 @@ package core
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -91,15 +92,18 @@ type Metrics struct {
 }
 
 // GmqPlugins 已注册的消息队列插件集合
-var GmqPlugins = make(map[string]*GmqPipeline)
+var (
+	GmqPlugins = make(map[string]*GmqPipeline)
+	pluginsMu  sync.RWMutex
+)
 
 // GmqPipeline 消息队列管道包装器，用于统一监控指标处理
 type GmqPipeline struct {
 	name            string
 	plugin          Gmq
 	metrics         pipelineMetrics
-	connectedAt     time.Time
-	lastPingLatency float64
+	connectedAt     int64 // Unix timestamp in seconds, atomic access
+	lastPingLatency int64 // milliseconds, atomic access
 }
 
 // pipelineMetrics 管道监控指标
@@ -194,7 +198,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) error {
 		atomic.AddInt64(&p.metrics.subscribeFailed, 1)
 	} else {
 		atomic.AddInt64(&p.metrics.subscribeCount, 1)
-		atomic.AddInt64(&p.metrics.messageCount, 1)
+		// 注意：订阅成功不应该增加 MessageCount，只有实际处理消息时才增加
 	}
 
 	return err
@@ -204,7 +208,8 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) error {
 func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
 	start := time.Now()
 	connected := p.plugin.GmqPing(ctx)
-	p.lastPingLatency = float64(time.Since(start).Milliseconds())
+	latency := int64(time.Since(start).Milliseconds())
+	atomic.StoreInt64(&p.lastPingLatency, latency)
 	return connected
 }
 
@@ -212,7 +217,7 @@ func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
 func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
 	err := p.plugin.GmqConnect(ctx)
 	if err == nil {
-		p.connectedAt = time.Now()
+		atomic.StoreInt64(&p.connectedAt, time.Now().Unix())
 	}
 	return err
 }
@@ -248,12 +253,14 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		errorRate = float64(publishFailed+subscribeFailed) / float64(totalOps) * 100
 	}
 
-	// 使用管道层的连接时间
+	// 使用管道层的连接时间（原子读取）
 	var uptimeSeconds int64
 	var connectedAtStr string
-	if !p.connectedAt.IsZero() {
-		uptimeSeconds = int64(time.Since(p.connectedAt).Seconds())
-		connectedAtStr = p.connectedAt.Format("2006-01-02 15:04:05")
+	connectedAtUnix := atomic.LoadInt64(&p.connectedAt)
+	if connectedAtUnix > 0 {
+		connectedAt := time.Unix(connectedAtUnix, 0)
+		uptimeSeconds = int64(time.Since(connectedAt).Seconds())
+		connectedAtStr = connectedAt.Format("2006-01-02 15:04:05")
 	}
 
 	// 计算吞吐量（每秒）
@@ -285,7 +292,7 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		BytesIn:          pluginMetrics.BytesIn,
 		BytesOut:         pluginMetrics.BytesOut,
 		AverageLatency:   avgLatency,
-		LastPingLatency:  p.lastPingLatency,
+		LastPingLatency:  float64(atomic.LoadInt64(&p.lastPingLatency)),
 		MaxLatency:       pluginMetrics.MaxLatency,
 		MinLatency:       pluginMetrics.MinLatency,
 		ThroughputPerSec: throughputPerSec,
@@ -298,14 +305,19 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 	}
 }
 
+// globalShutdown 用于优雅关闭信号
+var globalShutdown = make(chan struct{})
+
 // GmqRegister 注册消息队列插件
 // 启动后台协程自动维护连接状态，断线自动重连
 func GmqRegister(name string, plugin Gmq) {
 	// 创建管道包装器
 	pipeline := newGmqPipeline(name, plugin)
-	GmqPlugins[name] = pipeline
 
-	ctx := context.Background()
+	pluginsMu.Lock()
+	GmqPlugins[name] = pipeline
+	pluginsMu.Unlock()
+
 	go func(name string, p *GmqPipeline) {
 		// 重连退避配置
 		const (
@@ -316,11 +328,12 @@ func GmqRegister(name string, plugin Gmq) {
 
 		for {
 			select {
-			case <-ctx.Done():
-				_ = p.GmqClose(ctx)
+			case <-globalShutdown:
+				// 收到关闭信号，关闭连接并退出
+				_ = p.GmqClose(context.Background())
 				return
 			default:
-				if p.GmqPing(ctx) {
+				if p.GmqPing(context.Background()) {
 					// 连接正常，重置退避时间
 					reconnectDelay = baseReconnectDelay
 					time.Sleep(10 * time.Second)
@@ -328,7 +341,7 @@ func GmqRegister(name string, plugin Gmq) {
 				}
 
 				// 连接断开，尝试重连
-				if err := p.GmqConnect(ctx); err != nil {
+				if err := p.GmqConnect(context.Background()); err != nil {
 					// 重连失败，增加退避时间
 					time.Sleep(reconnectDelay)
 					reconnectDelay *= 2
@@ -345,13 +358,43 @@ func GmqRegister(name string, plugin Gmq) {
 	}(name, pipeline)
 }
 
+// Shutdown 优雅关闭所有消息队列连接
+func Shutdown(ctx context.Context) error {
+	close(globalShutdown)
+
+	pluginsMu.RLock()
+	pipelines := make([]*GmqPipeline, 0, len(GmqPlugins))
+	for _, p := range GmqPlugins {
+		pipelines = append(pipelines, p)
+	}
+	pluginsMu.RUnlock()
+
+	var lastErr error
+	for _, p := range pipelines {
+		if err := p.GmqClose(ctx); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
 // GetGmq 获取已注册的消息队列管道
 func GetGmq(name string) (*GmqPipeline, bool) {
+	pluginsMu.RLock()
+	defer pluginsMu.RUnlock()
 	pipeline, ok := GmqPlugins[name]
 	return pipeline, ok
 }
 
-// GetAllGmq 获取所有已注册的消息队列管道
+// GetAllGmq 获取所有已注册的消息队列管道的副本
 func GetAllGmq() map[string]*GmqPipeline {
-	return GmqPlugins
+	pluginsMu.RLock()
+	defer pluginsMu.RUnlock()
+
+	// 返回副本，避免外部修改
+	result := make(map[string]*GmqPipeline, len(GmqPlugins))
+	for k, v := range GmqPlugins {
+		result[k] = v
+	}
+	return result
 }

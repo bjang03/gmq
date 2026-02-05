@@ -65,10 +65,8 @@ func main() {
 	defer cancel()
 
 	// 关闭所有消息队列连接
-	for name, pipeline := range core.GetAllGmq() {
-		if err := pipeline.GmqClose(ctx); err != nil {
-			log.Printf("Error closing %s: %v", name, err)
-		}
+	if err := core.Shutdown(ctx); err != nil {
+		log.Printf("Error during shutdown: %v", err)
 	}
 
 	log.Println("Server gracefully stopped")

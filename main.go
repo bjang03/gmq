@@ -61,22 +61,22 @@ func main() {
 
 	log.Println("Shutting down server...")
 
-	// 停止 WebSocket 广播
-	controller.StopMetricsBroadcast()
-
 	// 优雅关闭上下文
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 关闭HTTP服务器
+	// 关闭HTTP服务器（先停止接收新请求）
 	if err := web.HttpServer.Shutdown(ctx); err != nil {
 		log.Printf("Error shutting down HTTP server: %v", err)
 	}
 
-	// 关闭所有消息队列连接
+	// 关闭所有消息队列连接（问题16修复：先关闭MQ，再停止广播）
 	if err := core.Shutdown(ctx); err != nil {
-		log.Printf("Error during shutdown: %v", err)
+		log.Printf("Error during MQ shutdown: %v", err)
 	}
+
+	// 停止 WebSocket 广播（最后停止，确保能获取最终指标）
+	controller.StopMetricsBroadcast()
 
 	log.Println("Server gracefully stopped")
 }

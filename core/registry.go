@@ -43,6 +43,7 @@ func GmqRegister(name string, plugin Gmq) error {
 		const (
 			baseReconnectDelay = 5 * time.Second
 			maxReconnectDelay  = 60 * time.Second
+			connectTimeout     = 30 * time.Second // 连接超时（问题20修复）
 		)
 		reconnectDelay := baseReconnectDelay
 
@@ -50,18 +51,27 @@ func GmqRegister(name string, plugin Gmq) error {
 			select {
 			case <-globalShutdown:
 				// 收到关闭信号，关闭连接并退出
-				_ = p.GmqClose(context.TODO())
+				_ = p.GmqClose(context.Background())
 				return
 			default:
-				if p.GmqPing(context.TODO()) {
+				// 使用带超时的 context 进行 ping 检查
+				pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				isConnected := p.GmqPing(pingCtx)
+				pingCancel()
+
+				if isConnected {
 					// 连接正常，重置退避时间
 					reconnectDelay = baseReconnectDelay
 					time.Sleep(10 * time.Second)
 					continue
 				}
 
-				// 连接断开，尝试重连
-				if err := p.GmqConnect(context.TODO()); err != nil {
+				// 连接断开，尝试重连（使用带超时的 context）
+				connCtx, connCancel := context.WithTimeout(context.Background(), connectTimeout)
+				err := p.GmqConnect(connCtx)
+				connCancel()
+
+				if err != nil {
 					// 重连失败，增加退避时间
 					time.Sleep(reconnectDelay)
 					reconnectDelay *= 2

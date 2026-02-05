@@ -9,6 +9,26 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+// 默认配置常量（问题14修复：集中管理默认值）
+const (
+	// 服务器默认配置
+	DefaultServerAddress = ":1688"
+	DefaultServerName    = "gmq"
+
+	// NATS 默认配置
+	DefaultNATSURL            = "nats://localhost:4222"
+	DefaultNATSTimeout        = 10
+	DefaultNATSReconnectWait  = 5
+	DefaultNATSMaxReconnects  = -1
+	DefaultNATSMessageTimeout = 30
+
+	// WebSocket 默认配置
+	DefaultWSReadBufferSize  = 1024
+	DefaultWSWriteBufferSize = 1024
+	DefaultWSPingInterval    = 30
+	DefaultWSReadTimeout     = 60
+)
+
 // configMu 保护全局配置访问
 var configMu sync.RWMutex
 
@@ -105,40 +125,40 @@ func LoadConfig(path string) error {
 		return fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// 设置默认值
+	// 设置默认值（使用常量）
 	if cfg.Server.Address == "" {
-		cfg.Server.Address = ":1688"
+		cfg.Server.Address = DefaultServerAddress
 	}
 	if cfg.Server.Name == "" {
-		cfg.Server.Name = "gmq"
+		cfg.Server.Name = DefaultServerName
 	}
 	if cfg.NATS.URL == "" {
-		cfg.NATS.URL = "nats://localhost:4222"
+		cfg.NATS.URL = DefaultNATSURL
 	}
 	if cfg.NATS.Timeout == 0 {
-		cfg.NATS.Timeout = 10
+		cfg.NATS.Timeout = DefaultNATSTimeout
 	}
 	if cfg.NATS.ReconnectWait == 0 {
-		cfg.NATS.ReconnectWait = 5
+		cfg.NATS.ReconnectWait = DefaultNATSReconnectWait
 	}
 	if cfg.NATS.MaxReconnects == 0 {
-		cfg.NATS.MaxReconnects = -1
+		cfg.NATS.MaxReconnects = DefaultNATSMaxReconnects
 	}
 	if cfg.NATS.MessageTimeout == 0 {
-		cfg.NATS.MessageTimeout = 30
+		cfg.NATS.MessageTimeout = DefaultNATSMessageTimeout
 	}
 	// WebSocket 默认配置
 	if cfg.WebSocket.ReadBufferSize == 0 {
-		cfg.WebSocket.ReadBufferSize = 1024
+		cfg.WebSocket.ReadBufferSize = DefaultWSReadBufferSize
 	}
 	if cfg.WebSocket.WriteBufferSize == 0 {
-		cfg.WebSocket.WriteBufferSize = 1024
+		cfg.WebSocket.WriteBufferSize = DefaultWSWriteBufferSize
 	}
 	if cfg.WebSocket.PingInterval == 0 {
-		cfg.WebSocket.PingInterval = 30
+		cfg.WebSocket.PingInterval = DefaultWSPingInterval
 	}
 	if cfg.WebSocket.ReadTimeout == 0 {
-		cfg.WebSocket.ReadTimeout = 60
+		cfg.WebSocket.ReadTimeout = DefaultWSReadTimeout
 	}
 
 	// 验证配置参数
@@ -157,7 +177,7 @@ func GetServerAddress() string {
 	configMu.RLock()
 	defer configMu.RUnlock()
 	if GlobalConfig == nil {
-		return ":1688"
+		return DefaultServerAddress
 	}
 	return GlobalConfig.Server.Address
 }
@@ -167,7 +187,7 @@ func GetNATSURL() string {
 	configMu.RLock()
 	defer configMu.RUnlock()
 	if GlobalConfig == nil {
-		return "nats://localhost:4222"
+		return DefaultNATSURL
 	}
 	return GlobalConfig.NATS.URL
 }
@@ -178,10 +198,10 @@ func GetWebSocketConfig() WebSocketConfig {
 	defer configMu.RUnlock()
 	if GlobalConfig == nil {
 		return WebSocketConfig{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-			PingInterval:    30,
-			ReadTimeout:     60,
+			ReadBufferSize:  DefaultWSReadBufferSize,
+			WriteBufferSize: DefaultWSWriteBufferSize,
+			PingInterval:    DefaultWSPingInterval,
+			ReadTimeout:     DefaultWSReadTimeout,
 		}
 	}
 	return GlobalConfig.WebSocket
@@ -193,11 +213,11 @@ func GetNATSConfig() NATSConfig {
 	defer configMu.RUnlock()
 	if GlobalConfig == nil {
 		return NATSConfig{
-			URL:            "nats://localhost:4222",
-			Timeout:        10,
-			ReconnectWait:  5,
-			MaxReconnects:  -1,
-			MessageTimeout: 30,
+			URL:            DefaultNATSURL,
+			Timeout:        DefaultNATSTimeout,
+			ReconnectWait:  DefaultNATSReconnectWait,
+			MaxReconnects:  DefaultNATSMaxReconnects,
+			MessageTimeout: DefaultNATSMessageTimeout,
 		}
 	}
 	return GlobalConfig.NATS

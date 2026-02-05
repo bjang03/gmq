@@ -19,6 +19,10 @@ var (
 
 	broadcastOnce   sync.Once
 	broadcastStopCh chan struct{} // 广播停止信号
+
+	// 全局复用的 WebSocket Upgrader（问题15修复）
+	wsUpgrader     *websocket.Upgrader
+	wsUpgraderOnce sync.Once
 )
 
 // MetricsMessage WebSocket消息结构
@@ -27,16 +31,19 @@ type MetricsMessage struct {
 	Payload map[string]*core.Metrics `json:"payload"`
 }
 
-// initWebSocketUpgrader 初始化 WebSocket upgrader（使用配置）
-func initWebSocketUpgrader() websocket.Upgrader {
-	wsCfg := config.GetWebSocketConfig()
-	return websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
-		ReadBufferSize:  wsCfg.ReadBufferSize,
-		WriteBufferSize: wsCfg.WriteBufferSize,
-	}
+// initWebSocketUpgrader 初始化 WebSocket upgrader（使用配置，单例模式）
+func initWebSocketUpgrader() *websocket.Upgrader {
+	wsUpgraderOnce.Do(func() {
+		wsCfg := config.GetWebSocketConfig()
+		wsUpgrader = &websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
+			ReadBufferSize:  wsCfg.ReadBufferSize,
+			WriteBufferSize: wsCfg.WriteBufferSize,
+		}
+	})
+	return wsUpgrader
 }
 
 // WSMetricsHandler WebSocket指标处理器
@@ -75,6 +82,17 @@ func WSMetricsHandler(c *gin.Context) {
 		return nil
 	})
 
+	// 为每个连接创建独立的停止信号（问题7修复）
+	connStopCh := make(chan struct{})
+
+	// 监听广播停止信号，转发到连接级别的停止信号
+	go func() {
+		select {
+		case <-broadcastStopCh:
+			close(connStopCh)
+		}
+	}()
+
 	// 启动心跳发送协程
 	go func() {
 		ticker := time.NewTicker(pingInterval)
@@ -86,7 +104,7 @@ func WSMetricsHandler(c *gin.Context) {
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					return
 				}
-			case <-broadcastStopCh:
+			case <-connStopCh:
 				return
 			}
 		}

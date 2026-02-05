@@ -72,7 +72,6 @@ func (c *natsMsg) GmqConnect(_ context.Context) error {
 // GmqClose 关闭NATS连接
 func (c *natsMsg) GmqClose(_ context.Context) error {
 	c.conn.Close()
-	c.conn = nil
 	return nil
 }
 
@@ -105,13 +104,15 @@ func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error
 
 // handleMessage 处理消息
 func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
+	_ = ctx // 确保 ctx 被使用，避免 linter 警告
 	if natsMsg.HandleFunc == nil {
 		_ = m.Ack()
 		return
 	}
 
 	natsCfg := config.GetNATSConfig()
-	msgCtx, cancel := context.WithTimeout(context.TODO(), time.Duration(natsCfg.MessageTimeout)*time.Second)
+	// 问题18修复：使用传入的 ctx 创建带超时的子 context，而不是 context.TODO()
+	msgCtx, cancel := context.WithTimeout(ctx, time.Duration(natsCfg.MessageTimeout)*time.Second)
 	defer cancel()
 
 	if err := natsMsg.HandleFunc(msgCtx, m.Data); err != nil {

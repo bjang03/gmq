@@ -61,6 +61,9 @@ func main() {
 
 	log.Println("Shutting down server...")
 
+	// 停止 WebSocket 广播
+	controller.StopMetricsBroadcast()
+
 	// 优雅关闭上下文
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

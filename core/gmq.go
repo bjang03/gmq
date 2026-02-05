@@ -49,6 +49,8 @@ type Gmq interface {
 	GmqPublish(ctx context.Context, msg Publish) error
 	// GmqSubscribe 订阅消息
 	GmqSubscribe(ctx context.Context, msg any) error
+	// GmqUnsubscribe 取消订阅
+	GmqUnsubscribe(ctx context.Context, topic, consumerName string) error
 	// GmqPing 检测连接状态
 	GmqPing(ctx context.Context) bool
 	// GmqConnect 重连
@@ -204,6 +206,11 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) error {
 	return err
 }
 
+// GmqUnsubscribe 取消订阅
+func (p *GmqPipeline) GmqUnsubscribe(ctx context.Context, topic, consumerName string) error {
+	return p.plugin.GmqUnsubscribe(ctx, topic, consumerName)
+}
+
 // GmqPing 检测连接状态
 func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
 	start := time.Now()
@@ -248,9 +255,9 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 
 	// 计算错误率
 	var errorRate float64
-	totalOps := publishCount + subscribeCount + publishFailed + subscribeFailed
-	if totalOps > 0 {
-		errorRate = float64(publishFailed+subscribeFailed) / float64(totalOps) * 100
+	totalAttempted := publishCount + subscribeCount + publishFailed + subscribeFailed
+	if totalAttempted > 0 {
+		errorRate = float64(publishFailed+subscribeFailed) / float64(totalAttempted) * 100
 	}
 
 	// 使用管道层的连接时间（原子读取）

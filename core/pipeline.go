@@ -11,12 +11,11 @@ import (
 
 // GmqPipeline 消息队列管道包装器，用于统一监控指标处理
 type GmqPipeline struct {
-	name            string
-	plugin          Gmq
-	metrics         pipelineMetrics
-	connectedAt     int64 // Unix timestamp in seconds, atomic access
-	lastPingLatency int64 // milliseconds, atomic access
-	connected       int32 // 连接状态: 0=未连接, 1=已连接, atomic access
+	name        string
+	plugin      Gmq
+	metrics     pipelineMetrics
+	connectedAt int64 // Unix timestamp in seconds, atomic access
+	connected   int32 // 连接状态: 0=未连接, 1=已连接, atomic access
 
 	// 并发控制 - 统一管理所有并发访问
 	mu sync.RWMutex
@@ -24,21 +23,22 @@ type GmqPipeline struct {
 	// 订阅管理 - 统一管理所有订阅对象（包括状态和具体的订阅引用）
 	subscriptions map[string]interface{} // key 为 topic:consumerName，value 为具体的订阅对象
 
-	// 指标缓存
-	cachedMetrics   *Metrics
-	metricsCacheMu  sync.RWMutex
+	// 指标缓存（使用 atomic 替代锁，提升并发读性能）
+	cachedMetrics   atomic.Pointer[Metrics] // 原子指针，无锁读取
+	metricsCacheExp atomic.Int64            // 原子过期时间戳
 	metricsCacheTTL time.Duration
-	metricsCacheExp int64 // 缓存过期时间戳
 }
 
 // newGmqPipeline 创建新的管道包装器
 func newGmqPipeline(name string, plugin Gmq) *GmqPipeline {
-	return &GmqPipeline{
+	p := &GmqPipeline{
 		name:            name,
 		plugin:          plugin,
 		subscriptions:   make(map[string]interface{}),
 		metricsCacheTTL: 5 * time.Second,
 	}
+	// atomic 字段零值即可使用，无需显式初始化
+	return p
 }
 
 // safeCloneMap 安全地克隆 map，处理 nil 情况
@@ -102,12 +102,11 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 	topic, consumerName := p.extractSubscriptionInfo(msg)
 	subKey := p.getSubKey(topic, consumerName)
 
-	// 检查是否已订阅（管道层统一校验）
-	p.mu.RLock()
-	_, alreadySubscribed := p.subscriptions[subKey]
-	p.mu.RUnlock()
+	// 问题1修复：使用写锁保证检查和订阅的原子性，防止竞态条件
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	if alreadySubscribed {
+	if _, alreadySubscribed := p.subscriptions[subKey]; alreadySubscribed {
 		return nil, fmt.Errorf("already subscribed to topic: %s", topic)
 	}
 
@@ -115,14 +114,17 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 	// 带重试的订阅
 	for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
 		if attempt > 0 {
-			// 重试前等待，使用指数退避
+			// 重试前等待，使用指数退避（短暂释放锁）
+			p.mu.Unlock()
 			delay := DefaultRetryDelay * time.Duration(1<<uint(attempt-1))
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
+				p.mu.Lock()
 				err = ctx.Err()
 				break
 			}
+			p.mu.Lock()
 		}
 
 		subObj, err = p.plugin.GmqSubscribe(ctx, msg)
@@ -150,13 +152,11 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 	}
 
 	// 保存订阅对象到管道层
-	p.mu.Lock()
 	if subObj != nil {
 		p.subscriptions[subKey] = subObj
 	} else {
 		p.subscriptions[subKey] = true
 	}
-	p.mu.Unlock()
 
 	// 记录指标
 	latency := time.Since(start).Milliseconds()
@@ -165,6 +165,41 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 	atomic.AddInt64(&p.metrics.subscribeCount, 1)
 
 	return subObj, nil
+}
+
+// GmqUnsubscribe 取消订阅（问题7修复：添加取消订阅接口）
+func (p *GmqPipeline) GmqUnsubscribe(topic, consumerName string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	subKey := p.getSubKey(topic, consumerName)
+	subObj, exists := p.subscriptions[subKey]
+	if !exists {
+		return fmt.Errorf("subscription not found: %s", subKey)
+	}
+
+	// 如果订阅对象实现了关闭接口，调用关闭
+	if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
+		if err := closer.Unsubscribe(); err != nil {
+			return fmt.Errorf("failed to unsubscribe: %w", err)
+		}
+	}
+
+	delete(p.subscriptions, subKey)
+	return nil
+}
+
+// clearSubscriptions 清理所有订阅（问题6修复：关闭时清理）
+func (p *GmqPipeline) clearSubscriptions() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for subKey, subObj := range p.subscriptions {
+		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
+			_ = closer.Unsubscribe()
+		}
+		delete(p.subscriptions, subKey)
+	}
 }
 
 // extractSubscriptionInfo 从订阅消息中提取 topic 和 consumerName
@@ -231,19 +266,18 @@ func (p *GmqPipeline) GmqClose(ctx context.Context) error {
 	return err
 }
 
-// GetMetrics 获取统一监控指标（带缓存）
+// GetMetrics 获取统一监控指标（带缓存，使用 atomic 无锁读取）
 func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 	now := time.Now().UnixMilli()
 
-	// 检查缓存是否有效
-	p.metricsCacheMu.RLock()
-	if p.cachedMetrics != nil && now-p.metricsCacheExp < p.metricsCacheTTL.Milliseconds() {
-		// 返回缓存的副本
-		m := *p.cachedMetrics
-		p.metricsCacheMu.RUnlock()
-		return &m
+	// 检查缓存是否有效（无锁读取）
+	if cm := p.cachedMetrics.Load(); cm != nil {
+		if now-p.metricsCacheExp.Load() < p.metricsCacheTTL.Milliseconds() {
+			// 返回缓存的副本
+			m := *cm
+			return &m
+		}
 	}
-	p.metricsCacheMu.RUnlock()
 
 	// 获取插件自身的指标
 	pluginMetrics := p.plugin.GetMetrics(ctx)
@@ -297,25 +331,25 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 	// 合并指标（插件提供基础信息，管道层提供客户端统计和连接信息）
 	// 深拷贝 map 字段避免数据竞争（问题11修复）
 	m := &Metrics{
-		Name:             p.name,
-		Type:             pluginMetrics.Type,
-		Status:           status,
-		ServerAddr:       pluginMetrics.ServerAddr,
-		ConnectedAt:      connectedAtStr,
-		UptimeSeconds:    uptimeSeconds,
-		MessageCount:     messageCount,
-		PublishCount:     publishCount,
-		SubscribeCount:   subscribeCount,
-		PendingMessages:  pluginMetrics.PendingMessages,
-		PendingAckCount:  pluginMetrics.PendingAckCount,
-		PublishFailed:    publishFailed,
-		SubscribeFailed:  subscribeFailed,
-		MsgsIn:           pluginMetrics.MsgsIn,
-		MsgsOut:          pluginMetrics.MsgsOut,
-		BytesIn:          pluginMetrics.BytesIn,
-		BytesOut:         pluginMetrics.BytesOut,
-		AverageLatency:   avgLatency,
-		LastPingLatency:  float64(atomic.LoadInt64(&p.lastPingLatency)),
+		Name:            p.name,
+		Type:            pluginMetrics.Type,
+		Status:          status,
+		ServerAddr:      pluginMetrics.ServerAddr,
+		ConnectedAt:     connectedAtStr,
+		UptimeSeconds:   uptimeSeconds,
+		MessageCount:    messageCount,
+		PublishCount:    publishCount,
+		SubscribeCount:  subscribeCount,
+		PendingMessages: pluginMetrics.PendingMessages,
+		PendingAckCount: pluginMetrics.PendingAckCount,
+		PublishFailed:   publishFailed,
+		SubscribeFailed: subscribeFailed,
+		MsgsIn:          pluginMetrics.MsgsIn,
+		MsgsOut:         pluginMetrics.MsgsOut,
+		BytesIn:         pluginMetrics.BytesIn,
+		BytesOut:        pluginMetrics.BytesOut,
+		AverageLatency:  avgLatency,
+
 		MaxLatency:       pluginMetrics.MaxLatency,
 		MinLatency:       pluginMetrics.MinLatency,
 		ThroughputPerSec: throughputPerSec,
@@ -327,11 +361,9 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		Extensions:       safeCloneMap(pluginMetrics.Extensions),
 	}
 
-	// 更新缓存
-	p.metricsCacheMu.Lock()
-	p.cachedMetrics = m
-	p.metricsCacheExp = now
-	p.metricsCacheMu.Unlock()
+	// 更新缓存（原子操作，无锁）
+	p.cachedMetrics.Store(m)
+	p.metricsCacheExp.Store(now)
 
 	return m
 }

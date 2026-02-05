@@ -84,15 +84,31 @@ func (c *natsMsg) GmqClose(_ context.Context) error {
 
 // GmqPublish 发布NATS消息
 func (c *natsMsg) GmqPublish(_ context.Context, msg core.Publish) error {
-	natsMsg := msg.(*NatsPubMessage)
-	// 数据已由管道层序列化为 []byte
-	data, _ := natsMsg.Data.([]byte)
+	natsMsg, ok := msg.(*NatsPubMessage)
+	if !ok {
+		return fmt.Errorf("invalid message type: expected *NatsPubMessage")
+	}
+
+	// 问题8修复：检查数据类型转换
+	data, ok := natsMsg.Data.([]byte)
+	if !ok {
+		return fmt.Errorf("message data must be []byte, got %T", natsMsg.Data)
+	}
+
 	return c.conn.Publish(natsMsg.QueueName, data)
 }
 
 // GmqSubscribe 订阅NATS消息
 func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error) {
-	natsMsg := msg.(*NatsSubMessage)
+	// 问题4修复：检查连接状态
+	if c.conn == nil || !c.conn.IsConnected() {
+		return nil, fmt.Errorf("nats not connected")
+	}
+
+	natsMsg, ok := msg.(*NatsSubMessage)
+	if !ok {
+		return nil, fmt.Errorf("invalid message type: expected *NatsSubMessage")
+	}
 
 	var sub *nats.Subscription
 	var err error
@@ -139,11 +155,11 @@ func (c *natsMsg) GetMetrics(_ context.Context) *core.Metrics {
 
 	// 从 NATS 连接获取服务端统计信息
 	stats := c.conn.Stats()
-	// NATS 提供的统计信息 - 直接使用 uint64 避免溢出
+	// NATS 提供的统计信息
 	m.MsgsIn = int64(stats.InMsgs)
 	m.MsgsOut = int64(stats.OutMsgs)
-	m.BytesIn = stats.InBytes
-	m.BytesOut = stats.OutBytes
+	m.BytesIn = int64(stats.InBytes)
+	m.BytesOut = int64(stats.OutBytes)
 	m.ReconnectCount = int64(c.conn.Reconnects)
 
 	// 服务端详细信息

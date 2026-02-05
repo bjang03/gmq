@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -50,7 +51,8 @@ func GmqRegister(name string, plugin Gmq) error {
 		for {
 			select {
 			case <-globalShutdown:
-				// 收到关闭信号，关闭连接并退出
+				// 问题6修复：收到关闭信号，清理订阅并关闭连接
+				p.clearSubscriptions()
 				_ = p.GmqClose(context.Background())
 				return
 			default:
@@ -81,7 +83,8 @@ func GmqRegister(name string, plugin Gmq) error {
 					continue
 				}
 
-				// 重连成功，重置退避时间
+				// 重连成功，重置退避时间，清理旧订阅
+				log.Printf("[GMQ] %s reconnected successfully", name)
 				reconnectDelay = baseReconnectDelay
 			}
 		}

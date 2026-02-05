@@ -3,7 +3,6 @@ package components
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/bjang03/gmq/core"
 	"github.com/nats-io/nats.go"
@@ -33,10 +32,8 @@ type NatsSubMessage struct {
 
 // natsMsg NATS消息队列实现
 type natsMsg struct {
-	conn            *nats.Conn
-	connURL         string
-	connectedAt     time.Time
-	lastPingLatency float64
+	conn    *nats.Conn
+	connURL string
 }
 
 // GmqPing 检测NATS连接状态
@@ -45,15 +42,7 @@ func (c *natsMsg) GmqPing(_ context.Context) bool {
 		return false
 	}
 
-	if !c.conn.IsConnected() {
-		return false
-	}
-
-	start := time.Now()
-	_ = c.conn.Flush()
-	c.lastPingLatency = float64(time.Since(start).Milliseconds())
-
-	return true
+	return c.conn.IsConnected()
 }
 
 // GmqConnect 连接NATS服务器
@@ -65,7 +54,6 @@ func (c *natsMsg) GmqConnect(ctx context.Context) (err error) {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}
 
-	c.connectedAt = time.Now()
 	return nil
 }
 
@@ -132,22 +120,14 @@ func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 // GetMetrics 获取基础监控指标
 func (c *natsMsg) GetMetrics(ctx context.Context) *core.Metrics {
 	m := &core.Metrics{
-		Name:            "nats",
-		Type:            "nats",
-		ServerAddr:      c.connURL,
-		ConnectedAt:     c.connectedAt.Format("2006-01-02 15:04:05"),
-		LastPingLatency: c.lastPingLatency,
+		Type:       "nats",
+		ServerAddr: c.connURL,
 	}
 
 	if c.GmqPing(ctx) {
 		m.Status = "connected"
 	} else {
 		m.Status = "disconnected"
-	}
-
-	// 计算运行时间
-	if !c.connectedAt.IsZero() {
-		m.UptimeSeconds = int64(time.Since(c.connectedAt).Seconds())
 	}
 
 	// 从 NATS 连接获取服务端统计信息

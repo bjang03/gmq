@@ -5,7 +5,6 @@ import "encoding/json"
 
 // JsonParser JSON数据解析器
 type JsonParser struct {
-	DateFormat string // 日期格式化规则(待实现)
 }
 
 // GmqParseData 将数据解析为标准格式

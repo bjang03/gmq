@@ -1,4 +1,3 @@
-// Package gmq 提供统一的消息队列抽象接口，支持多种消息中间件(NATS、Redis-Stream、RabbitMQ等)
 package core
 
 import (
@@ -9,100 +8,6 @@ import (
 	"time"
 )
 
-// 默认重试配置
-const (
-	DefaultRetryAttempts = 3
-	DefaultRetryDelay    = 500 * time.Millisecond
-)
-
-// PubMessage 发布消息基础结构
-type PubMessage struct {
-	QueueName string // 队列名称
-	Data      any    // 消息数据
-}
-
-// SubMessage 订阅消息基础结构
-type SubMessage[T any] struct {
-	QueueName  string                                     // 队列名称
-	AutoAck    bool                                       // 是否自动确认
-	FetchCount int                                        // 每次拉取消息数量
-	HandleFunc func(ctx context.Context, message T) error // 消息处理函数
-}
-
-// Publish 发布消息接口
-type Publish interface {
-	GetGmqPublishMsgType()
-}
-
-// Subscribe 订阅消息接口
-type Subscribe interface {
-	GetGmqSubscribeMsgType()
-}
-
-// Parser 数据解析器接口
-type Parser interface {
-	GmqParseData(data any) (dt any, err error)
-}
-
-// SubscriptionValidator 订阅对象验证接口
-type SubscriptionValidator interface {
-	IsValid() bool
-}
-
-// Gmq 消息队列统一接口定义
-type Gmq interface {
-	// GmqConnect 连接消息队列
-	GmqConnect(ctx context.Context) error
-	// GmqPublish 发布消息
-	GmqPublish(ctx context.Context, msg Publish) error
-	// GmqSubscribe 订阅消息，返回订阅对象
-	GmqSubscribe(ctx context.Context, msg any) (interface{}, error)
-	// GmqPing 检测连接状态
-	GmqPing(ctx context.Context) bool
-	// GmqClose 关闭连接
-	GmqClose(ctx context.Context) error
-	// GetMetrics 获取监控指标
-	GetMetrics(ctx context.Context) *Metrics
-}
-
-// Metrics 监控指标
-type Metrics struct {
-	Name             string                 `json:"name"`             // 消息队列名称
-	Type             string                 `json:"type"`             // 消息队列类型：nats/redis/rabbitmq/kafka
-	Status           string                 `json:"status"`           // 连接状态：connected/disconnected
-	ServerAddr       string                 `json:"serverAddr"`       // 服务器地址
-	ConnectedAt      string                 `json:"connectedAt"`      // 连接时间
-	UptimeSeconds    int64                  `json:"uptimeSeconds"`    // 运行时间(秒)
-	MessageCount     int64                  `json:"messageCount"`     // 已处理消息总数
-	PublishCount     int64                  `json:"publishCount"`     // 发布消息数
-	SubscribeCount   int64                  `json:"subscribeCount"`   // 订阅消息数
-	PendingMessages  int64                  `json:"pendingMessages"`  // 待处理消息数
-	PendingAckCount  int64                  `json:"pendingAckCount"`  // 待确认消息数
-	PublishFailed    int64                  `json:"publishFailed"`    // 发布失败数
-	SubscribeFailed  int64                  `json:"subscribeFailed"`  // 订阅失败数
-	MsgsIn           int64                  `json:"msgsIn"`           // 服务端流入消息数
-	MsgsOut          int64                  `json:"msgsOut"`          // 服务端流出消息数
-	BytesIn          uint64                 `json:"bytesIn"`          // 流入字节数
-	BytesOut         uint64                 `json:"bytesOut"`         // 流出字节数
-	AverageLatency   float64                `json:"averageLatency"`   // 平均延迟(毫秒)
-	LastPingLatency  float64                `json:"lastPingLatency"`  // 最近一次ping延迟(毫秒)
-	MaxLatency       float64                `json:"maxLatency"`       // 最大延迟(毫秒)
-	MinLatency       float64                `json:"minLatency"`       // 最小延迟(毫秒)
-	ThroughputPerSec float64                `json:"throughputPerSec"` // 总吞吐量
-	PublishPerSec    float64                `json:"publishPerSec"`    // 发布吞吐
-	SubscribePerSec  float64                `json:"subscribePerSec"`  // 订阅吞吐
-	ErrorRate        float64                `json:"errorRate"`        // 错误率
-	ReconnectCount   int64                  `json:"reconnectCount"`   // 重连次数
-	ServerMetrics    map[string]interface{} `json:"serverMetrics"`    // 服务端详细信息
-	Extensions       map[string]interface{} `json:"extensions"`       // 扩展指标
-}
-
-// GmqPlugins 已注册的消息队列插件集合
-var (
-	GmqPlugins = make(map[string]*GmqPipeline)
-	pluginsMu  sync.RWMutex
-)
-
 // GmqPipeline 消息队列管道包装器，用于统一监控指标处理
 type GmqPipeline struct {
 	name            string
@@ -110,24 +15,13 @@ type GmqPipeline struct {
 	metrics         pipelineMetrics
 	connectedAt     int64 // Unix timestamp in seconds, atomic access
 	lastPingLatency int64 // milliseconds, atomic access
+	connected       int32 // 连接状态: 0=未连接, 1=已连接, atomic access
 
 	// 并发控制 - 统一管理所有并发访问
 	mu sync.RWMutex
 
 	// 订阅管理 - 统一管理所有订阅对象（包括状态和具体的订阅引用）
 	subscriptions map[string]interface{} // key 为 topic:consumerName，value 为具体的订阅对象
-}
-
-// pipelineMetrics 管道监控指标
-type pipelineMetrics struct {
-	messageCount    int64
-	publishCount    int64
-	subscribeCount  int64
-	publishFailed   int64
-	subscribeFailed int64
-	totalLatency    int64
-	latencyCount    int64
-	pendingMessages int64
 }
 
 // newGmqPipeline 创建新的管道包装器
@@ -286,6 +180,11 @@ func (p *GmqPipeline) getSubKey(topic, consumerName string) string {
 
 // GmqPing 检测连接状态
 func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
+	// 管道层统一校验：检查是否已连接
+	if atomic.LoadInt32(&p.connected) == 0 {
+		return false
+	}
+
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -307,6 +206,7 @@ func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
 
 	err := p.plugin.GmqConnect(ctx)
 	if err == nil {
+		atomic.StoreInt32(&p.connected, 1)
 		atomic.StoreInt64(&p.connectedAt, time.Now().Unix())
 	}
 	return err
@@ -317,7 +217,9 @@ func (p *GmqPipeline) GmqClose(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return p.plugin.GmqClose(ctx)
+	err := p.plugin.GmqClose(ctx)
+	atomic.StoreInt32(&p.connected, 0)
+	return err
 }
 
 // GetMetrics 获取统一监控指标
@@ -396,108 +298,4 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		ServerMetrics:    pluginMetrics.ServerMetrics,
 		Extensions:       pluginMetrics.Extensions,
 	}
-}
-
-// globalShutdown 用于优雅关闭信号
-var (
-	globalShutdown     = make(chan struct{})
-	globalShutdownOnce sync.Once
-)
-
-// GmqRegister 注册消息队列插件
-// 启动后台协程自动维护连接状态，断线自动重连
-func GmqRegister(name string, plugin Gmq) {
-	// 创建管道包装器
-	pipeline := newGmqPipeline(name, plugin)
-
-	pluginsMu.Lock()
-	GmqPlugins[name] = pipeline
-	pluginsMu.Unlock()
-
-	go func(name string, p *GmqPipeline) {
-		// 重连退避配置
-		const (
-			baseReconnectDelay = 5 * time.Second
-			maxReconnectDelay  = 60 * time.Second
-		)
-		reconnectDelay := baseReconnectDelay
-
-		for {
-			select {
-			case <-globalShutdown:
-				// 收到关闭信号，关闭连接并退出
-				_ = p.GmqClose(context.Background())
-				return
-			default:
-				if p.GmqPing(context.Background()) {
-					// 连接正常，重置退避时间
-					reconnectDelay = baseReconnectDelay
-					time.Sleep(10 * time.Second)
-					continue
-				}
-
-				// 连接断开，尝试重连
-				if err := p.GmqConnect(context.Background()); err != nil {
-					// 重连失败，增加退避时间
-					time.Sleep(reconnectDelay)
-					reconnectDelay *= 2
-					if reconnectDelay > maxReconnectDelay {
-						reconnectDelay = maxReconnectDelay
-					}
-					continue
-				}
-
-				// 重连成功，重置退避时间
-				reconnectDelay = baseReconnectDelay
-			}
-		}
-	}(name, pipeline)
-}
-
-// Shutdown 优雅关闭所有消息队列连接
-func Shutdown(ctx context.Context) error {
-	globalShutdownOnce.Do(func() {
-		select {
-		case <-globalShutdown:
-			// channel 已关闭，跳过
-		default:
-			close(globalShutdown)
-		}
-	})
-
-	pluginsMu.RLock()
-	pipelines := make([]*GmqPipeline, 0, len(GmqPlugins))
-	for _, p := range GmqPlugins {
-		pipelines = append(pipelines, p)
-	}
-	pluginsMu.RUnlock()
-
-	var lastErr error
-	for _, p := range pipelines {
-		if err := p.GmqClose(ctx); err != nil {
-			lastErr = err
-		}
-	}
-	return lastErr
-}
-
-// GetGmq 获取已注册的消息队列管道
-func GetGmq(name string) (*GmqPipeline, bool) {
-	pluginsMu.RLock()
-	defer pluginsMu.RUnlock()
-	pipeline, ok := GmqPlugins[name]
-	return pipeline, ok
-}
-
-// GetAllGmq 获取所有已注册的消息队列管道的副本
-func GetAllGmq() map[string]*GmqPipeline {
-	pluginsMu.RLock()
-	defer pluginsMu.RUnlock()
-
-	// 返回副本，避免外部修改
-	result := make(map[string]*GmqPipeline, len(GmqPlugins))
-	for k, v := range GmqPlugins {
-		result[k] = v
-	}
-	return result
 }

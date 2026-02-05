@@ -132,6 +132,8 @@ func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 func (c *natsMsg) GetMetrics(ctx context.Context) *core.Metrics {
 	m := &core.Metrics{
 		Name:            "nats",
+		Type:            "nats",
+		ServerAddr:      c.connURL,
 		ConnectedAt:     c.connectedAt.Format("2006-01-02 15:04:05"),
 		LastPingLatency: c.lastPingLatency,
 	}
@@ -140,6 +142,30 @@ func (c *natsMsg) GetMetrics(ctx context.Context) *core.Metrics {
 		m.Status = "connected"
 	} else {
 		m.Status = "disconnected"
+	}
+
+	// 计算运行时间
+	if !c.connectedAt.IsZero() {
+		m.UptimeSeconds = int64(time.Since(c.connectedAt).Seconds())
+	}
+
+	// 从 NATS 连接获取服务端统计信息
+	if c.conn != nil && c.conn.IsConnected() {
+		stats := c.conn.Stats()
+		// NATS 提供的统计信息
+		m.MsgsIn = int64(stats.InMsgs)
+		m.MsgsOut = int64(stats.OutMsgs)
+		m.BytesIn = int64(stats.InBytes)
+		m.BytesOut = int64(stats.OutBytes)
+		m.ReconnectCount = int64(c.conn.Reconnects)
+
+		// 服务端详细信息
+		m.ServerMetrics = map[string]interface{}{
+			"serverId":          c.conn.ConnectedServerId(),
+			"serverVersion":     c.conn.ConnectedServerVersion(),
+			"totalConnections":  0, // NATS 客户端库不提供这个信息
+			"activeConnections": 1, // 当前客户端连接
+		}
 	}
 
 	return m

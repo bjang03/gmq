@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/bjang03/gmq/core"
-	"github.com/gin-gonic/gin"
 )
 
 type MonitorReq struct {
@@ -12,7 +11,7 @@ type MonitorReq struct {
 }
 
 // GetMetrics 获取监控指标
-func GetMetrics(c *gin.Context, req MonitorReq) (res interface{}, err error) {
+func GetMetrics(ctx context.Context, req MonitorReq) (res interface{}, err error) {
 	// 空名称时返回空结果而不是nil，避免中断请求处理
 	if req.Name == "" {
 		return make(map[string]*core.Metrics), nil
@@ -23,7 +22,7 @@ func GetMetrics(c *gin.Context, req MonitorReq) (res interface{}, err error) {
 		return make(map[string]*core.Metrics), nil
 	}
 
-	metrics := pipeline.GetMetrics(c.Request.Context())
+	metrics := pipeline.GetMetrics(ctx)
 	result := map[string]*core.Metrics{
 		req.Name: metrics,
 	}

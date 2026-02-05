@@ -7,6 +7,8 @@ const RECONNECT_DELAY = 3000;
 // 列表展示的完整指标配置（所有指标分类型）
 const LIST_METRICS_CONFIG = {
     basic: [
+        { key: 'name', label: '连接名称' },
+        { key: 'status', label: '连接状态' },
         { key: 'serverAddr', label: '服务器地址' },
         { key: 'uptimeSeconds', label: '运行时间', format: 'duration' },
         { key: 'connectedAt', label: '连接时间' }
@@ -210,16 +212,12 @@ function createListItem(name, metric) {
     item.className = 'metric-list-item';
     item.dataset.itemName = name;
 
-    // 左侧信息区（跨所有行）
+    // 左侧信息区（跨所有行）- 只显示类型
     const infoDiv = document.createElement('div');
     infoDiv.className = 'metric-info';
     infoDiv.innerHTML = `
         <span class="type-badge" style="background: ${typeInfo.color}20; color: ${typeInfo.color}; border: 1px solid ${typeInfo.color}40;">
             ${typeInfo.icon} ${typeInfo.name}
-        </span>
-        <span class="metric-name">${name}</span>
-        <span class="metric-status ${metric.status === 'connected' ? 'connected' : 'disconnected'}" data-status>
-            ${metric.status === 'connected' ? '已连接' : '未连接'}
         </span>
     `;
     item.appendChild(infoDiv);
@@ -311,8 +309,16 @@ function updateListItemValues(name, metric) {
                     formatted = value.substring(0, 8) + '...';
                 }
 
-                if (valueEl.textContent !== formatted) {
-                    valueEl.textContent = formatted;
+                // 特殊处理连接状态，添加颜色样式
+                if (config.key === 'status') {
+                    const isConnected = value === 'connected';
+                    const statusText = isConnected ? '已连接' : '未连接';
+                    const statusClass = isConnected ? 'status-connected' : 'status-disconnected';
+                    valueEl.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span>`;
+                } else {
+                    if (valueEl.textContent !== formatted) {
+                        valueEl.textContent = formatted;
+                    }
                 }
                 valueEl.parentElement.style.display = 'flex';
                 hasVisibleData = true;

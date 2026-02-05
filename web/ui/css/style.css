@@ -37,30 +37,6 @@ header h1 {
     background-clip: text;
 }
 
-.header-controls {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-}
-
-.connection-status {
-    color: #94a3b8;
-    font-size: 14px;
-    padding: 6px 12px;
-    border-radius: 6px;
-    background: rgba(30, 41, 59, 0.8);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.connection-status.connected {
-    color: #22c55e;
-    border-color: rgba(34, 197, 94, 0.3);
-}
-
-.connection-status.disconnected {
-    color: #ef4444;
-    border-color: rgba(239, 68, 68, 0.3);
-}
 
 /* 概览统计 */
 .stats-overview {
@@ -175,6 +151,25 @@ header h1 {
 }
 
 .metric-status.disconnected {
+    background: rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+}
+
+/* 基本信息中的状态标签样式 */
+.status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.status-connected {
+    background: rgba(34, 197, 94, 0.2);
+    color: #22c55e;
+}
+
+.status-disconnected {
     background: rgba(239, 68, 68, 0.2);
     color: #ef4444;
 }

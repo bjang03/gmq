@@ -66,6 +66,7 @@ func WSMetricsHandler(c *gin.Context) {
 
 	// 保持连接，等待客户端关闭或错误
 	for {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		_, _, err := conn.ReadMessage()
 		if err != nil {
 			break

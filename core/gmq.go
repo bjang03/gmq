@@ -364,7 +364,12 @@ func GmqRegister(name string, plugin Gmq) {
 // Shutdown 优雅关闭所有消息队列连接
 func Shutdown(ctx context.Context) error {
 	globalShutdownOnce.Do(func() {
-		close(globalShutdown)
+		select {
+		case <-globalShutdown:
+			// channel 已关闭，跳过
+		default:
+			close(globalShutdown)
+		}
 	})
 
 	pluginsMu.RLock()

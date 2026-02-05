@@ -9,10 +9,10 @@
 <body>
     <div class="container">
         <header>
-            <h1>GMQ 消息队列监控中心</h1>
+            <h1>🚀 GMQ 消息队列监控中心</h1>
             <div class="header-controls">
                 <span class="last-update">最后更新: <span id="last-update">-</span></span>
-                <button class="refresh-btn" onclick="refreshMetrics()">刷新</button>
+                <button class="refresh-btn" onclick="refreshMetrics()">🔄 刷新</button>
             </div>
         </header>
 
@@ -43,6 +43,20 @@
                 <div class="stat-info">
                     <div class="stat-label">平均延迟</div>
                     <div class="stat-value" id="avg-latency">0</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🔗</div>
+                <div class="stat-info">
+                    <div class="stat-label">活跃连接</div>
+                    <div class="stat-value" id="active-connections">0</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🖥️</div>
+                <div class="stat-info">
+                    <div class="stat-label">服务节点</div>
+                    <div class="stat-value" id="server-nodes">0</div>
                 </div>
             </div>
         </div>

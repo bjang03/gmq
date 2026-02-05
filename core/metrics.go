@@ -17,8 +17,8 @@ type Metrics struct {
 	SubscribeFailed  int64                  `json:"subscribeFailed"`  // 订阅失败数
 	MsgsIn           int64                  `json:"msgsIn"`           // 服务端流入消息数
 	MsgsOut          int64                  `json:"msgsOut"`          // 服务端流出消息数
-	BytesIn          uint64                 `json:"bytesIn"`          // 流入字节数
-	BytesOut         uint64                 `json:"bytesOut"`         // 流出字节数
+	BytesIn          int64                  `json:"bytesIn"`          // 流入字节数
+	BytesOut         int64                  `json:"bytesOut"`         // 流出字节数
 	AverageLatency   float64                `json:"averageLatency"`   // 平均延迟(毫秒)
 	LastPingLatency  float64                `json:"lastPingLatency"`  // 最近一次ping延迟(毫秒)
 	MaxLatency       float64                `json:"maxLatency"`       // 最大延迟(毫秒)

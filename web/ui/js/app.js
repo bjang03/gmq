@@ -1,7 +1,50 @@
 const API_BASE = window.location.origin;
 
-// 指标配置定义
-const METRIC_CONFIG = {
+// 列表展示的完整指标配置（所有指标分类型）
+const LIST_METRICS_CONFIG = {
+    basic: [
+        { key: 'serverAddr', label: '服务器地址' },
+        { key: 'uptimeSeconds', label: '运行时间', format: 'duration' },
+        { key: 'connectedAt', label: '连接时间' }
+    ],
+    serverMessages: [
+        { key: 'messageCount', label: '服务端消息总数' },
+        { key: 'msgsIn', label: '流入消息', format: 'number' },
+        { key: 'msgsOut', label: '流出消息', format: 'number' },
+        { key: 'bytesIn', label: '流入字节', format: 'bytes' },
+        { key: 'bytesOut', label: '流出字节', format: 'bytes' },
+        { key: 'pendingMessages', label: '待处理消息', format: 'number' }
+    ],
+    clientMessages: [
+        { key: 'publishCount', label: '客户端发布数', format: 'number' },
+        { key: 'subscribeCount', label: '客户端订阅数', format: 'number' },
+        { key: 'publishFailed', label: '发布失败', format: 'number' },
+        { key: 'subscribeFailed', label: '订阅失败', format: 'number' },
+        { key: 'pendingAckCount', label: '待确认消息', format: 'number' }
+    ],
+    serverMetrics: [
+        { key: 'serverMetrics.activeConnections', label: '活跃连接', format: 'number', isNested: true },
+        { key: 'serverMetrics.totalConnections', label: '总连接数', format: 'number', isNested: true },
+        { key: 'serverMetrics.serverVersion', label: '服务器版本', isNested: true },
+        { key: 'serverMetrics.serverId', label: '服务器ID', isNested: true, format: 'shortId' }
+    ],
+    latency: [
+        { key: 'averageLatency', label: '平均延迟', format: 'ms' },
+        { key: 'lastPingLatency', label: 'Ping延迟', format: 'ms' },
+        { key: 'maxLatency', label: '最大延迟', format: 'ms' },
+        { key: 'minLatency', label: '最小延迟', format: 'ms' }
+    ],
+    throughput: [
+        { key: 'throughputPerSec', label: '总吞吐量', format: 'perSec' },
+        { key: 'publishPerSec', label: '发布吞吐', format: 'perSec' },
+        { key: 'subscribePerSec', label: '订阅吞吐', format: 'perSec' },
+        { key: 'errorRate', label: '错误率', format: 'percent' },
+        { key: 'reconnectCount', label: '重连次数', format: 'number' }
+    ]
+};
+
+// 详情面板的完整指标配置（保留用于详情展开）
+const DETAIL_METRIC_CONFIG = {
     basic: [
         { key: 'type', label: '类型', icon: '📋' },
         { key: 'serverAddr', label: '服务器地址', icon: '🌐' },
@@ -69,6 +112,10 @@ function formatValue(value, format) {
         case 'ms': return Number(value).toFixed(2) + ' ms';
         case 'perSec': return Number(value).toFixed(2) + ' /s';
         case 'percent': return Number(value).toFixed(2) + '%';
+        case 'shortId': {
+            const strValue = String(value);
+            return strValue.length > 8 ? strValue.substring(0, 8) + '...' : strValue;
+        }
         case 'bytes': {
             const numValue = Number(value);
             if (numValue === 0) return '0 B';
@@ -95,6 +142,18 @@ function formatValue(value, format) {
 
 function formatNumber(num) {
     return new Intl.NumberFormat().format(num || 0);
+}
+
+function getSectionTitle(sectionKey) {
+    const titles = {
+        basic: '基本信息',
+        serverMessages: '服务端消息统计',
+        clientMessages: '客户端消息统计',
+        serverMetrics: '服务端详细信息',
+        latency: '延迟指标',
+        throughput: '吞吐量'
+    };
+    return titles[sectionKey] || sectionKey;
 }
 
 // 初始化概览统计的 DOM 引用
@@ -138,291 +197,153 @@ function updateOverview(metrics) {
     domCache.overview.lastUpdate.textContent = new Date().toLocaleString('zh-CN');
 }
 
-// 创建指标项元素
-function createMetricItem(config) {
-    const item = document.createElement('div');
-    item.className = 'metric-item';
-    item.dataset.metricKey = config.key;
+// 创建列表项结构（多行展示，类型跨行合并）
+function createListItem(name, metric) {
+    const typeInfo = TYPE_LABELS[metric.type] || { name: metric.type || 'Unknown', color: '#6b7280', icon: '?' };
     
-    item.innerHTML = `
-        <div class="metric-item-icon">${config.icon}</div>
-        <div class="metric-item-content">
-            <div class="metric-item-label">${config.label}</div>
-            <div class="metric-item-value" data-value-key="${config.key}">-</div>
-        </div>
+    const item = document.createElement('div');
+    item.className = 'metric-list-item';
+    item.dataset.itemName = name;
+    
+    // 左侧信息区（跨所有行）
+    const infoDiv = document.createElement('div');
+    infoDiv.className = 'metric-info';
+    infoDiv.innerHTML = `
+        <span class="type-badge" style="background: ${typeInfo.color}20; color: ${typeInfo.color}; border: 1px solid ${typeInfo.color}40;">
+            ${typeInfo.icon} ${typeInfo.name}
+        </span>
+        <span class="metric-name">${name}</span>
+        <span class="metric-status ${metric.status === 'connected' ? 'connected' : 'disconnected'}" data-status>
+            ${metric.status === 'connected' ? '已连接' : '未连接'}
+        </span>
     `;
+    item.appendChild(infoDiv);
+    
+    // 右侧指标区（多行展示）
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'metric-content';
+    
+    // 按类型分组创建多行
+    for (const [sectionKey, configs] of Object.entries(LIST_METRICS_CONFIG)) {
+        const sectionDiv = document.createElement('div');
+        sectionDiv.className = 'metric-section-row';
+        sectionDiv.dataset.section = sectionKey;
+        
+        const titleDiv = document.createElement('div');
+        titleDiv.className = 'section-row-title';
+        titleDiv.textContent = getSectionTitle(sectionKey);
+        sectionDiv.appendChild(titleDiv);
+        
+        const metricsGrid = document.createElement('div');
+        metricsGrid.className = 'section-row-metrics';
+        
+        for (const config of configs) {
+            const metricItem = document.createElement('div');
+            metricItem.className = 'metric-content-item';
+            metricItem.innerHTML = `
+                <span class="metric-content-label">${config.label}</span>
+                <span class="metric-content-value" data-value-key="${config.key}">-</span>
+            `;
+            metricsGrid.appendChild(metricItem);
+        }
+        
+        sectionDiv.appendChild(metricsGrid);
+        contentDiv.appendChild(sectionDiv);
+    }
+    
+    item.appendChild(contentDiv);
     return item;
 }
 
-// 创建卡片结构（首次渲染）
-function createCardStructure(name, metric) {
-    const typeInfo = TYPE_LABELS[metric.type] || { name: metric.type || 'Unknown', color: '#6b7280', icon: '?' };
-    
-    const card = document.createElement('div');
-    card.className = 'metric-card';
-    card.dataset.cardName = name;
-    
-    // Header
-    const header = document.createElement('div');
-    header.className = 'metric-header';
-    header.innerHTML = `
-        <div class="metric-title">
-            <span class="type-badge" style="background: ${typeInfo.color}20; color: ${typeInfo.color}; border: 1px solid ${typeInfo.color}40;">
-                ${typeInfo.icon} ${typeInfo.name}
-            </span>
-            <span class="metric-name">${name}</span>
-        </div>
-        <div class="metric-status ${metric.status === 'connected' ? 'connected' : 'disconnected'}" data-status>
-            ${metric.status}
-        </div>
-    `;
-    card.appendChild(header);
-    
-    // Body
-    const body = document.createElement('div');
-    body.className = 'metric-body';
-    
-    // 创建各分区
-    const sections = [
-        { title: '基本信息', configs: METRIC_CONFIG.basic },
-        { title: '📊 服务端消息统计', configs: METRIC_CONFIG.serverMessages },
-        { title: '💻 客户端消息统计', configs: METRIC_CONFIG.clientMessages },
-        { title: '⏱️ 延迟指标(客户端)', configs: METRIC_CONFIG.latency },
-        { title: '📈 吞吐量(客户端)', configs: METRIC_CONFIG.throughput }
-    ];
-    
-    for (const section of sections) {
-        const sectionEl = document.createElement('div');
-        sectionEl.className = 'metric-section';
-        sectionEl.dataset.section = section.title;
-        sectionEl.style.display = 'none'; // 初始隐藏，有数据时再显示
-        
-        const titleEl = document.createElement('div');
-        titleEl.className = 'section-title';
-        titleEl.textContent = section.title;
-        sectionEl.appendChild(titleEl);
-        
-        const grid = document.createElement('div');
-        grid.className = 'metric-grid';
-        
-        for (const config of section.configs) {
-            grid.appendChild(createMetricItem(config));
-        }
-        
-        sectionEl.appendChild(grid);
-        body.appendChild(sectionEl);
-    }
-    
-    // 服务端详细信息区
-    const serverSection = document.createElement('div');
-    serverSection.className = 'metric-section';
-    serverSection.dataset.section = 'serverMetrics';
-    serverSection.style.display = 'none';
-    serverSection.innerHTML = '<div class="section-title">🖥️ 服务端详细信息</div>';
-    const serverGrid = document.createElement('div');
-    serverGrid.className = 'metric-grid';
-    serverGrid.dataset.serverGrid = 'true';
-    serverSection.appendChild(serverGrid);
-    body.appendChild(serverSection);
-    
-    // 扩展指标区
-    const extSection = document.createElement('div');
-    extSection.className = 'metric-section';
-    extSection.dataset.section = 'extensions';
-    extSection.style.display = 'none';
-    extSection.innerHTML = '<div class="section-title">🔧 扩展指标</div>';
-    const extGrid = document.createElement('div');
-    extGrid.className = 'metric-grid';
-    extGrid.dataset.extGrid = 'true';
-    extSection.appendChild(extGrid);
-    body.appendChild(extSection);
-    
-    card.appendChild(body);
-    return card;
-}
+// 更新列表项的值
+function updateListItemValues(name, metric) {
+    const item = document.querySelector(`.metric-list-item[data-item-name="${name}"]`);
+    if (!item) return;
 
-// 更新单个卡片的值
-function updateCardValues(name, metric) {
-    const card = document.querySelector(`.metric-card[data-card-name="${name}"]`);
-    if (!card) return;
-    
     // 更新状态
-    const statusEl = card.querySelector('[data-status]');
-    if (statusEl && statusEl.textContent !== metric.status) {
-        statusEl.textContent = metric.status;
-        statusEl.className = `metric-status ${metric.status === 'connected' ? 'connected' : 'disconnected'}`;
+    const statusEl = item.querySelector('[data-status]');
+    if (statusEl) {
+        const statusText = metric.status === 'connected' ? '已连接' : '未连接';
+        if (statusEl.textContent !== statusText) {
+            statusEl.textContent = statusText;
+            statusEl.className = `metric-status ${metric.status === 'connected' ? 'connected' : 'disconnected'}`;
+        }
     }
-    
+
     // 更新各分区的值
-    for (const [sectionName, configs] of Object.entries(METRIC_CONFIG)) {
-        const sectionEl = card.querySelector(`[data-section="${getSectionTitle(sectionName)}"]`);
+    for (const [sectionKey, configs] of Object.entries(LIST_METRICS_CONFIG)) {
+        const sectionEl = item.querySelector(`[data-section="${sectionKey}"]`);
         if (!sectionEl) continue;
-        
+
         let hasVisibleData = false;
-        
+
         for (const config of configs) {
             const valueEl = sectionEl.querySelector(`[data-value-key="${config.key}"]`);
             if (!valueEl) continue;
 
-            let value = metric[config.key];
-            // 对于字符串字段，只检查空值；对于数值字段，还需要检查是否为 0
-            const isNumericField = config.format !== undefined;
-            const shouldHide = value === undefined || value === null || value === '' || (isNumericField && value === 0);
-
-            if (shouldHide) {
-                valueEl.textContent = '-';
-                valueEl.parentElement.parentElement.style.display = 'none';
+            // 支持嵌套属性（如 serverMetrics.activeConnections）
+            let value;
+            if (config.isNested) {
+                const keys = config.key.split('.');
+                value = metric;
+                for (const k of keys) {
+                    value = value?.[k];
+                    if (value === undefined) break;
+                }
             } else {
-                const formatted = config.format ? formatValue(value, config.format) : String(value);
+                value = metric[config.key];
+            }
+
+            const isNumericField = config.format !== undefined;
+
+            // 显示所有有值的字段，数值0也显示
+            if (value === undefined || value === null || value === '') {
+                valueEl.textContent = '-';
+                valueEl.parentElement.style.display = 'none';
+            } else {
+                let formatted = config.format ? formatValue(value, config.format) : String(value);
+
+                // 特殊处理 shortId 格式
+                if (config.format === 'shortId' && typeof value === 'string') {
+                    formatted = value.substring(0, 8) + '...';
+                }
+
                 if (valueEl.textContent !== formatted) {
                     valueEl.textContent = formatted;
                 }
-                valueEl.parentElement.parentElement.style.display = 'flex';
+                valueEl.parentElement.style.display = 'flex';
                 hasVisibleData = true;
-
-                // 状态特殊样式
-                if (config.isStatus) {
-                    valueEl.className = 'metric-item-value ' + (value === 'connected' ? 'text-success' : 'text-error');
-                }
             }
         }
-        
-        sectionEl.style.display = hasVisibleData ? 'block' : 'none';
-    }
-    
-    // 更新服务端详细信息
-    updateServerMetrics(card, metric.serverMetrics);
-    
-    // 更新扩展指标
-    updateExtensions(card, metric.extensions);
-}
 
-function getSectionTitle(sectionName) {
-    const titles = {
-        basic: '基本信息',
-        serverMessages: '📊 服务端消息统计',
-        clientMessages: '💻 客户端消息统计',
-        latency: '⏱️ 延迟指标(客户端)',
-        throughput: '📈 吞吐量(客户端)'
-    };
-    return titles[sectionName] || sectionName;
-}
-
-// 更新服务端指标
-function updateServerMetrics(card, serverMetrics) {
-    const section = card.querySelector('[data-section="serverMetrics"]');
-    const grid = section.querySelector('[data-server-grid]');
-    
-    if (!serverMetrics || Object.keys(serverMetrics).length === 0) {
-        section.style.display = 'none';
-        return;
+        sectionEl.style.display = hasVisibleData ? 'flex' : 'none';
     }
-    
-    const fields = [
-        { key: 'serverVersion', label: '版本', icon: '🏷️' },
-        { key: 'serverId', label: '服务器ID', icon: '🆔', format: 'shortId' },
-        { key: 'totalConnections', label: '总连接数', icon: '👥' },
-        { key: 'activeConnections', label: '活跃连接', icon: '✅' },
-        { key: 'slowConsumers', label: '慢消费者', icon: '🐌' },
-        { key: 'totalConsumers', label: '消费者数', icon: '👤' },
-        { key: 'memoryUsed', label: '内存使用', icon: '💾', format: 'bytes' },
-        { key: 'cpuUsage', label: 'CPU使用', icon: '💻', format: 'percent' }
-    ];
-    
-    let hasData = false;
-    
-    for (const field of fields) {
-        const value = serverMetrics[field.key];
-        let item = grid.querySelector(`[data-server-key="${field.key}"]`);
-        
-        if (!value || value === 0 || value === '') {
-            if (item) item.style.display = 'none';
-            continue;
-        }
-        
-        hasData = true;
-        
-        if (!item) {
-            item = createMetricItem({ key: field.key, label: field.label, icon: field.icon });
-            item.dataset.serverKey = field.key;
-            grid.appendChild(item);
-        }
-        item.style.display = 'flex';
-        
-        const valueEl = item.querySelector(`[data-value-key="${field.key}"]`);
-        let displayValue = value;
-        if (field.format === 'number') displayValue = formatNumber(value);
-        else if (field.format === 'bytes') displayValue = formatValue(value, 'bytes');
-        else if (field.format === 'percent') displayValue = value + '%';
-        else if (field.format === 'shortId') displayValue = String(value).substring(0, 8) + '...';
-        
-        if (valueEl.textContent !== displayValue) {
-            valueEl.textContent = displayValue;
-        }
-    }
-    
-    section.style.display = hasData ? 'block' : 'none';
-}
-
-// 更新扩展指标
-function updateExtensions(card, extensions) {
-    const section = card.querySelector('[data-section="extensions"]');
-    const grid = section.querySelector('[data-ext-grid]');
-    
-    if (!extensions || Object.keys(extensions).length === 0) {
-        section.style.display = 'none';
-        return;
-    }
-    
-    let hasData = false;
-    
-    for (const [key, value] of Object.entries(extensions)) {
-        if (!value || (typeof value === 'number' && value === 0)) continue;
-        
-        hasData = true;
-        
-        let item = grid.querySelector(`[data-ext-key="${key}"]`);
-        if (!item) {
-            item = createMetricItem({ key, label: key, icon: '🔧' });
-            item.dataset.extKey = key;
-            grid.appendChild(item);
-        }
-        item.style.display = 'flex';
-        
-        const valueEl = item.querySelector(`[data-value-key="${key}"]`);
-        const displayValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
-        if (valueEl.textContent !== displayValue) {
-            valueEl.textContent = displayValue;
-        }
-    }
-    
-    section.style.display = hasData ? 'block' : 'none';
 }
 
 // 主渲染函数
 function renderMetrics(metrics) {
     const container = document.getElementById('metrics-container');
     
-    // 更新或创建卡片
+    // 更新或创建列表项
     for (const [name, metric] of Object.entries(metrics)) {
-        let card = document.querySelector(`.metric-card[data-card-name="${name}"]`);
+        let item = document.querySelector(`.metric-list-item[data-item-name="${name}"]`);
         
-        if (!card) {
+        if (!item) {
             // 首次渲染创建结构
-            card = createCardStructure(name, metric);
-            container.appendChild(card);
+            item = createListItem(name, metric);
+            container.appendChild(item);
         }
         
         // 更新值（不重新创建元素）
-        updateCardValues(name, metric);
+        updateListItemValues(name, metric);
     }
     
-    // 删除已经不存在的卡片
-    const existingCards = container.querySelectorAll('.metric-card');
-    for (const card of existingCards) {
-        const cardName = card.dataset.cardName;
-        if (!metrics[cardName]) {
-            card.remove();
+    // 删除已经不存在的列表项
+    const existingItems = container.querySelectorAll('.metric-list-item');
+    for (const item of existingItems) {
+        const itemName = item.dataset.itemName;
+        if (!metrics[itemName]) {
+            item.remove();
         }
     }
     

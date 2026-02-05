@@ -11,6 +11,7 @@ import (
 
 func init() {
 	core.GmqRegister("nats", &natsMsg{})
+	core.GmqRegister("nats2", &natsMsg{})
 }
 
 // NatsPubMessage NATS发布消息结构，支持延迟消息

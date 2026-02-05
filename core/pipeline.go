@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// 匿名消费者计数器，用于生成唯一订阅key
+var anonConsumerCounter atomic.Int64
+
 // subscriptionInfo 订阅信息，用于断线重连后恢复订阅
 // P0修复：不保存 context，因为 context 可能会过期
 type subscriptionInfo struct {
@@ -299,11 +302,14 @@ func (p *GmqPipeline) extractSubscriptionInfo(msg any) (topic, consumerName stri
 }
 
 // getSubKey 生成订阅的唯一key
+// 修复4：使用原子计数器避免相同 topic 不同消费者的冲突
 func (p *GmqPipeline) getSubKey(topic, consumerName string) string {
 	if consumerName != "" {
 		return topic + ":" + consumerName
 	}
-	return topic
+	// 使用原子计数器生成唯一后缀，确保相同 topic 多次订阅不会冲突
+	counter := anonConsumerCounter.Add(1)
+	return fmt.Sprintf("%s:anon-%d", topic, counter)
 }
 
 // GmqPing 检测连接状态

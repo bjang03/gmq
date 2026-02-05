@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -236,7 +237,7 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 
 	// 检查缓存是否有效
 	p.metricsCacheMu.RLock()
-	if p.cachedMetrics != nil && now-p.metricsCacheExp < int64(p.metricsCacheTTL.Milliseconds()) {
+	if p.cachedMetrics != nil && now-p.metricsCacheExp < p.metricsCacheTTL.Milliseconds() {
 		// 返回缓存的副本
 		m := *p.cachedMetrics
 		p.metricsCacheMu.RUnlock()
@@ -287,11 +288,18 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		subscribePerSec = float64(subscribeCount) / duration
 	}
 
+	// 确定连接状态（问题19修复）
+	status := "disconnected"
+	if atomic.LoadInt32(&p.connected) == 1 {
+		status = "connected"
+	}
+
 	// 合并指标（插件提供基础信息，管道层提供客户端统计和连接信息）
+	// 深拷贝 map 字段避免数据竞争（问题11修复）
 	m := &Metrics{
 		Name:             p.name,
 		Type:             pluginMetrics.Type,
-		Status:           pluginMetrics.Status,
+		Status:           status,
 		ServerAddr:       pluginMetrics.ServerAddr,
 		ConnectedAt:      connectedAtStr,
 		UptimeSeconds:    uptimeSeconds,
@@ -315,8 +323,8 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		SubscribePerSec:  subscribePerSec,
 		ErrorRate:        errorRate,
 		ReconnectCount:   pluginMetrics.ReconnectCount,
-		ServerMetrics:    pluginMetrics.ServerMetrics,
-		Extensions:       pluginMetrics.Extensions,
+		ServerMetrics:    maps.Clone(pluginMetrics.ServerMetrics),
+		Extensions:       maps.Clone(pluginMetrics.Extensions),
 	}
 
 	// 更新缓存

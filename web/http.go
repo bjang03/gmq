@@ -3,6 +3,8 @@ package web
 import (
 	"embed"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/bjang03/gmq/web/middleware"
 	"github.com/gin-gonic/gin"
@@ -10,12 +12,6 @@ import (
 
 //go:embed ui
 var uiFS embed.FS
-
-type Response struct {
-	Code int    `json:"code"` // 业务状态码（200=成功，非200=失败）
-	Msg  string `json:"msg"`  // 提示信息
-	Data any    `json:"data"` // 业务数据（成功时返回，失败时可为nil）
-}
 
 // ServerConfig 服务器配置
 type ServerConfig struct {
@@ -155,16 +151,8 @@ func RegisterStaticRoutes(engine *gin.Engine) {
 }
 
 // getContentType 根据文件扩展名返回 Content-Type
-func getContentType(filepath string) string {
-	ext := ""
-	if i := len(filepath) - 1; i >= 0 {
-		for j := i; j >= 0; j-- {
-			if filepath[j] == '.' {
-				ext = filepath[j:]
-				break
-			}
-		}
-	}
+func getContentType(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
 
 	switch ext {
 	case ".html":

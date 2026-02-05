@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 )
@@ -13,10 +14,51 @@ var (
 	contextContextType = reflect.TypeOf((*context.Context)(nil)).Elem()
 )
 
+// controllerCache Controller适配器缓存
+type controllerCache struct {
+	mu       sync.RWMutex
+	adapters map[interface{}]gin.HandlerFunc
+}
+
+var cache = &controllerCache{
+	adapters: make(map[interface{}]gin.HandlerFunc),
+}
+
+// getAdapter 从缓存获取适配器
+func (c *controllerCache) getAdapter(controllerFunc interface{}) (gin.HandlerFunc, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	adapter, ok := c.adapters[controllerFunc]
+	return adapter, ok
+}
+
+// setAdapter 缓存适配器
+func (c *controllerCache) setAdapter(controllerFunc interface{}, adapter gin.HandlerFunc) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.adapters[controllerFunc] = adapter
+}
+
 // ControllerAdapter 适配器，支持两种controller写法：
 // 1. func(ctx context.Context, req Req) (res interface{}, err error)
 // 2. func(c *gin.Context, req Req) (res interface{}, err error)
 func ControllerAdapter(controllerFunc interface{}) gin.HandlerFunc {
+	// 先检查缓存
+	if adapter, ok := cache.getAdapter(controllerFunc); ok {
+		return adapter
+	}
+
+	// 创建适配器
+	adapter := createAdapter(controllerFunc)
+
+	// 缓存适配器
+	cache.setAdapter(controllerFunc, adapter)
+
+	return adapter
+}
+
+// createAdapter 创建适配器
+func createAdapter(controllerFunc interface{}) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if err := recover(); err != nil {
@@ -136,7 +178,7 @@ func Success(c *gin.Context, data interface{}) {
 
 // Fail 失败响应
 func Fail(c *gin.Context, msg string) {
-	c.JSON(200, map[string]interface{}{
+	c.JSON(500, map[string]interface{}{
 		"code": 500,
 		"msg":  msg,
 		"data": nil,

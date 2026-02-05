@@ -1,3 +1,6 @@
 server:
-  address     : ":1688"
+  address: ":1688"
   name: "gmq"
+
+nats:
+  url: "nats://localhost:4222"

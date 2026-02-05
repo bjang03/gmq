@@ -41,15 +41,25 @@ func newGmqPipeline(name string, plugin Gmq) *GmqPipeline {
 	}
 }
 
+// safeCloneMap 安全地克隆 map，处理 nil 情况
+func safeCloneMap(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	return maps.Clone(m)
+}
+
 // GmqPublish 发布消息（带统一监控和重试）
 func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	// 只检查连接状态，不持有锁进行网络操作
+	if atomic.LoadInt32(&p.connected) == 0 {
+		return fmt.Errorf("not connected")
+	}
 
 	start := time.Now()
 	var err error
 
-	// 带重试的发布
+	// 带重试的发布（无锁，网络操作）
 	for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
 		if attempt > 0 {
 			// 重试前等待，使用指数退避
@@ -68,7 +78,7 @@ func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
 		}
 	}
 
-	// 记录指标
+	// 记录指标（原子操作，无需锁）
 	latency := time.Since(start).Milliseconds()
 	atomic.AddInt64(&p.metrics.totalLatency, latency)
 	atomic.AddInt64(&p.metrics.latencyCount, 1)
@@ -194,18 +204,8 @@ func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
 		return false
 	}
 
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	// 先检查连接是否有效（管道层统一校验）
-	if !p.plugin.GmqPing(ctx) {
-		return false
-	}
-
-	start := time.Now()
-	latency := time.Since(start).Milliseconds()
-	atomic.StoreInt64(&p.lastPingLatency, latency)
-	return true
+	// 检查连接是否有效
+	return p.plugin.GmqPing(ctx)
 }
 
 // GmqConnect 连接消息队列
@@ -323,8 +323,8 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		SubscribePerSec:  subscribePerSec,
 		ErrorRate:        errorRate,
 		ReconnectCount:   pluginMetrics.ReconnectCount,
-		ServerMetrics:    maps.Clone(pluginMetrics.ServerMetrics),
-		Extensions:       maps.Clone(pluginMetrics.Extensions),
+		ServerMetrics:    safeCloneMap(pluginMetrics.ServerMetrics),
+		Extensions:       safeCloneMap(pluginMetrics.Extensions),
 	}
 
 	// 更新缓存

@@ -82,18 +82,21 @@ func WSMetricsHandler(c *gin.Context) {
 		return nil
 	})
 
-	// 为每个连接创建独立的停止信号（问题7修复）
-	connStopCh := make(chan struct{})
+	// 为每个连接创建独立的停止信号（问题1修复：使用 context 控制生命周期）
+	connCtx, connCancel := context.WithCancel(context.Background())
+	defer connCancel() // 确保连接关闭时取消 context
 
 	// 监听广播停止信号，转发到连接级别的停止信号
 	go func() {
 		select {
 		case <-broadcastStopCh:
-			close(connStopCh)
+			connCancel() // 广播停止时取消连接 context
+		case <-connCtx.Done():
+			// 连接已关闭，正常退出
 		}
 	}()
 
-	// 启动心跳发送协程
+	// 启动心跳发送协程（使用 context 控制生命周期）
 	go func() {
 		ticker := time.NewTicker(pingInterval)
 		defer ticker.Stop()
@@ -104,7 +107,7 @@ func WSMetricsHandler(c *gin.Context) {
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					return
 				}
-			case <-connStopCh:
+			case <-connCtx.Done():
 				return
 			}
 		}
@@ -184,7 +187,7 @@ func metricsBroadcastLoop() {
 	}
 }
 
-// broadcastMetrics 向所有客户端广播指标
+// broadcastMetrics 向所有客户端广播指标（问题2修复：先收集失败连接，再统一删除）
 func broadcastMetrics(metrics map[string]*core.Metrics) {
 	wsClientsMux.Lock()
 	defer wsClientsMux.Unlock()
@@ -198,12 +201,18 @@ func broadcastMetrics(metrics map[string]*core.Metrics) {
 		Payload: metrics,
 	}
 
+	// 先收集需要移除的失败连接
+	var failedClients []*websocket.Conn
 	for client := range wsClients {
 		client.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err := client.WriteJSON(msg); err != nil {
-			// 写入失败，关闭连接并从map中删除
-			client.Close()
-			delete(wsClients, client)
+			failedClients = append(failedClients, client)
 		}
+	}
+
+	// 统一关闭并删除失败连接
+	for _, client := range failedClients {
+		client.Close()
+		delete(wsClients, client)
 	}
 }

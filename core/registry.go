@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -20,11 +21,20 @@ var (
 
 // GmqRegister 注册消息队列插件
 // 启动后台协程自动维护连接状态，断线自动重连
-func GmqRegister(name string, plugin Gmq) {
-	// 创建管道包装器
-	pipeline := newGmqPipeline(name, plugin)
+func GmqRegister(name string, plugin Gmq) error {
+	if name == "" {
+		return fmt.Errorf("plugin name cannot be empty")
+	}
 
 	pluginsMu.Lock()
+	// 检查是否已注册，防止重复注册导致内存泄漏
+	if _, exists := GmqPlugins[name]; exists {
+		pluginsMu.Unlock()
+		return fmt.Errorf("plugin %s already registered", name)
+	}
+
+	// 创建管道包装器
+	pipeline := newGmqPipeline(name, plugin)
 	GmqPlugins[name] = pipeline
 	pluginsMu.Unlock()
 
@@ -40,10 +50,10 @@ func GmqRegister(name string, plugin Gmq) {
 			select {
 			case <-globalShutdown:
 				// 收到关闭信号，关闭连接并退出
-				_ = p.GmqClose(context.Background())
+				_ = p.GmqClose(context.TODO())
 				return
 			default:
-				if p.GmqPing(context.Background()) {
+				if p.GmqPing(context.TODO()) {
 					// 连接正常，重置退避时间
 					reconnectDelay = baseReconnectDelay
 					time.Sleep(10 * time.Second)
@@ -51,7 +61,7 @@ func GmqRegister(name string, plugin Gmq) {
 				}
 
 				// 连接断开，尝试重连
-				if err := p.GmqConnect(context.Background()); err != nil {
+				if err := p.GmqConnect(context.TODO()); err != nil {
 					// 重连失败，增加退避时间
 					time.Sleep(reconnectDelay)
 					reconnectDelay *= 2
@@ -66,6 +76,8 @@ func GmqRegister(name string, plugin Gmq) {
 			}
 		}
 	}(name, pipeline)
+
+	return nil
 }
 
 // Shutdown 优雅关闭所有消息队列连接

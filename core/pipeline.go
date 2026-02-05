@@ -22,13 +22,21 @@ type GmqPipeline struct {
 
 	// 订阅管理 - 统一管理所有订阅对象（包括状态和具体的订阅引用）
 	subscriptions map[string]interface{} // key 为 topic:consumerName，value 为具体的订阅对象
+
+	// 指标缓存
+	cachedMetrics   *Metrics
+	metricsCacheMu  sync.RWMutex
+	metricsCacheTTL time.Duration
+	metricsCacheExp int64 // 缓存过期时间戳
 }
 
 // newGmqPipeline 创建新的管道包装器
 func newGmqPipeline(name string, plugin Gmq) *GmqPipeline {
 	return &GmqPipeline{
-		name:   name,
-		plugin: plugin,
+		name:            name,
+		plugin:          plugin,
+		subscriptions:   make(map[string]interface{}),
+		metricsCacheTTL: 5 * time.Second,
 	}
 }
 
@@ -60,7 +68,7 @@ func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
 	}
 
 	// 记录指标
-	latency := int64(time.Since(start).Milliseconds())
+	latency := time.Since(start).Milliseconds()
 	atomic.AddInt64(&p.metrics.totalLatency, latency)
 	atomic.AddInt64(&p.metrics.latencyCount, 1)
 
@@ -123,7 +131,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 
 	if err != nil {
 		// 记录指标
-		latency := int64(time.Since(start).Milliseconds())
+		latency := time.Since(start).Milliseconds()
 		atomic.AddInt64(&p.metrics.totalLatency, latency)
 		atomic.AddInt64(&p.metrics.latencyCount, 1)
 		atomic.AddInt64(&p.metrics.subscribeFailed, 1)
@@ -140,12 +148,12 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 	p.mu.Unlock()
 
 	// 记录指标
-	latency := int64(time.Since(start).Milliseconds())
+	latency := time.Since(start).Milliseconds()
 	atomic.AddInt64(&p.metrics.totalLatency, latency)
 	atomic.AddInt64(&p.metrics.latencyCount, 1)
 	atomic.AddInt64(&p.metrics.subscribeCount, 1)
 
-	return nil, nil
+	return subObj, nil
 }
 
 // extractSubscriptionInfo 从订阅消息中提取 topic 和 consumerName
@@ -194,7 +202,7 @@ func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
 	}
 
 	start := time.Now()
-	latency := int64(time.Since(start).Milliseconds())
+	latency := time.Since(start).Milliseconds()
 	atomic.StoreInt64(&p.lastPingLatency, latency)
 	return true
 }
@@ -222,8 +230,20 @@ func (p *GmqPipeline) GmqClose(ctx context.Context) error {
 	return err
 }
 
-// GetMetrics 获取统一监控指标
+// GetMetrics 获取统一监控指标（带缓存）
 func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
+	now := time.Now().UnixMilli()
+
+	// 检查缓存是否有效
+	p.metricsCacheMu.RLock()
+	if p.cachedMetrics != nil && now-p.metricsCacheExp < int64(p.metricsCacheTTL.Milliseconds()) {
+		// 返回缓存的副本
+		m := *p.cachedMetrics
+		p.metricsCacheMu.RUnlock()
+		return &m
+	}
+	p.metricsCacheMu.RUnlock()
+
 	// 获取插件自身的指标
 	pluginMetrics := p.plugin.GetMetrics(ctx)
 
@@ -268,7 +288,7 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 	}
 
 	// 合并指标（插件提供基础信息，管道层提供客户端统计和连接信息）
-	return &Metrics{
+	m := &Metrics{
 		Name:             p.name,
 		Type:             pluginMetrics.Type,
 		Status:           pluginMetrics.Status,
@@ -298,4 +318,12 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		ServerMetrics:    pluginMetrics.ServerMetrics,
 		Extensions:       pluginMetrics.Extensions,
 	}
+
+	// 更新缓存
+	p.metricsCacheMu.Lock()
+	p.cachedMetrics = m
+	p.metricsCacheExp = now
+	p.metricsCacheMu.Unlock()
+
+	return m
 }

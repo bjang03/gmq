@@ -11,7 +11,7 @@ import (
 )
 
 func init() {
-	core.GmqRegister("nats", &natsMsg{})
+	_ = core.GmqRegister("nats", &natsMsg{})
 }
 
 // NatsPubMessage NATS发布消息结构，支持延迟消息
@@ -111,7 +111,7 @@ func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m 
 	}
 
 	natsCfg := config.GetNATSConfig()
-	msgCtx, cancel := context.WithTimeout(context.Background(), time.Duration(natsCfg.MessageTimeout)*time.Second)
+	msgCtx, cancel := context.WithTimeout(context.TODO(), time.Duration(natsCfg.MessageTimeout)*time.Second)
 	defer cancel()
 
 	if err := natsMsg.HandleFunc(msgCtx, m.Data); err != nil {

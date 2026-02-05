@@ -306,7 +306,10 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 }
 
 // globalShutdown 用于优雅关闭信号
-var globalShutdown = make(chan struct{})
+var (
+	globalShutdown     = make(chan struct{})
+	globalShutdownOnce sync.Once
+)
 
 // GmqRegister 注册消息队列插件
 // 启动后台协程自动维护连接状态，断线自动重连
@@ -360,7 +363,9 @@ func GmqRegister(name string, plugin Gmq) {
 
 // Shutdown 优雅关闭所有消息队列连接
 func Shutdown(ctx context.Context) error {
-	close(globalShutdown)
+	globalShutdownOnce.Do(func() {
+		close(globalShutdown)
+	})
 
 	pluginsMu.RLock()
 	pipelines := make([]*GmqPipeline, 0, len(GmqPlugins))

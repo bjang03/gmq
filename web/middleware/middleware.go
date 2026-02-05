@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 
@@ -17,26 +18,37 @@ var (
 // controllerCache Controller适配器缓存
 type controllerCache struct {
 	mu       sync.RWMutex
-	adapters map[interface{}]gin.HandlerFunc
+	adapters map[uintptr]gin.HandlerFunc
 }
 
 var cache = &controllerCache{
-	adapters: make(map[interface{}]gin.HandlerFunc),
+	adapters: make(map[uintptr]gin.HandlerFunc),
 }
 
 // getAdapter 从缓存获取适配器
 func (c *controllerCache) getAdapter(controllerFunc interface{}) (gin.HandlerFunc, bool) {
+	key := getFunctionKey(controllerFunc)
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	adapter, ok := c.adapters[controllerFunc]
+	adapter, ok := c.adapters[key]
 	return adapter, ok
 }
 
 // setAdapter 缓存适配器
 func (c *controllerCache) setAdapter(controllerFunc interface{}, adapter gin.HandlerFunc) {
+	key := getFunctionKey(controllerFunc)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.adapters[controllerFunc] = adapter
+	c.adapters[key] = adapter
+}
+
+// getFunctionKey 获取函数的唯一key（使用函数指针地址）
+func getFunctionKey(fn interface{}) uintptr {
+	val := reflect.ValueOf(fn)
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+	return val.Pointer()
 }
 
 // ControllerAdapter 适配器，支持两种controller写法：
@@ -70,6 +82,13 @@ func createAdapter(controllerFunc interface{}) gin.HandlerFunc {
 		// 获取controller函数的反射值和类型
 		ctrlValue := reflect.ValueOf(controllerFunc)
 		ctrlType := ctrlValue.Type()
+
+		// 检查是否是函数类型
+		if ctrlType.Kind() != reflect.Func {
+			Fail(c, fmt.Sprintf("controller must be a function, got: %v", ctrlType.Kind()))
+			c.Abort()
+			return
+		}
 
 		// 检查函数签名，必须返回 (interface{}, error)
 		if ctrlType.NumOut() != 2 || !ctrlType.Out(0).Implements(reflect.TypeOf((*interface{})(nil)).Elem()) || !ctrlType.Out(1).Implements(reflect.TypeOf((*error)(nil)).Elem()) {

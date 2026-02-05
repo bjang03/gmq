@@ -44,16 +44,18 @@ func GmqRegister(name string, plugin Gmq) error {
 		const (
 			baseReconnectDelay = 5 * time.Second
 			maxReconnectDelay  = 60 * time.Second
-			connectTimeout     = 30 * time.Second // 连接超时（问题20修复）
+			connectTimeout     = 30 * time.Second // 连接超时
 		)
 		reconnectDelay := baseReconnectDelay
 
 		for {
 			select {
 			case <-globalShutdown:
-				// 问题6修复：收到关闭信号，清理订阅并关闭连接
+				// Shutdown 重复关闭问题修复：只清理订阅，不关闭连接
+				// 连接关闭由 Shutdown 函数统一处理
+				p.mu.Lock()
 				p.clearSubscriptions()
-				_ = p.GmqClose(context.Background())
+				p.mu.Unlock()
 				return
 			default:
 				// 使用带超时的 context 进行 ping 检查
@@ -83,9 +85,10 @@ func GmqRegister(name string, plugin Gmq) error {
 					continue
 				}
 
-				// 重连成功，重置退避时间，清理旧订阅
+				// 重连成功，重置退避时间，恢复所有订阅
 				log.Printf("[GMQ] %s reconnected successfully", name)
 				reconnectDelay = baseReconnectDelay
+				p.restoreSubscriptions()
 			}
 		}
 	}(name, pipeline)

@@ -2,7 +2,6 @@ package components
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -37,15 +36,12 @@ type natsMsg struct {
 	connURL string
 }
 
-// GmqPing 检测NATS连接状态（并发控制由管道层统一管理）
+// GmqPing 检测NATS连接状态
 func (c *natsMsg) GmqPing(_ context.Context) bool {
-	if c.conn == nil {
-		return false
-	}
 	return c.conn.IsConnected()
 }
 
-// GmqConnect 连接NATS服务器（并发控制由管道层统一管理，日志由管道层统一输出）
+// GmqConnect 连接NATS服务器
 func (c *natsMsg) GmqConnect(_ context.Context) error {
 	connURL := config.GetNATSURL()
 	natsCfg := config.GetNATSConfig()
@@ -73,62 +69,24 @@ func (c *natsMsg) GmqConnect(_ context.Context) error {
 	return nil
 }
 
-// GmqClose 关闭NATS连接（并发控制由管道层统一管理，日志由管道层统一输出）
+// GmqClose 关闭NATS连接
 func (c *natsMsg) GmqClose(_ context.Context) error {
-	if c.conn != nil {
-		c.conn.Close()
-		c.conn = nil
-	}
+	c.conn.Close()
+	c.conn = nil
 	return nil
 }
 
-// GmqPublish 发布NATS消息（并发控制由管道层统一管理，日志由管道层统一输出）
+// GmqPublish 发布NATS消息
 func (c *natsMsg) GmqPublish(_ context.Context, msg core.Publish) error {
-	if c.conn == nil {
-		return fmt.Errorf("nats connection not established")
-	}
-
-	natsMsg, ok := msg.(*NatsPubMessage)
-	if !ok {
-		return fmt.Errorf("invalid message type, expected *NatsPubMessage")
-	}
-
-	// 使用JSON序列化消息数据
-	var data []byte
-	var err error
-	if natsMsg.Data == nil {
-		data = []byte("null")
-	} else {
-		switch v := natsMsg.Data.(type) {
-		case []byte:
-			data = v
-		case string:
-			data = []byte(v)
-		default:
-			data, err = json.Marshal(natsMsg.Data)
-			if err != nil {
-				return fmt.Errorf("failed to marshal message data: %w", err)
-			}
-		}
-	}
-
-	if err = c.conn.Publish(natsMsg.QueueName, data); err != nil {
-		return fmt.Errorf("failed to publish message: %w", err)
-	}
-
-	return nil
+	natsMsg := msg.(*NatsPubMessage)
+	// 数据已由管道层序列化为 []byte
+	data, _ := natsMsg.Data.([]byte)
+	return c.conn.Publish(natsMsg.QueueName, data)
 }
 
-// GmqSubscribe 订阅NATS消息（并发控制由管道层统一管理，日志由管道层统一输出）
+// GmqSubscribe 订阅NATS消息
 func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error) {
-	if c.conn == nil {
-		return nil, fmt.Errorf("nats connection not established")
-	}
-
-	natsMsg, ok := msg.(*NatsSubMessage)
-	if !ok {
-		return nil, fmt.Errorf("invalid message type, expected *NatsSubMessage")
-	}
+	natsMsg := msg.(*NatsSubMessage)
 
 	var sub *nats.Subscription
 	var err error
@@ -142,73 +100,33 @@ func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error
 		})
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("failed to subscribe: %w", err)
-	}
-
-	// 检查订阅是否有效
-	if !sub.IsValid() {
-		return nil, fmt.Errorf("subscription is not valid")
-	}
-
-	return sub, nil
+	return sub, err
 }
 
-// GmqUnsubscribe 取消NATS订阅（并发控制由管道层统一管理，日志由管道层统一输出）
-func (c *natsMsg) GmqUnsubscribe(_ context.Context, topic, consumerName string, subObj interface{}) error {
-	if c.conn == nil {
-		return fmt.Errorf("nats connection not established")
-	}
-
-	// 从管道层获取订阅对象
-	sub, ok := subObj.(*nats.Subscription)
-	if !ok {
-		return fmt.Errorf("invalid subscription object type for topic: %s", topic)
-	}
-
-	if err := sub.Unsubscribe(); err != nil {
-		return fmt.Errorf("failed to unsubscribe: %w", err)
-	}
-
-	return nil
-}
-
-// handleMessage 处理消息（日志由管道层统一输出）
+// handleMessage 处理消息
 func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
 	if natsMsg.HandleFunc == nil {
 		_ = m.Ack()
 		return
 	}
 
-	// 创建独立的上下文，避免使用可能已过期的外部上下文
 	natsCfg := config.GetNATSConfig()
 	msgCtx, cancel := context.WithTimeout(context.Background(), time.Duration(natsCfg.MessageTimeout)*time.Second)
 	defer cancel()
 
 	if err := natsMsg.HandleFunc(msgCtx, m.Data); err != nil {
-		// 处理失败，如果不是AutoAck模式，不确认消息让服务器重发
 		if !natsMsg.AutoAck {
 			return
 		}
 	}
-
-	// 处理成功或AutoAck模式下，手动确认消息
 	_ = m.Ack()
 }
 
-// GetMetrics 获取基础监控指标（并发控制由管道层统一管理）
+// GetMetrics 获取基础监控指标
 func (c *natsMsg) GetMetrics(_ context.Context) *core.Metrics {
 	m := &core.Metrics{
 		Type:       "nats",
 		ServerAddr: c.connURL,
-	}
-
-	// 检查连接状态
-	if c.conn != nil && c.conn.IsConnected() {
-		m.Status = "connected"
-	} else {
-		m.Status = "disconnected"
-		return m
 	}
 
 	// 从 NATS 连接获取服务端统计信息

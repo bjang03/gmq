@@ -430,13 +430,6 @@ function renderMetrics(metrics) {
     updateOverview(metrics);
 }
 
-// 显示加载状态
-function showLoading() {
-    const container = document.getElementById('metrics-container');
-    if (container.children.length === 0) {
-        container.innerHTML = '<div class="loading">加载中...</div>';
-    }
-}
 
 // 显示错误
 function showError(error) {
@@ -463,7 +456,6 @@ async function refreshMetrics() {
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
     initOverviewCache();
-    showLoading();
     refreshMetrics();
     setInterval(refreshMetrics, 5000);
 });

@@ -11,8 +11,9 @@ type JsonParser struct {
 // 支持将结构体、map等类型转换为map[string]interface{}格式
 func (*JsonParser) GmqParseData(data any) (dt any, err error) {
 	bt, err := json.Marshal(data)
-	if bt != nil {
-		err = json.Unmarshal(bt, &dt)
+	if err != nil {
+		return nil, err
 	}
-	return
+	err = json.Unmarshal(bt, &dt)
+	return dt, err
 }

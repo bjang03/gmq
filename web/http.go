@@ -16,8 +16,8 @@ import (
 //go:embed ui
 var uiFS embed.FS
 
-// ServerConfig 服务器配置
-type ServerConfig struct {
+// WebServerConfig Web服务器配置
+type WebServerConfig struct {
 	PrintRoutes bool   // 是否打印路由信息
 	Addr        string // 服务器地址，默认为 :1688
 }

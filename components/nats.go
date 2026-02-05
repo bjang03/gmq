@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,34 @@ import (
 
 func init() {
 	core.GmqRegister("nats", &natsMsg{})
+}
+
+// newNatsMsg 创建NATS实例
+func newNatsMsg() *natsMsg {
+	return &natsMsg{
+		subscriptions: make(map[string]*nats.Subscription),
+	}
+}
+
+// maskSensitiveInfo 脱敏URL中的敏感信息（如密码）
+func maskSensitiveInfo(url string) string {
+	// 简单的脱敏逻辑：隐藏密码部分
+	if strings.Contains(url, "@") {
+		parts := strings.SplitN(url, "@", 2)
+		if len(parts) == 2 {
+			authParts := strings.SplitN(parts[0], ":", 2)
+			if len(authParts) == 2 {
+				// 隐藏密码，只显示前2个字符
+				if len(authParts[1]) > 2 {
+					authParts[1] = authParts[1][:2] + "***"
+				} else {
+					authParts[1] = "***"
+				}
+				return authParts[0] + ":" + authParts[1] + "@" + parts[1]
+			}
+		}
+	}
+	return url
 }
 
 // NatsPubMessage NATS发布消息结构，支持延迟消息
@@ -35,9 +64,11 @@ type NatsSubMessage struct {
 
 // natsMsg NATS消息队列实现
 type natsMsg struct {
-	conn    *nats.Conn
-	connURL string
-	mu      sync.RWMutex // 保护conn和connURL
+	conn          *nats.Conn
+	connURL       string
+	mu            sync.RWMutex                  // 保护conn和connURL
+	subscriptions map[string]*nats.Subscription // 订阅管理
+	subMu         sync.RWMutex                  // 保护subscriptions
 }
 
 // GmqPing 检测NATS连接状态
@@ -53,15 +84,16 @@ func (c *natsMsg) GmqPing(_ context.Context) bool {
 }
 
 // GmqConnect 连接NATS服务器
-func (c *natsMsg) GmqConnect(ctx context.Context) (err error) {
+func (c *natsMsg) GmqConnect(_ context.Context) (err error) {
 	connURL := config.GetNATSURL()
-	log.Printf("[NATS] Connecting to %s", connURL)
+	natsCfg := config.GetNATSConfig()
+	log.Printf("[NATS] Connecting to %s", maskSensitiveInfo(connURL))
 
 	// 设置连接选项
 	opts := []nats.Option{
-		nats.Timeout(10 * time.Second),
-		nats.ReconnectWait(5 * time.Second),
-		nats.MaxReconnects(-1),
+		nats.Timeout(time.Duration(natsCfg.Timeout) * time.Second),
+		nats.ReconnectWait(time.Duration(natsCfg.ReconnectWait) * time.Second),
+		nats.MaxReconnects(natsCfg.MaxReconnects),
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
 			log.Printf("[NATS] Disconnected: %v", err)
 		}),
@@ -81,17 +113,27 @@ func (c *natsMsg) GmqConnect(ctx context.Context) (err error) {
 	c.connURL = connURL
 	c.mu.Unlock()
 
-	log.Printf("[NATS] Successfully connected to %s", connURL)
+	log.Printf("[NATS] Successfully connected to %s", maskSensitiveInfo(connURL))
 	return nil
 }
 
 // GmqClose 关闭NATS连接
-func (c *natsMsg) GmqClose(ctx context.Context) (err error) {
+func (c *natsMsg) GmqClose(_ context.Context) (err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// 关闭所有订阅
+	c.subMu.Lock()
+	for key, sub := range c.subscriptions {
+		if err := sub.Unsubscribe(); err != nil {
+			log.Printf("[NATS] Failed to unsubscribe %s: %v", key, err)
+		}
+	}
+	c.subscriptions = make(map[string]*nats.Subscription)
+	c.subMu.Unlock()
+
 	if c.conn != nil {
-		log.Printf("[NATS] Closing connection to %s", c.connURL)
+		log.Printf("[NATS] Closing connection to %s", maskSensitiveInfo(c.connURL))
 		c.conn.Close()
 		c.conn = nil
 	}
@@ -99,7 +141,7 @@ func (c *natsMsg) GmqClose(ctx context.Context) (err error) {
 }
 
 // GmqPublish 发布NATS消息
-func (c *natsMsg) GmqPublish(ctx context.Context, msg core.Publish) (err error) {
+func (c *natsMsg) GmqPublish(_ context.Context, msg core.Publish) (err error) {
 	c.mu.RLock()
 	conn := c.conn
 	c.mu.RUnlock()
@@ -180,12 +222,55 @@ func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 		return fmt.Errorf("subscription is not valid")
 	}
 
+	// 保存订阅引用，用于后续取消
+	subKey := c.getSubKey(natsMsg.QueueName, natsMsg.ConsumerName)
+	c.subMu.Lock()
+	c.subscriptions[subKey] = sub
+	c.subMu.Unlock()
+
 	log.Printf("[NATS] Successfully subscribed to topic: %s", natsMsg.QueueName)
 	return nil
 }
 
-// 消息处理超时
-const messageHandleTimeout = 30 * time.Second
+// GmqUnsubscribe 取消NATS订阅
+func (c *natsMsg) GmqUnsubscribe(ctx context.Context, topic, consumerName string) error {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return fmt.Errorf("nats connection not established")
+	}
+
+	subKey := c.getSubKey(topic, consumerName)
+
+	c.subMu.Lock()
+	sub, exists := c.subscriptions[subKey]
+	if exists {
+		delete(c.subscriptions, subKey)
+	}
+	c.subMu.Unlock()
+
+	if !exists {
+		return fmt.Errorf("subscription not found for topic: %s", topic)
+	}
+
+	if err := sub.Unsubscribe(); err != nil {
+		log.Printf("[NATS] Failed to unsubscribe from topic: %s, error: %v", topic, err)
+		return fmt.Errorf("failed to unsubscribe: %w", err)
+	}
+
+	log.Printf("[NATS] Successfully unsubscribed from topic: %s", topic)
+	return nil
+}
+
+// getSubKey 生成订阅的唯一key
+func (c *natsMsg) getSubKey(topic, consumerName string) string {
+	if consumerName != "" {
+		return topic + ":" + consumerName
+	}
+	return topic
+}
 
 // handleMessage 处理消息
 func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
@@ -196,7 +281,8 @@ func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m 
 	}
 
 	// 创建独立的上下文，避免使用可能已过期的外部上下文
-	msgCtx, cancel := context.WithTimeout(context.Background(), messageHandleTimeout)
+	natsCfg := config.GetNATSConfig()
+	msgCtx, cancel := context.WithTimeout(context.Background(), time.Duration(natsCfg.MessageTimeout)*time.Second)
 	defer cancel()
 
 	if err := natsMsg.HandleFunc(msgCtx, m.Data); err != nil {
@@ -214,7 +300,7 @@ func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m 
 }
 
 // GetMetrics 获取基础监控指标
-func (c *natsMsg) GetMetrics(ctx context.Context) *core.Metrics {
+func (c *natsMsg) GetMetrics(_ context.Context) *core.Metrics {
 	c.mu.RLock()
 	conn := c.conn
 	connURL := c.connURL

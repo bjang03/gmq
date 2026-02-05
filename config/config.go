@@ -17,8 +17,9 @@ var GlobalConfig *Config
 
 // Config 应用配置
 type Config struct {
-	Server ServerConfig `yaml:"server"`
-	NATS   NATSConfig   `yaml:"nats"`
+	Server    ServerConfig    `yaml:"server"`
+	NATS      NATSConfig      `yaml:"nats"`
+	WebSocket WebSocketConfig `yaml:"websocket"`
 }
 
 // ServerConfig 服务器配置
@@ -29,7 +30,19 @@ type ServerConfig struct {
 
 // NATSConfig NATS配置
 type NATSConfig struct {
-	URL string `yaml:"url"`
+	URL            string `yaml:"url"`
+	Timeout        int    `yaml:"timeout"`        // 连接超时(秒)
+	ReconnectWait  int    `yaml:"reconnectWait"`  // 重连等待(秒)
+	MaxReconnects  int    `yaml:"maxReconnects"`  // 最大重连次数(-1为无限)
+	MessageTimeout int    `yaml:"messageTimeout"` // 消息处理超时(秒)
+}
+
+// WebSocketConfig WebSocket配置
+type WebSocketConfig struct {
+	ReadBufferSize  int `yaml:"readBufferSize"`
+	WriteBufferSize int `yaml:"writeBufferSize"`
+	PingInterval    int `yaml:"pingInterval"`
+	ReadTimeout     int `yaml:"readTimeout"`
 }
 
 // LoadConfig 加载配置文件
@@ -53,6 +66,31 @@ func LoadConfig(path string) error {
 	}
 	if cfg.NATS.URL == "" {
 		cfg.NATS.URL = "nats://localhost:4222"
+	}
+	if cfg.NATS.Timeout == 0 {
+		cfg.NATS.Timeout = 10
+	}
+	if cfg.NATS.ReconnectWait == 0 {
+		cfg.NATS.ReconnectWait = 5
+	}
+	if cfg.NATS.MaxReconnects == 0 {
+		cfg.NATS.MaxReconnects = -1
+	}
+	if cfg.NATS.MessageTimeout == 0 {
+		cfg.NATS.MessageTimeout = 30
+	}
+	// WebSocket 默认配置
+	if cfg.WebSocket.ReadBufferSize == 0 {
+		cfg.WebSocket.ReadBufferSize = 1024
+	}
+	if cfg.WebSocket.WriteBufferSize == 0 {
+		cfg.WebSocket.WriteBufferSize = 1024
+	}
+	if cfg.WebSocket.PingInterval == 0 {
+		cfg.WebSocket.PingInterval = 30
+	}
+	if cfg.WebSocket.ReadTimeout == 0 {
+		cfg.WebSocket.ReadTimeout = 60
 	}
 
 	configMu.Lock()
@@ -79,4 +117,35 @@ func GetNATSURL() string {
 		return "nats://localhost:4222"
 	}
 	return GlobalConfig.NATS.URL
+}
+
+// GetWebSocketConfig 获取WebSocket配置
+func GetWebSocketConfig() WebSocketConfig {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	if GlobalConfig == nil {
+		return WebSocketConfig{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			PingInterval:    30,
+			ReadTimeout:     60,
+		}
+	}
+	return GlobalConfig.WebSocket
+}
+
+// GetNATSConfig 获取NATS配置
+func GetNATSConfig() NATSConfig {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	if GlobalConfig == nil {
+		return NATSConfig{
+			URL:            "nats://localhost:4222",
+			Timeout:        10,
+			ReconnectWait:  5,
+			MaxReconnects:  -1,
+			MessageTimeout: 30,
+		}
+	}
+	return GlobalConfig.NATS
 }

@@ -152,11 +152,11 @@ func (c *natsMsg) GetMetrics(ctx context.Context) *core.Metrics {
 	// 从 NATS 连接获取服务端统计信息
 	if c.conn != nil && c.conn.IsConnected() {
 		stats := c.conn.Stats()
-		// NATS 提供的统计信息
+		// NATS 提供的统计信息 - 直接使用 uint64 避免溢出
 		m.MsgsIn = int64(stats.InMsgs)
 		m.MsgsOut = int64(stats.OutMsgs)
-		m.BytesIn = int64(stats.InBytes)
-		m.BytesOut = int64(stats.OutBytes)
+		m.BytesIn = stats.InBytes
+		m.BytesOut = stats.OutBytes
 		m.ReconnectCount = int64(c.conn.Reconnects)
 
 		// 服务端详细信息

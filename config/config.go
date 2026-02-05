@@ -45,6 +45,54 @@ type WebSocketConfig struct {
 	ReadTimeout     int `yaml:"readTimeout"`
 }
 
+// Validate 验证WebSocket配置
+func (c *WebSocketConfig) Validate() error {
+	if c.ReadBufferSize < 0 || c.ReadBufferSize > 65535 {
+		return fmt.Errorf("readBufferSize must be between 0 and 65535")
+	}
+	if c.WriteBufferSize < 0 || c.WriteBufferSize > 65535 {
+		return fmt.Errorf("writeBufferSize must be between 0 and 65535")
+	}
+	if c.PingInterval < 1 || c.PingInterval > 3600 {
+		return fmt.Errorf("pingInterval must be between 1 and 3600 seconds")
+	}
+	if c.ReadTimeout < 1 || c.ReadTimeout > 3600 {
+		return fmt.Errorf("readTimeout must be between 1 and 3600 seconds")
+	}
+	return nil
+}
+
+// Validate 验证NATS配置
+func (c *NATSConfig) Validate() error {
+	if c.URL == "" {
+		return fmt.Errorf("NATS URL cannot be empty")
+	}
+	if c.Timeout < 1 || c.Timeout > 300 {
+		return fmt.Errorf("timeout must be between 1 and 300 seconds")
+	}
+	if c.ReconnectWait < 1 || c.ReconnectWait > 3600 {
+		return fmt.Errorf("reconnectWait must be between 1 and 3600 seconds")
+	}
+	if c.MaxReconnects < -1 {
+		return fmt.Errorf("maxReconnects must be -1 or positive")
+	}
+	if c.MessageTimeout < 1 || c.MessageTimeout > 3600 {
+		return fmt.Errorf("messageTimeout must be between 1 and 3600 seconds")
+	}
+	return nil
+}
+
+// Validate 验证整个配置
+func (c *Config) Validate() error {
+	if err := c.NATS.Validate(); err != nil {
+		return fmt.Errorf("NATS config error: %w", err)
+	}
+	if err := c.WebSocket.Validate(); err != nil {
+		return fmt.Errorf("WebSocket config error: %w", err)
+	}
+	return nil
+}
+
 // LoadConfig 加载配置文件
 func LoadConfig(path string) error {
 	data, err := os.ReadFile(path)
@@ -91,6 +139,11 @@ func LoadConfig(path string) error {
 	}
 	if cfg.WebSocket.ReadTimeout == 0 {
 		cfg.WebSocket.ReadTimeout = 60
+	}
+
+	// 验证配置参数
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
 	}
 
 	configMu.Lock()

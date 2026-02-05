@@ -168,14 +168,10 @@ func metricsBroadcastLoop() {
 
 // broadcastMetrics 向所有客户端广播指标
 func broadcastMetrics(metrics map[string]*core.Metrics) {
-	wsClientsMux.RLock()
-	clients := make([]*websocket.Conn, 0, len(wsClients))
-	for client := range wsClients {
-		clients = append(clients, client)
-	}
-	wsClientsMux.RUnlock()
+	wsClientsMux.Lock()
+	defer wsClientsMux.Unlock()
 
-	if len(clients) == 0 {
+	if len(wsClients) == 0 {
 		return
 	}
 
@@ -184,23 +180,12 @@ func broadcastMetrics(metrics map[string]*core.Metrics) {
 		Payload: metrics,
 	}
 
-	for _, client := range clients {
-		// 检查连接是否仍然有效（避免竞态条件）
-		wsClientsMux.RLock()
-		_, exists := wsClients[client]
-		wsClientsMux.RUnlock()
-
-		if !exists {
-			continue
-		}
-
+	for client := range wsClients {
 		client.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err := client.WriteJSON(msg); err != nil {
-			// 写入失败，关闭连接
+			// 写入失败，关闭连接并从map中删除
 			client.Close()
-			wsClientsMux.Lock()
 			delete(wsClients, client)
-			wsClientsMux.Unlock()
 		}
 	}
 }

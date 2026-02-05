@@ -76,7 +76,7 @@ func Subscribe(ctx context.Context, req *dto.SubscribeReq) (res interface{}, err
 		return nil, err
 	}
 
-	err = pipeline.GmqSubscribe(ctx, &components.NatsSubMessage{
+	_, err = pipeline.GmqSubscribe(ctx, &components.NatsSubMessage{
 		SubMessage: core.SubMessage[any]{
 			QueueName: req.Topic,
 		},

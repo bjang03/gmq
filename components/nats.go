@@ -15,7 +15,6 @@ import (
 
 func init() {
 	core.GmqRegister("nats", &natsMsg{})
-	core.GmqRegister("nats2", &natsMsg{})
 }
 
 // NatsPubMessage NATS发布消息结构，支持延迟消息
@@ -190,14 +189,9 @@ const messageHandleTimeout = 30 * time.Second
 
 // handleMessage 处理消息
 func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
-	// 如果设置了AutoAck，自动确认消息
-	if natsMsg.AutoAck {
-		if err := m.Ack(); err != nil {
-			log.Printf("[NATS] Failed to auto-ack message: %v", err)
-		}
-	}
-
 	if natsMsg.HandleFunc == nil {
+		// 如果没有处理函数，直接确认消息避免阻塞
+		_ = m.Ack()
 		return
 	}
 
@@ -207,15 +201,15 @@ func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m 
 
 	if err := natsMsg.HandleFunc(msgCtx, m.Data); err != nil {
 		// 处理失败，如果不是AutoAck模式，不确认消息让服务器重发
-		log.Printf("[NATS] Message handler error: %v", err)
-		return
+		if !natsMsg.AutoAck {
+			log.Printf("[NATS] Message handler error: %v", err)
+			return
+		}
 	}
 
-	// 处理成功，如果不是AutoAck模式，手动确认消息
-	if !natsMsg.AutoAck {
-		if err := m.Ack(); err != nil {
-			log.Printf("[NATS] Failed to ack message after successful handling: %v", err)
-		}
+	// 处理成功或AutoAck模式下，手动确认消息
+	if err := m.Ack(); err != nil {
+		log.Printf("[NATS] Failed to ack message: %v", err)
 	}
 }
 

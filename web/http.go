@@ -160,35 +160,35 @@ func RegisterStaticRoutes(engine *gin.Engine) {
 
 	// 静态文件服务 - /ui/*filepath 自动映射到 ui 目录下的文件
 	engine.GET("/ui/*filepath", func(c *gin.Context) {
-		filePath := c.Param("filepath")
-		if filePath == "" || filePath == "/" {
+		filePathParam := c.Param("filepath")
+		if filePathParam == "" || filePathParam == "/" {
 			c.String(404, "Not found")
 			return
 		}
 
 		// 移除开头的 /
-		if filePath[0] == '/' {
-			filePath = filePath[1:]
+		if filePathParam[0] == '/' {
+			filePathParam = filePathParam[1:]
 		}
 
 		// 构建完整的 embed 路径
-		fullPath := "ui/" + filePath
+		fullPath := "ui/" + filePathParam
 
 		data, err := uiFS.ReadFile(fullPath)
 		if err != nil {
-			c.String(404, "Not found: %s", filePath)
+			c.String(404, "Not found: %s", filePathParam)
 			return
 		}
 
 		// 根据文件扩展名设置 Content-Type
-		contentType := getContentType(filePath)
+		contentType := getContentTypeByPath(filePathParam)
 		c.Header("Content-Type", contentType)
 		c.String(200, string(data))
 	})
 }
 
-// getContentType 根据文件扩展名返回 Content-Type
-func getContentType(path string) string {
+// getContentTypeByPath 根据文件扩展名返回 Content-Type
+func getContentTypeByPath(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 
 	switch ext {

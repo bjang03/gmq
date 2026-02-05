@@ -24,8 +24,6 @@ var (
 	wsClients    = make(map[*websocket.Conn]bool)
 	wsClientsMux sync.RWMutex
 
-	// 广播通道
-	broadcastChan = make(chan map[string]*core.Metrics, 10)
 	broadcastOnce sync.Once
 )
 

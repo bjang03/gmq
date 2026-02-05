@@ -2,6 +2,7 @@ package components
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -39,7 +40,7 @@ type natsMsg struct {
 
 // GmqPing 检测NATS连接状态
 func (c *natsMsg) GmqPing(_ context.Context) bool {
-	return c.conn.IsConnected()
+	return c.conn != nil && c.conn.IsConnected()
 }
 
 // GmqConnect 连接NATS服务器
@@ -89,10 +90,20 @@ func (c *natsMsg) GmqPublish(_ context.Context, msg core.Publish) error {
 		return fmt.Errorf("invalid message type: expected *NatsPubMessage")
 	}
 
-	// 问题8修复：检查数据类型转换
-	data, ok := natsMsg.Data.([]byte)
-	if !ok {
-		return fmt.Errorf("message data must be []byte, got %T", natsMsg.Data)
+	// 自动转换数据为 []byte
+	var data []byte
+	switch v := natsMsg.Data.(type) {
+	case []byte:
+		data = v
+	case string:
+		data = []byte(v)
+	default:
+		// 其他类型使用 JSON 序列化
+		var err error
+		data, err = json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("failed to marshal message data: %w", err)
+		}
 	}
 
 	return c.conn.Publish(natsMsg.QueueName, data)
@@ -127,21 +138,24 @@ func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error
 
 // handleMessage 处理消息
 func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
-	_ = ctx // 确保 ctx 被使用，避免 linter 警告
 	if natsMsg.HandleFunc == nil {
 		_ = m.Ack()
 		return
 	}
 
 	natsCfg := config.GetNATSConfig()
-	// 问题18修复：使用传入的 ctx 创建带超时的子 context，而不是 context.TODO()
+	// 使用传入的 ctx 创建带超时的子 context
 	msgCtx, cancel := context.WithTimeout(ctx, time.Duration(natsCfg.MessageTimeout)*time.Second)
 	defer cancel()
 
-	if err := natsMsg.HandleFunc(msgCtx, m.Data); err != nil {
+	err := natsMsg.HandleFunc(msgCtx, m.Data)
+	if err != nil {
+		// 处理失败时，根据 AutoAck 决定是否 ACK
 		if !natsMsg.AutoAck {
+			// 不自动确认，消息会重新投递
 			return
 		}
+		// AutoAck=true 且处理失败，也 ACK（避免无限重试）
 	}
 	_ = m.Ack()
 }
@@ -151,6 +165,12 @@ func (c *natsMsg) GetMetrics(_ context.Context) *core.Metrics {
 	m := &core.Metrics{
 		Type:       "nats",
 		ServerAddr: c.connURL,
+	}
+
+	// P1修复：检查连接是否为 nil
+	if c.conn == nil {
+		m.Status = "disconnected"
+		return m
 	}
 
 	// 从 NATS 连接获取服务端统计信息

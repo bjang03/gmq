@@ -19,6 +19,7 @@ var (
 
 	broadcastOnce   sync.Once
 	broadcastStopCh chan struct{} // 广播停止信号
+	broadcastStopMu sync.Mutex    // 保护 broadcastStopCh 的关闭操作
 
 	// 全局复用的 WebSocket Upgrader（问题15修复）
 	wsUpgrader     *websocket.Upgrader
@@ -165,6 +166,9 @@ func StartMetricsBroadcast() {
 
 // StopMetricsBroadcast 停止指标广播协程
 func StopMetricsBroadcast() {
+	broadcastStopMu.Lock()
+	defer broadcastStopMu.Unlock()
+
 	if broadcastStopCh != nil {
 		close(broadcastStopCh)
 		broadcastStopCh = nil

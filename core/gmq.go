@@ -217,3 +217,14 @@ func GmqRegister(name string, plugin Gmq) {
 		}
 	}(name, pipeline)
 }
+
+// GetGmq 获取已注册的消息队列管道
+func GetGmq(name string) (*GmqPipeline, bool) {
+	pipeline, ok := GmqPlugins[name]
+	return pipeline, ok
+}
+
+// GetAllGmq 获取所有已注册的消息队列管道
+func GetAllGmq() map[string]*GmqPipeline {
+	return GmqPlugins
+}

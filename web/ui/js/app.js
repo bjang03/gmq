@@ -62,26 +62,28 @@ async function fetchAllMetrics() {
 }
 
 function formatValue(value, format) {
-    if (value === undefined || value === null || value === '' || value === 0) return '-';
-    
+    if (value === undefined || value === null || value === '') return '-';
+
     switch (format) {
         case 'number': return new Intl.NumberFormat().format(value);
-        case 'ms': return value.toFixed(2) + ' ms';
-        case 'perSec': return value.toFixed(2) + ' /s';
-        case 'percent': return value.toFixed(2) + '%';
+        case 'ms': return Number(value).toFixed(2) + ' ms';
+        case 'perSec': return Number(value).toFixed(2) + ' /s';
+        case 'percent': return Number(value).toFixed(2) + '%';
         case 'bytes': {
-            if (value === 0) return '0 B';
+            const numValue = Number(value);
+            if (numValue === 0) return '0 B';
             const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(value) / Math.log(k));
-            return parseFloat((value / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+            const i = Math.min(Math.floor(Math.log(numValue) / Math.log(k)), sizes.length - 1);
+            return parseFloat((numValue / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
         case 'duration': {
-            if (!value) return '-';
-            const days = Math.floor(value / 86400);
-            const hours = Math.floor((value % 86400) / 3600);
-            const mins = Math.floor((value % 3600) / 60);
-            const secs = Math.floor(value % 60);
+            const numValue = Number(value);
+            if (!numValue) return '-';
+            const days = Math.floor(numValue / 86400);
+            const hours = Math.floor((numValue % 86400) / 3600);
+            const mins = Math.floor((numValue % 3600) / 60);
+            const secs = Math.floor(numValue % 60);
             if (days > 0) return `${days}天${hours}小时`;
             if (hours > 0) return `${hours}小时${mins}分钟`;
             if (mins > 0) return `${mins}分钟${secs}秒`;
@@ -261,19 +263,23 @@ function updateCardValues(name, metric) {
         for (const config of configs) {
             const valueEl = sectionEl.querySelector(`[data-value-key="${config.key}"]`);
             if (!valueEl) continue;
-            
+
             let value = metric[config.key];
-            if (value === undefined || value === null || value === '' || value === 0) {
+            // 对于字符串字段，只检查空值；对于数值字段，还需要检查是否为 0
+            const isNumericField = config.format !== undefined;
+            const shouldHide = value === undefined || value === null || value === '' || (isNumericField && value === 0);
+
+            if (shouldHide) {
                 valueEl.textContent = '-';
                 valueEl.parentElement.parentElement.style.display = 'none';
             } else {
-                const formatted = config.format ? formatValue(value, config.format) : formatNumber(value);
+                const formatted = config.format ? formatValue(value, config.format) : String(value);
                 if (valueEl.textContent !== formatted) {
                     valueEl.textContent = formatted;
                 }
                 valueEl.parentElement.parentElement.style.display = 'flex';
                 hasVisibleData = true;
-                
+
                 // 状态特殊样式
                 if (config.isStatus) {
                     valueEl.className = 'metric-item-value ' + (value === 'connected' ? 'text-success' : 'text-error');

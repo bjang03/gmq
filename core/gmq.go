@@ -70,8 +70,8 @@ type Metrics struct {
 	SubscribeFailed  int64                  `json:"subscribeFailed"`  // 订阅失败数
 	MsgsIn           int64                  `json:"msgsIn"`           // 服务端流入消息数
 	MsgsOut          int64                  `json:"msgsOut"`          // 服务端流出消息数
-	BytesIn          int64                  `json:"bytesIn"`          // 流入字节数
-	BytesOut         int64                  `json:"bytesOut"`         // 流出字节数
+	BytesIn          uint64                 `json:"bytesIn"`          // 流入字节数
+	BytesOut         uint64                 `json:"bytesOut"`         // 流出字节数
 	AverageLatency   float64                `json:"averageLatency"`   // 平均延迟(毫秒)
 	LastPingLatency  float64                `json:"lastPingLatency"`  // 最近一次ping延迟(毫秒)
 	MaxLatency       float64                `json:"maxLatency"`       // 最大延迟(毫秒)
@@ -90,10 +90,9 @@ var GmqPlugins = make(map[string]*GmqPipeline)
 
 // GmqPipeline 消息队列管道包装器，用于统一监控指标处理
 type GmqPipeline struct {
-	name        string
-	plugin      Gmq
-	metrics     pipelineMetrics
-	connectedAt time.Time
+	name    string
+	plugin  Gmq
+	metrics pipelineMetrics
 }
 
 // pipelineMetrics 管道监控指标
@@ -168,11 +167,7 @@ func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
 
 // GmqConnect 连接消息队列
 func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
-	err := p.plugin.GmqConnect(ctx)
-	if err == nil {
-		p.connectedAt = time.Now()
-	}
-	return err
+	return p.plugin.GmqConnect(ctx)
 }
 
 // GmqClose 关闭连接
@@ -206,15 +201,15 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		errorRate = float64(publishFailed+subscribeFailed) / float64(totalOps) * 100
 	}
 
-	// 计算吞吐量（每秒）
+	// 计算吞吐量（每秒）- 使用插件层的连接时间
 	var throughputPerSec, publishPerSec, subscribePerSec float64
-	if !p.connectedAt.IsZero() {
-		duration := time.Since(p.connectedAt).Seconds()
-		if duration > 0 {
-			throughputPerSec = float64(messageCount) / duration
-			publishPerSec = float64(publishCount) / duration
-			subscribePerSec = float64(subscribeCount) / duration
-		}
+	// 优先使用插件层的连接时间，如果没有则使用管道层的
+	uptimeSeconds := pluginMetrics.UptimeSeconds
+	if uptimeSeconds > 0 {
+		duration := float64(uptimeSeconds)
+		throughputPerSec = float64(messageCount) / duration
+		publishPerSec = float64(publishCount) / duration
+		subscribePerSec = float64(subscribeCount) / duration
 	}
 
 	// 合并指标（插件提供基础信息，管道层提供客户端统计）
@@ -224,7 +219,7 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		Status:           pluginMetrics.Status,
 		ServerAddr:       pluginMetrics.ServerAddr,
 		ConnectedAt:      pluginMetrics.ConnectedAt,
-		UptimeSeconds:    pluginMetrics.UptimeSeconds,
+		UptimeSeconds:    uptimeSeconds,
 		MessageCount:     messageCount,
 		PublishCount:     publishCount,
 		SubscribeCount:   subscribeCount,
@@ -272,10 +267,6 @@ func GmqRegister(name string, plugin Gmq) {
 				if err := p.GmqConnect(ctx); err != nil {
 					time.Sleep(10 * time.Second)
 					continue
-				}
-				// 首次连接或重连成功后设置连接时间
-				if p.connectedAt.IsZero() {
-					p.connectedAt = time.Now()
 				}
 			}
 		}

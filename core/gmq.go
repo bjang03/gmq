@@ -3,9 +3,14 @@ package core
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 	"time"
+)
+
+// 默认重试配置
+const (
+	DefaultRetryAttempts = 3
+	DefaultRetryDelay    = 500 * time.Millisecond
 )
 
 // PubMessage 发布消息基础结构
@@ -107,7 +112,6 @@ type pipelineMetrics struct {
 	totalLatency    int64
 	latencyCount    int64
 	pendingMessages int64
-	mu              sync.RWMutex
 }
 
 // newGmqPipeline 创建新的管道包装器
@@ -118,12 +122,29 @@ func newGmqPipeline(name string, plugin Gmq) *GmqPipeline {
 	}
 }
 
-// GmqPublish 发布消息（带统一监控）
+// GmqPublish 发布消息（带统一监控和重试）
 func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
 	start := time.Now()
+	var err error
 
-	// 调用实际插件的发布方法
-	err := p.plugin.GmqPublish(ctx, msg)
+	// 带重试的发布
+	for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
+		if attempt > 0 {
+			// 重试前等待，使用指数退避
+			delay := DefaultRetryDelay * time.Duration(1<<uint(attempt-1))
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				err = ctx.Err()
+				break
+			}
+		}
+
+		err = p.plugin.GmqPublish(ctx, msg)
+		if err == nil {
+			break
+		}
+	}
 
 	// 记录指标
 	latency := int64(time.Since(start).Milliseconds())
@@ -140,12 +161,29 @@ func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
 	return err
 }
 
-// GmqSubscribe 订阅消息（带统一监控）
+// GmqSubscribe 订阅消息（带统一监控和重试）
 func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) error {
 	start := time.Now()
+	var err error
 
-	// 调用实际插件的订阅方法
-	err := p.plugin.GmqSubscribe(ctx, msg)
+	// 带重试的订阅
+	for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
+		if attempt > 0 {
+			// 重试前等待，使用指数退避
+			delay := DefaultRetryDelay * time.Duration(1<<uint(attempt-1))
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				err = ctx.Err()
+				break
+			}
+		}
+
+		err = p.plugin.GmqSubscribe(ctx, msg)
+		if err == nil {
+			break
+		}
+	}
 
 	// 记录指标
 	latency := int64(time.Since(start).Milliseconds())
@@ -261,7 +299,7 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 }
 
 // GmqRegister 注册消息队列插件
-// 启动后台协程自动维护连接状态，每10秒检测一次，断线自动重连
+// 启动后台协程自动维护连接状态，断线自动重连
 func GmqRegister(name string, plugin Gmq) {
 	// 创建管道包装器
 	pipeline := newGmqPipeline(name, plugin)
@@ -269,6 +307,13 @@ func GmqRegister(name string, plugin Gmq) {
 
 	ctx := context.Background()
 	go func(name string, p *GmqPipeline) {
+		// 重连退避配置
+		const (
+			baseReconnectDelay = 5 * time.Second
+			maxReconnectDelay  = 60 * time.Second
+		)
+		reconnectDelay := baseReconnectDelay
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -276,13 +321,25 @@ func GmqRegister(name string, plugin Gmq) {
 				return
 			default:
 				if p.GmqPing(ctx) {
+					// 连接正常，重置退避时间
+					reconnectDelay = baseReconnectDelay
 					time.Sleep(10 * time.Second)
 					continue
 				}
+
+				// 连接断开，尝试重连
 				if err := p.GmqConnect(ctx); err != nil {
-					time.Sleep(10 * time.Second)
+					// 重连失败，增加退避时间
+					time.Sleep(reconnectDelay)
+					reconnectDelay *= 2
+					if reconnectDelay > maxReconnectDelay {
+						reconnectDelay = maxReconnectDelay
+					}
 					continue
 				}
+
+				// 重连成功，重置退避时间
+				reconnectDelay = baseReconnectDelay
 			}
 		}
 	}(name, pipeline)

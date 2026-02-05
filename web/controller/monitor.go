@@ -17,12 +17,12 @@ func GetMetrics(c *gin.Context, req *MonitorReq) (res interface{}, err error) {
 		return nil, nil
 	}
 
-	plugin, exists := core.GmqPlugins[req.Name]
+	pipeline, exists := core.GetGmq(req.Name)
 	if !exists {
 		return nil, nil
 	}
 
-	metrics := plugin.GetMetrics(c.Request.Context())
+	metrics := pipeline.GetMetrics(c.Request.Context())
 	return metrics, nil
 }
 
@@ -30,9 +30,8 @@ func GetMetrics(c *gin.Context, req *MonitorReq) (res interface{}, err error) {
 func GetAllMetrics(ctx context.Context, req *MonitorReq) (res interface{}, err error) {
 	result := make(map[string]*core.Metrics)
 
-	for name, plugin := range core.GmqPlugins {
-		metrics := plugin.GetMetrics(ctx)
-		metrics.Name = name
+	for name, pipeline := range core.GetAllGmq() {
+		metrics := pipeline.GetMetrics(ctx)
 		result[name] = metrics
 	}
 

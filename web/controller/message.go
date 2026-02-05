@@ -12,8 +12,8 @@ import (
 
 // Publish 发布消息
 func Publish(ctx context.Context, req *dto.PublishReq) (res interface{}, err error) {
-	plugin := core.GmqPlugins["nats"]
-	if plugin == nil {
+	pipeline, ok := core.GetGmq("nats")
+	if !ok {
 		return nil, errors.New("nats plugin not registered")
 	}
 
@@ -22,7 +22,7 @@ func Publish(ctx context.Context, req *dto.PublishReq) (res interface{}, err err
 		return nil, errors.New("topic cannot be empty")
 	}
 
-	err = plugin.GmqPublish(ctx, &components.NatsPubMessage{
+	err = pipeline.GmqPublish(ctx, &components.NatsPubMessage{
 		PubMessage: core.PubMessage{
 			QueueName: req.Topic,
 			Data:      req.Message,
@@ -36,11 +36,11 @@ func Publish(ctx context.Context, req *dto.PublishReq) (res interface{}, err err
 
 // Subscribe 订阅消息
 func Subscribe(c *gin.Context, req *dto.SubscribeReq) (res interface{}, err error) {
-	plugin := core.GmqPlugins["nats"]
-	if plugin == nil {
+	pipeline, ok := core.GetGmq("nats")
+	if !ok {
 		return nil, errors.New("nats plugin not registered")
 	}
-	err = plugin.GmqSubscribe(c.Request.Context(), &components.NatsSubMessage{
+	err = pipeline.GmqSubscribe(c.Request.Context(), &components.NatsSubMessage{
 		SubMessage: core.SubMessage[any]{
 			QueueName: req.Topic,
 		},

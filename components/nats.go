@@ -3,6 +3,7 @@ package components
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/bjang03/gmq/config"
@@ -46,16 +47,22 @@ func (c *natsMsg) GmqConnect(_ context.Context) error {
 	connURL := config.GetNATSURL()
 	natsCfg := config.GetNATSConfig()
 
-	// 设置连接选项
+	// 设置连接选项（问题4修复：添加连接事件日志）
 	opts := []nats.Option{
 		nats.Timeout(time.Duration(natsCfg.Timeout) * time.Second),
 		nats.ReconnectWait(time.Duration(natsCfg.ReconnectWait) * time.Second),
 		nats.MaxReconnects(natsCfg.MaxReconnects),
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
-			// 连接断开事件，由管道层统一处理日志
+			log.Printf("[NATS] Connection disconnected: %v", err)
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
-			// 重连成功事件，由管道层统一处理日志
+			log.Printf("[NATS] Connection reconnected to %s", nc.ConnectedUrl())
+		}),
+		nats.ConnectHandler(func(nc *nats.Conn) {
+			log.Printf("[NATS] Connection established to %s", nc.ConnectedUrl())
+		}),
+		nats.ClosedHandler(func(nc *nats.Conn) {
+			log.Printf("[NATS] Connection closed")
 		}),
 	}
 

@@ -7,22 +7,12 @@ import (
 	"time"
 )
 
-// GmqPlugins 已注册的消息队列插件集合
-var (
-	GmqPlugins = make(map[string]*GmqPipeline)
-	pluginsMu  sync.RWMutex
-)
-
 // globalShutdown 用于优雅关闭信号
 var (
+	GmqPlugins         = make(map[string]*GmqPipeline)
 	globalShutdown     = make(chan struct{})
 	globalShutdownOnce sync.Once
-)
-
-// pluginCancelFuncs 插件取消函数集合，支持单个插件的注销
-var (
-	pluginCancelFuncs = make(map[string]context.CancelFunc)
-	pluginCancelMu    sync.RWMutex
+	pluginCancelFuncs  = make(map[string]context.CancelFunc)
 )
 
 // GmqRegister 注册消息队列插件
@@ -33,21 +23,15 @@ func GmqRegister(name string, plugin Gmq) {
 		log.Printf("[GMQ] Plugin name cannot be empty\n")
 		return
 	}
-
-	pluginsMu.Lock()
 	if _, exists := GmqPlugins[name]; exists {
 		return
 	}
 
 	pipeline := newGmqPipeline(name, plugin)
 	GmqPlugins[name] = pipeline
-	pluginsMu.Unlock()
 
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())
-
-	pluginCancelMu.Lock()
 	pluginCancelFuncs[name] = mgrCancel
-	pluginCancelMu.Unlock()
 
 	go func(name string, p *GmqPipeline, mgrCtx context.Context) {
 		const (
@@ -119,12 +103,10 @@ func Shutdown(ctx context.Context) error {
 		}
 	})
 
-	pluginsMu.RLock()
 	pipelines := make([]*GmqPipeline, 0, len(GmqPlugins))
 	for _, p := range GmqPlugins {
 		pipelines = append(pipelines, p)
 	}
-	pluginsMu.RUnlock()
 
 	var lastErr error
 	for _, p := range pipelines {
@@ -146,9 +128,6 @@ func GetGmq(name string) *GmqPipeline {
 
 // GetAllGmq 获取所有已注册的消息队列管道的副本
 func GetAllGmq() map[string]*GmqPipeline {
-	pluginsMu.RLock()
-	defer pluginsMu.RUnlock()
-
 	result := make(map[string]*GmqPipeline, len(GmqPlugins))
 	for k, v := range GmqPlugins {
 		result[k] = v

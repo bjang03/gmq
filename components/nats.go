@@ -11,16 +11,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func init() {
-	core.GmqRegister("nats", &NatsMsg{
-		URL:            "nats://localhost:4222",
-		Timeout:        10,
-		ReconnectWait:  5,
-		MaxReconnects:  -1,
-		MessageTimeout: 30,
-	})
-}
-
 // NatsPubMessage NATS发布消息结构，支持延迟消息
 type NatsPubMessage struct {
 	core.PubMessage
@@ -36,8 +26,8 @@ type NatsSubMessage struct {
 	Durable bool // 是否持久化订阅（注：需要 NATS JetStream 支持）
 }
 
-// NatsMsg NATS消息队列实现
-type NatsMsg struct {
+// NatsConn NATS消息队列实现
+type NatsConn struct {
 	conn           *nats.Conn // NATS 连接对象
 	connURL        string     // 连接地址
 	URL            string     // NATS连接地址
@@ -48,12 +38,12 @@ type NatsMsg struct {
 }
 
 // GmqPing 检测NATS连接状态
-func (c *NatsMsg) GmqPing(_ context.Context) bool {
+func (c *NatsConn) GmqPing(_ context.Context) bool {
 	return c.conn != nil && c.conn.IsConnected()
 }
 
 // GmqConnect 连接NATS服务器
-func (c *NatsMsg) GmqConnect(_ context.Context) error {
+func (c *NatsConn) GmqConnect(_ context.Context) error {
 	// 设置连接选项
 	opts := []nats.Option{
 		nats.Timeout(time.Duration(c.Timeout) * time.Second),
@@ -84,7 +74,7 @@ func (c *NatsMsg) GmqConnect(_ context.Context) error {
 }
 
 // GmqClose 关闭NATS连接
-func (c *NatsMsg) GmqClose(_ context.Context) error {
+func (c *NatsConn) GmqClose(_ context.Context) error {
 	if c.conn == nil {
 		return nil
 	}
@@ -93,7 +83,7 @@ func (c *NatsMsg) GmqClose(_ context.Context) error {
 }
 
 // GmqPublish 发布NATS消息
-func (c *NatsMsg) GmqPublish(_ context.Context, msg core.Publish) error {
+func (c *NatsConn) GmqPublish(_ context.Context, msg core.Publish) error {
 	natsMsg, ok := msg.(*NatsPubMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type: expected *NatsPubMessage")
@@ -119,7 +109,7 @@ func (c *NatsMsg) GmqPublish(_ context.Context, msg core.Publish) error {
 }
 
 // GmqSubscribe 订阅NATS消息
-func (c *NatsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error) {
+func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (interface{}, error) {
 	// 检查连接状态
 	if c.conn == nil || !c.conn.IsConnected() {
 		return nil, fmt.Errorf("nats not connected")
@@ -147,7 +137,7 @@ func (c *NatsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error
 }
 
 // handleMessage 处理消息
-func (c *NatsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
+func (c *NatsConn) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
 	if natsMsg.HandleFunc == nil {
 		if err := m.Ack(); err != nil {
 			log.Printf("[NATS] Failed to ack message (no handler): %v", err)
@@ -174,7 +164,7 @@ func (c *NatsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m 
 }
 
 // GetMetrics 获取基础监控指标
-func (c *NatsMsg) GetMetrics(_ context.Context) *core.Metrics {
+func (c *NatsConn) GetMetrics(_ context.Context) *core.Metrics {
 	m := &core.Metrics{
 		Type:       "nats",
 		ServerAddr: c.connURL,

@@ -43,10 +43,10 @@ type Publish interface {
 
 // Gmq 消息队列统一接口定义
 type Gmq interface {
-	GmqConnect(ctx context.Context) error                           // 连接消息队列
-	GmqPublish(ctx context.Context, msg Publish) error              // 发布消息
-	GmqSubscribe(ctx context.Context, msg any) (interface{}, error) // 订阅消息，返回订阅对象
-	GmqPing(ctx context.Context) bool                               // 检测连接状态
-	GmqClose(ctx context.Context) error                             // 关闭连接
-	GetMetrics(ctx context.Context) *Metrics                        // 获取监控指标
+	GmqConnect(ctx context.Context) error                                      // 连接消息队列
+	GmqPublish(ctx context.Context, msg Publish) error                         // 发布消息
+	GmqSubscribe(ctx context.Context, msg any) (result interface{}, err error) // 订阅消息，返回订阅对象
+	GmqPing(ctx context.Context) bool                                          // 检测连接状态
+	GmqClose(ctx context.Context) error                                        // 关闭连接
+	GetMetrics(ctx context.Context) *Metrics                                   // 获取监控指标
 }

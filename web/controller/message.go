@@ -12,7 +12,7 @@ import (
 // Publish 发布消息
 func Publish(ctx context.Context, req *dto.PublishReq) (res interface{}, err error) {
 	pipeline := core.GetGmq(req.ServerName)
-	if pipeline != nil {
+	if pipeline == nil {
 		return nil, fmt.Errorf("[%s] pipeline not found", req.ServerName)
 	}
 	err = pipeline.GmqPublish(ctx, &components.NatsPubMessage{
@@ -27,7 +27,7 @@ func Publish(ctx context.Context, req *dto.PublishReq) (res interface{}, err err
 // Subscribe 订阅消息
 func Subscribe(ctx context.Context, req *dto.SubscribeReq) (res interface{}, err error) {
 	pipeline := core.GetGmq(req.ServerName)
-	if pipeline != nil {
+	if pipeline == nil {
 		return nil, fmt.Errorf("[%s] pipeline not found", req.ServerName)
 	}
 

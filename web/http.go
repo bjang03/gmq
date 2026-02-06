@@ -58,8 +58,8 @@ func init() {
 	controller.StartMetricsBroadcast()
 
 	// 注册业务路由
-	HttpServer.Post("/publish", controller.Publish)
-	HttpServer.Get("/subscribe", controller.Subscribe)
+	HttpServer.Post("/pub", controller.Publish)
+	HttpServer.Get("/sub", controller.Subscribe)
 
 	// 注册静态文件路由
 	RegisterStaticRoutes(HttpServer.GetEngine())

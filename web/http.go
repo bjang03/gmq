@@ -134,7 +134,7 @@ func (s *httpServer) Shutdown(ctx context.Context) error {
 
 // ShutdownWithTimeout 使用超时时间优雅关闭HTTP服务器
 func (s *httpServer) ShutdownWithTimeout(timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.TODO(), timeout)
 	defer cancel()
 	return s.Shutdown(ctx)
 }

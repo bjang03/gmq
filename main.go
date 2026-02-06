@@ -62,7 +62,7 @@ func main() {
 	log.Println("Shutting down server...")
 
 	// 优雅关闭上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 	defer cancel()
 
 	// 关闭HTTP服务器（先停止接收新请求）

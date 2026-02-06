@@ -20,6 +20,12 @@ var (
 	globalShutdownOnce sync.Once
 )
 
+// 问题18修复：添加插件取消通道，支持单个插件的注销
+var (
+	pluginCancelFuncs = make(map[string]context.CancelFunc)
+	pluginCancelMu    sync.RWMutex
+)
+
 // GmqRegister 注册消息队列插件
 // 启动后台协程自动维护连接状态，断线自动重连
 func GmqRegister(name string, plugin Gmq) error {
@@ -39,7 +45,15 @@ func GmqRegister(name string, plugin Gmq) error {
 	GmqPlugins[name] = pipeline
 	pluginsMu.Unlock()
 
-	go func(name string, p *GmqPipeline) {
+	// 问题18修复：创建独立的取消 context，支持 Unregister
+	mgrCtx, mgrCancel := context.WithCancel(context.Background())
+
+	// 保存取消函数，用于 Unregister 时关闭 goroutine
+	pluginCancelMu.Lock()
+	pluginCancelFuncs[name] = mgrCancel
+	pluginCancelMu.Unlock()
+
+	go func(name string, p *GmqPipeline, mgrCtx context.Context) {
 		// 重连退避配置
 		const (
 			baseReconnectDelay = 5 * time.Second
@@ -57,27 +71,41 @@ func GmqRegister(name string, plugin Gmq) error {
 				p.clearSubscriptions()
 				p.mu.Unlock()
 				return
+			case <-mgrCtx.Done():
+				// 问题18修复：Unregister 时清理订阅并退出
+				p.mu.Lock()
+				p.clearSubscriptions()
+				p.mu.Unlock()
+				return
 			default:
 				// 使用带超时的 context 进行 ping 检查
-				pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				pingCtx, pingCancel := context.WithTimeout(mgrCtx, 5*time.Second)
 				isConnected := p.GmqPing(pingCtx)
 				pingCancel()
 
 				if isConnected {
 					// 连接正常，重置退避时间
 					reconnectDelay = baseReconnectDelay
-					time.Sleep(10 * time.Second)
+					select {
+					case <-time.After(10 * time.Second):
+					case <-mgrCtx.Done():
+						return
+					}
 					continue
 				}
 
 				// 连接断开，尝试重连（使用带超时的 context）
-				connCtx, connCancel := context.WithTimeout(context.Background(), connectTimeout)
+				connCtx, connCancel := context.WithTimeout(mgrCtx, connectTimeout)
 				err := p.GmqConnect(connCtx)
 				connCancel()
 
 				if err != nil {
 					// 重连失败，增加退避时间
-					time.Sleep(reconnectDelay)
+					select {
+					case <-time.After(reconnectDelay):
+					case <-mgrCtx.Done():
+						return
+					}
 					reconnectDelay *= 2
 					if reconnectDelay > maxReconnectDelay {
 						reconnectDelay = maxReconnectDelay
@@ -91,7 +119,7 @@ func GmqRegister(name string, plugin Gmq) error {
 				p.restoreSubscriptions()
 			}
 		}
-	}(name, pipeline)
+	}(name, pipeline, mgrCtx)
 
 	return nil
 }
@@ -121,6 +149,44 @@ func Shutdown(ctx context.Context) error {
 		}
 	}
 	return lastErr
+}
+
+// GmqUnregister 注销消息队列插件（问题18修复）
+// 停止后台 goroutine 并清理资源
+func GmqUnregister(name string) error {
+	if name == "" {
+		return fmt.Errorf("plugin name cannot be empty")
+	}
+
+	// 取消后台 goroutine
+	pluginCancelMu.Lock()
+	cancelFunc, exists := pluginCancelFuncs[name]
+	if exists {
+		cancelFunc()
+		delete(pluginCancelFuncs, name)
+	}
+	pluginCancelMu.Unlock()
+
+	if !exists {
+		return fmt.Errorf("plugin %s not found", name)
+	}
+
+	// 关闭连接
+	pluginsMu.Lock()
+	pipeline, exists := GmqPlugins[name]
+	if exists {
+		delete(GmqPlugins, name)
+	}
+	pluginsMu.Unlock()
+
+	if pipeline != nil {
+		// 使用 background context 关闭
+		if err := pipeline.GmqClose(context.Background()); err != nil {
+			return fmt.Errorf("failed to close plugin %s: %w", name, err)
+		}
+	}
+
+	return nil
 }
 
 // GetGmq 获取已注册的消息队列管道

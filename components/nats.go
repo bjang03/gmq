@@ -79,7 +79,7 @@ func (c *natsMsg) GmqConnect(_ context.Context) error {
 
 // GmqClose 关闭NATS连接
 func (c *natsMsg) GmqClose(_ context.Context) error {
-	if c.Conn != nil {
+	if c.Conn == nil {
 		return nil
 	}
 	c.Conn.Close()

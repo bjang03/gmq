@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,117 +13,158 @@ import (
 	"github.com/bjang03/gmq/components"
 	"github.com/bjang03/gmq/config"
 	"github.com/bjang03/gmq/core"
+	"github.com/bjang03/gmq/web/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
 
 var (
-	mqClients      = make(map[*websocket.Conn]*mqClientInfo)
-	mqClientsMux   sync.RWMutex
-	mqUpgrader     *websocket.Upgrader
-	mqUpgraderOnce sync.Once
+	// HTTP 订阅者管理 (queueName -> key -> subscription)
+	httpSubscribers = make(map[string]map[string]interface{})
+	httpSubsMux     sync.RWMutex
+
+	subscribeUpgrader     *websocket.Upgrader
+	subscribeUpgraderOnce sync.Once
 )
 
-// PublishMessage 发布消息结构
-type PublishMessage struct {
-	Data string `json:"data"` // 消息内容
+// Publish 发布消息
+func Publish(ctx context.Context, req *dto.PublishReq) (res interface{}, err error) {
+	pipeline := core.GetGmq(req.MqName)
+	if pipeline == nil {
+		return nil, fmt.Errorf("[%s] pipeline not found", req.MqName)
+	}
+
+	err = pipeline.GmqPublish(ctx, &components.NatsPubMessage{
+		PubMessage: core.PubMessage{
+			QueueName: req.QueueName,
+			Data:      req.Message,
+		},
+	})
+	return
 }
 
-// mqClientInfo 客户端连接信息
-type mqClientInfo struct {
-	serverName   string
-	queueName    string
-	consumerName string
-	subscribed   bool
-	subObj       interface{}
+// Subscribe 订阅消息（HTTP接口）
+// 创建 MQ 订阅，收到消息后通过 WebHook 回调通知
+func Subscribe(ctx context.Context, req *dto.SubscribeReq) (res interface{}, err error) {
+	pipeline := core.GetGmq(req.MqName)
+	if pipeline == nil {
+		return nil, fmt.Errorf("[%s] pipeline not found", req.MqName)
+	}
+
+	key := req.ServerName + ":" + req.WebHook
+
+	// 创建 MQ 订阅
+	subMsg := &components.NatsSubMessage{
+		SubMessage: core.SubMessage[any]{
+			QueueName:    req.QueueName,
+			ConsumerName: fmt.Sprintf("http-sub-%s-%d", req.QueueName, time.Now().UnixNano()),
+			HandleFunc: func(ctx context.Context, message any) error {
+				callbackURL := req.ServerName + req.WebHook
+				return handleHttpCallback(ctx, callbackURL, message)
+			},
+		},
+	}
+
+	subObj, err := pipeline.GmqSubscribe(ctx, subMsg)
+	if err != nil {
+		return nil, err
+	}
+
+	// 保存订阅
+	httpSubsMux.Lock()
+	if httpSubscribers[req.QueueName] == nil {
+		httpSubscribers[req.QueueName] = make(map[string]interface{})
+	}
+	httpSubscribers[req.QueueName][key] = subObj
+	httpSubsMux.Unlock()
+
+	log.Printf("[HTTP-Subscribe] Success - MqName: %s, Queue: %s, WebHook: %s",
+		req.MqName, req.QueueName, req.WebHook)
+
+	return map[string]interface{}{
+		"status":  "subscribed",
+		"mqName":  req.MqName,
+		"queue":   req.QueueName,
+		"webHook": req.WebHook,
+	}, nil
 }
 
-// WSConnectHandler WebSocket MQ连接处理器
-// 连接时通过 URL 参数指定要订阅的队列: ?server=nats&queue=test.queue
-// 客户端发送的所有消息都作为发布消息
-// 服务端会推送订阅队列收到的消息
-func WSConnectHandler(c *gin.Context) {
-	// 获取连接参数
-	serverName := c.Query("serverName")
-	queueName := c.Query("queueName")
-
-	if serverName == "" || queueName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "server and queue parameters are required"})
+// Unsubscribe 取消订阅（HTTP接口）
+func Unsubscribe(c *gin.Context) {
+	var req dto.SubscribeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 升级为 WebSocket 连接
-	upgrader := initMQUpgrader()
+	httpSubsMux.Lock()
+	defer httpSubsMux.Unlock()
+
+	key := req.ServerName + ":" + req.WebHook
+
+	if queueSubs, ok := httpSubscribers[req.QueueName]; ok {
+		if subObj, exists := queueSubs[key]; exists {
+			// 取消 MQ 订阅
+			if unsubber, ok := subObj.(interface{ Unsubscribe() error }); ok {
+				_ = unsubber.Unsubscribe()
+			}
+
+			delete(queueSubs, key)
+
+			log.Printf("[HTTP-Unsubscribe] Success - Server: %s, Queue: %s, WebHook: %s",
+				req.ServerName, req.QueueName, req.WebHook)
+
+			c.JSON(http.StatusOK, gin.H{
+				"status": "unsubscribed",
+				"server": req.ServerName,
+				"queue":  req.QueueName,
+			})
+			return
+		}
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"error": "subscription not found"})
+}
+
+// WSSubscribeHandler WebSocket订阅处理器
+// 仅用于订阅接收消息，不用于发布
+func WSSubscribeHandler(c *gin.Context) {
+	mqName := c.Query("mqName")
+	queueName := c.Query("queueName")
+
+	if mqName == "" || queueName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mqName and queueName are required"})
+		return
+	}
+
+	upgrader := initSubscribeUpgrader()
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("[MQ] WebSocket upgrade failed: %v", err)
+		log.Printf("[WS-Subscribe] WebSocket upgrade failed: %v", err)
 		return
 	}
 
 	wsCfg := config.GetWebSocketConfig()
 	readTimeout := time.Duration(wsCfg.ReadTimeout) * time.Second
 
-	// 创建连接上下文
 	connCtx, connCancel := context.WithCancel(context.Background())
 	defer connCancel()
 
-	// 创建客户端信息
-	clientInfo := &mqClientInfo{
-		serverName:   serverName,
-		queueName:    queueName,
-		consumerName: fmt.Sprintf("ws-client-%d", time.Now().UnixNano()),
-	}
-
-	// 注册客户端
-	mqClientsMux.Lock()
-	mqClients[conn] = clientInfo
-	mqClientsMux.Unlock()
-
-	// 发送连接成功消息
-	conn.WriteJSON(map[string]interface{}{
-		"type":   "connected",
-		"server": serverName,
-		"queue":  queueName,
-	})
-
-	log.Printf("[MQ] Client connected - Server: %s, Queue: %s, Consumer: %s", serverName, queueName, clientInfo.consumerName)
-
-	// 创建消息通道（用于接收订阅的消息）
 	msgChan := make(chan []byte, 100)
 	cancelSub := make(chan struct{})
 
-	// 订阅队列
-	if err := subscribeQueue(conn, clientInfo, msgChan, connCtx); err != nil {
-		log.Printf("[MQ] Failed to subscribe: %v", err)
-		conn.WriteJSON(map[string]interface{}{
-			"type":  "error",
-			"error": err.Error(),
-		})
-		cleanupClient(conn, clientInfo, connCancel)
-		return
-	}
-
-	// 启动消息转发协程
-	go forwardMessages(conn, msgChan, cancelSub, connCtx, queueName)
-
-	// 处理客户端发送的消息（都是发布消息）
-	handleClientPublish(conn, clientInfo, connCtx, readTimeout)
-
-	// 清理连接
-	cleanupClient(conn, clientInfo, connCancel)
-}
-
-// subscribeQueue 订阅队列
-func subscribeQueue(conn *websocket.Conn, clientInfo *mqClientInfo, msgChan chan []byte, connCtx context.Context) error {
-	pipeline := core.GetGmq(clientInfo.serverName)
+	// 创建 MQ 订阅
+	pipeline := core.GetGmq(mqName)
 	if pipeline == nil {
-		return fmt.Errorf("[%s] pipeline not found", clientInfo.serverName)
+		conn.WriteJSON(map[string]interface{}{"type": "error", "error": fmt.Sprintf("[%s] pipeline not found", mqName)})
+		conn.Close()
+		return
 	}
 
 	subMsg := &components.NatsSubMessage{
 		SubMessage: core.SubMessage[any]{
-			QueueName:    clientInfo.queueName,
-			ConsumerName: clientInfo.consumerName,
+			QueueName:    queueName,
+			ConsumerName: fmt.Sprintf("ws-sub-%s-%d", queueName, time.Now().UnixNano()),
 			HandleFunc: func(ctx context.Context, message any) error {
 				var data []byte
 				switch v := message.(type) {
@@ -134,12 +176,13 @@ func subscribeQueue(conn *websocket.Conn, clientInfo *mqClientInfo, msgChan chan
 					var err error
 					data, err = json.Marshal(v)
 					if err != nil {
+						log.Printf("[WS-Subscribe] Failed to marshal message: %v", err)
 						return err
 					}
 				}
-
 				select {
 				case msgChan <- data:
+				case <-cancelSub:
 				case <-connCtx.Done():
 				}
 				return nil
@@ -149,124 +192,104 @@ func subscribeQueue(conn *websocket.Conn, clientInfo *mqClientInfo, msgChan chan
 
 	subObj, err := pipeline.GmqSubscribe(connCtx, subMsg)
 	if err != nil {
-		return err
+		log.Printf("[WS-Subscribe] Failed to subscribe: %v", err)
+		conn.WriteJSON(map[string]interface{}{"type": "error", "error": err.Error()})
+		conn.Close()
+		return
 	}
 
-	mqClientsMux.Lock()
-	clientInfo.subscribed = true
-	clientInfo.subObj = subObj
-	mqClientsMux.Unlock()
+	if err := conn.WriteJSON(map[string]interface{}{
+		"type":   "connected",
+		"mqName": mqName,
+		"queue":  queueName,
+	}); err != nil {
+		log.Printf("[WS-Subscribe] Failed to write connected message: %v", err)
+		conn.Close()
+		return
+	}
 
-	return nil
-}
+	log.Printf("[WS-Subscribe] Success - MqName: %s, Queue: %s", mqName, queueName)
 
-// handleClientPublish 处理客户端发布的消息
-func handleClientPublish(conn *websocket.Conn, clientInfo *mqClientInfo, connCtx context.Context, readTimeout time.Duration) {
+	go forwardWSMessages(conn, msgChan, cancelSub, connCtx, queueName)
+
 	for {
-		select {
-		case <-connCtx.Done():
-			return
-		default:
-		}
-
 		conn.SetReadDeadline(time.Now().Add(readTimeout))
-		messageType, data, err := conn.ReadMessage()
+		messageType, _, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("[MQ] Read message error: %v", err)
-			return
+			log.Printf("[WS-Subscribe] Read error: %v", err)
+			break
 		}
-
-		// 忽略 Ping/Pong 消息
-		if messageType == websocket.PingMessage || messageType == websocket.PongMessage {
-			continue
-		}
-
-		// 解析客户端消息
-		var msg PublishMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			log.Printf("[MQ] Failed to unmarshal message: %v", err)
-			conn.WriteJSON(map[string]interface{}{
-				"type":  "error",
-				"error": "Invalid message format",
-			})
-			continue
-		}
-
-		// 发布消息到 MQ
-		if err := publishToMQ(clientInfo, msg.Data, connCtx); err != nil {
-			log.Printf("[MQ] Failed to publish message: %v", err)
-			conn.WriteJSON(map[string]interface{}{
-				"type":  "error",
-				"error": err.Error(),
-			})
-			continue
+		if messageType == websocket.PingMessage {
+			if err := conn.WriteMessage(websocket.PongMessage, nil); err != nil {
+				log.Printf("[WS-Subscribe] Failed to write pong: %v", err)
+				break
+			}
 		}
 	}
-}
 
-// publishToMQ 发布消息到 MQ
-func publishToMQ(clientInfo *mqClientInfo, data string, connCtx context.Context) error {
-	pipeline := core.GetGmq(clientInfo.serverName)
-	if pipeline == nil {
-		return fmt.Errorf("[%s] pipeline not found", clientInfo.serverName)
+	close(cancelSub)
+	if unsubber, ok := subObj.(interface{ Unsubscribe() error }); ok {
+		_ = unsubber.Unsubscribe()
 	}
-
-	return pipeline.GmqPublish(connCtx, &components.NatsPubMessage{
-		PubMessage: core.PubMessage{
-			QueueName: clientInfo.queueName,
-			Data:      data,
-		},
-	})
+	conn.Close()
 }
 
-// forwardMessages 转发订阅的消息到客户端
-func forwardMessages(conn *websocket.Conn, msgChan chan []byte, cancelSub <-chan struct{}, connCtx context.Context, queueName string) {
+// forwardWSMessages 转发消息到 WebSocket 客户端
+func forwardWSMessages(conn *websocket.Conn, msgChan chan []byte, cancelSub chan struct{}, connCtx context.Context, queueName string) {
 	for {
 		select {
 		case msg := <-msgChan:
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			err := conn.WriteMessage(websocket.TextMessage, msg)
-			if err != nil {
-				log.Printf("[MQ] Failed to forward message: %v", err)
+			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				log.Printf("[WS-Subscribe] Failed to write message: %v", err)
 				return
 			}
 		case <-cancelSub:
-			log.Printf("[MQ] Message forwarder stopped")
 			return
 		case <-connCtx.Done():
-			log.Printf("[MQ] Message forwarder stopped due to connection close")
 			return
 		}
 	}
 }
 
-// cleanupClient 清理客户端连接
-func cleanupClient(conn *websocket.Conn, clientInfo *mqClientInfo, connCancel context.CancelFunc) {
-	log.Printf("[MQ] Cleaning up client %s", clientInfo.consumerName)
+var httpClient = &http.Client{}
 
-	// 取消订阅
-	if clientInfo.subscribed && clientInfo.subObj != nil {
-		if unsubber, ok := clientInfo.subObj.(interface{ Unsubscribe() error }); ok {
-			_ = unsubber.Unsubscribe()
+// handleHttpCallback 处理 HTTP 订阅回调
+func handleHttpCallback(ctx context.Context, callbackURL string, message any) (err error) {
+	var payload []byte
+	switch v := message.(type) {
+	case []byte:
+		payload = v
+	case string:
+		payload = []byte(v)
+	default:
+		payload, err = json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("[HTTP-Callback] Failed to marshal message: %v", err)
 		}
 	}
-
-	// 关闭连接
-	conn.Close()
-
-	// 从客户端列表中移除
-	mqClientsMux.Lock()
-	delete(mqClients, conn)
-	mqClientsMux.Unlock()
-
-	log.Printf("[MQ] Client %s disconnected", clientInfo.consumerName)
+	req, err := http.NewRequestWithContext(ctx, "POST", callbackURL, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("[HTTP-Callback] Failed to create request: %v", err)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("[HTTP-Callback] Failed to send callback to %s: %v", callbackURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		log.Printf("[HTTP-Callback] Callback failed with status: %d", resp.StatusCode)
+	} else {
+		log.Printf("[HTTP-Callback] Callback sent successfully to %s", callbackURL)
+	}
+	return
 }
 
-// initMQUpgrader 初始化 WebSocket upgrader
-func initMQUpgrader() *websocket.Upgrader {
-	mqUpgraderOnce.Do(func() {
+// initSubscribeUpgrader 初始化 WebSocket 订阅 upgrader
+func initSubscribeUpgrader() *websocket.Upgrader {
+	subscribeUpgraderOnce.Do(func() {
 		wsCfg := config.GetWebSocketConfig()
-		mqUpgrader = &websocket.Upgrader{
+		subscribeUpgrader = &websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true
 			},
@@ -274,5 +297,5 @@ func initMQUpgrader() *websocket.Upgrader {
 			WriteBufferSize: wsCfg.WriteBufferSize,
 		}
 	})
-	return mqUpgrader
+	return subscribeUpgrader
 }

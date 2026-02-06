@@ -142,7 +142,9 @@ func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error
 // handleMessage 处理消息
 func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
 	if natsMsg.HandleFunc == nil {
-		_ = m.Ack()
+		if err := m.Ack(); err != nil {
+			log.Printf("[NATS] Failed to ack message (no handler): %v", err)
+		}
 		return
 	}
 
@@ -160,7 +162,9 @@ func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m 
 		}
 		// AutoAck=true 且处理失败，也 ACK（避免无限重试）
 	}
-	_ = m.Ack()
+	if err := m.Ack(); err != nil {
+		log.Printf("[NATS] Failed to ack message: %v", err)
+	}
 }
 
 // GetMetrics 获取基础监控指标

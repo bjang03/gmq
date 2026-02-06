@@ -41,10 +41,16 @@ type Publish interface {
 	GetGmqPublishMsgType()
 }
 
+// PublishDelay 发布延迟消息接口
+type PublishDelay interface {
+	GetGmqPublishDelayMsgType()
+}
+
 // Gmq 消息队列统一接口定义
 type Gmq interface {
-	GmqConnect(ctx context.Context) error                                      // 连接消息队列
-	GmqPublish(ctx context.Context, msg Publish) error                         // 发布消息
+	GmqConnect(ctx context.Context) error              // 连接消息队列
+	GmqPublish(ctx context.Context, msg Publish) error // 发布消息
+	GmqPublishDelay(ctx context.Context, msg PublishDelay) error
 	GmqSubscribe(ctx context.Context, msg any) (result interface{}, err error) // 订阅消息，返回订阅对象
 	GmqPing(ctx context.Context) bool                                          // 检测连接状态
 	GmqClose(ctx context.Context) error                                        // 关闭连接

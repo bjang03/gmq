@@ -291,7 +291,7 @@ func (p *GmqPipeline) restoreSubscriptions() {
 		if subObj != nil {
 			p.subscriptions[subKey] = subObj
 		} else {
-			p.subscriptions[subKey] = true
+			p.subscriptions[subKey] = nil
 		}
 
 		// 记录指标

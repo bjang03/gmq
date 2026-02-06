@@ -25,7 +25,6 @@ var (
 type subscribeClientInfo struct {
 	serverName string
 	queueName  string
-	subObj     interface{}
 }
 
 // Publish 发布消息
@@ -65,10 +64,6 @@ func WSSubscribeHandler(c *gin.Context) {
 	wsCfg := config.GetWebSocketConfig()
 	pingInterval := time.Duration(wsCfg.PingInterval) * time.Second
 
-	// 创建连接上下文
-	connCtx, connCancel := context.WithCancel(c.Request.Context())
-	defer connCancel()
-
 	// 创建消费者名称
 	consumerName := fmt.Sprintf("ws-client-%d", time.Now().UnixNano())
 
@@ -80,25 +75,12 @@ func WSSubscribeHandler(c *gin.Context) {
 		return
 	}
 
-	// 创建订阅通道和取消通道
-	cancelSub := make(chan struct{})
-
 	// 注册客户端
 	clientInfo := &subscribeClientInfo{
 		serverName: serverName,
 		queueName:  queueName,
 	}
 	subscribeClients[conn] = clientInfo
-
-	// 取消订阅函数
-	unsubscribe := func() {
-		close(cancelSub)
-		if clientInfo.subObj != nil {
-			if unsubber, ok := clientInfo.subObj.(interface{ Unsubscribe() error }); ok {
-				_ = unsubber.Unsubscribe()
-			}
-		}
-	}
 
 	// 启动订阅协程
 	go func() {
@@ -123,19 +105,7 @@ func WSSubscribeHandler(c *gin.Context) {
 			},
 		}
 
-		subObj, err := pipeline.GmqSubscribe(connCtx, subMsg)
-		if err != nil {
-			log.Printf("[Subscribe] failed to subscribe: %v", err)
-			conn.WriteJSON(map[string]string{"error": err.Error()})
-			return
-		}
-
-		clientInfo.subObj = subObj
-		log.Printf("[Subscribe] Subscription established successfully, waiting for messages...")
-
-		// 保持订阅直到取消
-		<-cancelSub
-		log.Printf("[Subscribe] Subscription cancelled")
+		pipeline.GmqSubscribe(c.Request.Context(), subMsg)
 	}()
 
 	// 启动心跳协程
@@ -147,20 +117,16 @@ func WSSubscribeHandler(c *gin.Context) {
 			select {
 			case <-ticker.C:
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					connCancel()
 					return
 				}
-			case <-connCtx.Done():
+			case <-c.Request.Context().Done():
 				return
 			}
 		}
 	}()
 
 	// 等待连接关闭
-	<-connCtx.Done()
-
-	// 清理
-	unsubscribe()
+	<-c.Request.Context().Done()
 	conn.Close()
 	delete(subscribeClients, conn)
 

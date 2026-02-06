@@ -4,7 +4,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"sync"
 
 	"github.com/goccy/go-yaml"
 )
@@ -20,9 +19,6 @@ const (
 	DefaultWSPingInterval    = 30
 	DefaultWSReadTimeout     = 60
 )
-
-// configMu 保护全局配置访问
-var configMu sync.RWMutex
 
 // GlobalConfig 全局配置
 var GlobalConfig *Config
@@ -98,26 +94,6 @@ func (c *WebSocketConfig) Validate() error {
 	return nil
 }
 
-// Validate 验证NATS配置
-func (c *NATSConfig) Validate() error {
-	if c.URL == "" {
-		return fmt.Errorf("NATS URL cannot be empty")
-	}
-	if c.Timeout < 1 || c.Timeout > 300 {
-		return fmt.Errorf("timeout must be between 1 and 300 seconds")
-	}
-	if c.ReconnectWait < 1 || c.ReconnectWait > 3600 {
-		return fmt.Errorf("reconnectWait must be between 1 and 3600 seconds")
-	}
-	if c.MaxReconnects < -1 {
-		return fmt.Errorf("maxReconnects must be -1 or positive")
-	}
-	if c.MessageTimeout < 1 || c.MessageTimeout > 3600 {
-		return fmt.Errorf("messageTimeout must be between 1 and 3600 seconds")
-	}
-	return nil
-}
-
 // Validate 验证RocketMQ配置
 func (c *RocketMQConfig) Validate() error {
 	if c.NameServers == "" {
@@ -158,23 +134,6 @@ func (c *KafkaConfig) Validate() error {
 	return nil
 }
 
-// Validate 验证整个配置
-func (c *Config) Validate() error {
-	if err := c.NATS.Validate(); err != nil {
-		return fmt.Errorf("NATS config error: %w", err)
-	}
-	if err := c.RocketMQ.Validate(); err != nil {
-		return fmt.Errorf("RocketMQ config error: %w", err)
-	}
-	if err := c.Kafka.Validate(); err != nil {
-		return fmt.Errorf("Kafka config error: %w", err)
-	}
-	if err := c.WebSocket.Validate(); err != nil {
-		return fmt.Errorf("WebSocket config error: %w", err)
-	}
-	return nil
-}
-
 // LoadConfig 加载配置文件
 func LoadConfig(path string) error {
 	data, err := os.ReadFile(path)
@@ -207,22 +166,12 @@ func LoadConfig(path string) error {
 	if cfg.WebSocket.ReadTimeout == 0 {
 		cfg.WebSocket.ReadTimeout = DefaultWSReadTimeout
 	}
-
-	// 验证配置参数
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("config validation failed: %w", err)
-	}
-
-	configMu.Lock()
 	GlobalConfig = &cfg
-	configMu.Unlock()
 	return nil
 }
 
 // GetServerAddress 获取服务器地址
 func GetServerAddress() string {
-	configMu.RLock()
-	defer configMu.RUnlock()
 	if GlobalConfig == nil {
 		return DefaultServerAddress
 	}
@@ -231,8 +180,6 @@ func GetServerAddress() string {
 
 // GetWebSocketConfig 获取WebSocket配置
 func GetWebSocketConfig() WebSocketConfig {
-	configMu.RLock()
-	defer configMu.RUnlock()
 	if GlobalConfig == nil {
 		return WebSocketConfig{
 			ReadBufferSize:  DefaultWSReadBufferSize,

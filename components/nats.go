@@ -26,7 +26,6 @@ type NatsPubMessage struct {
 func (n NatsPubMessage) GetGmqPublishMsgType() {}
 
 // NatsSubMessage NATS订阅消息结构，支持持久化订阅和延迟消费
-// 问题16修复：移除重复的 ConsumerName 字段，使用 SubMessage 中的字段
 type NatsSubMessage struct {
 	core.SubMessage[any]
 	Durable bool // 是否持久化订阅（注：需要 NATS JetStream 支持）
@@ -34,8 +33,8 @@ type NatsSubMessage struct {
 
 // natsMsg NATS消息队列实现
 type natsMsg struct {
-	Conn    *nats.Conn
-	connURL string
+	Conn    *nats.Conn // NATS 连接对象
+	connURL string     // 连接地址
 }
 
 // GmqPing 检测NATS连接状态
@@ -48,7 +47,7 @@ func (c *natsMsg) GmqConnect(_ context.Context) error {
 	connURL := config.GetNATSURL()
 	natsCfg := config.GetNATSConfig()
 
-	// 设置连接选项（问题4修复：添加连接事件日志）
+	// 设置连接选项
 	opts := []nats.Option{
 		nats.Timeout(time.Duration(natsCfg.Timeout) * time.Second),
 		nats.ReconnectWait(time.Duration(natsCfg.ReconnectWait) * time.Second),
@@ -114,7 +113,7 @@ func (c *natsMsg) GmqPublish(_ context.Context, msg core.Publish) error {
 
 // GmqSubscribe 订阅NATS消息
 func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error) {
-	// 问题4修复：检查连接状态
+	// 检查连接状态
 	if c.Conn == nil || !c.Conn.IsConnected() {
 		return nil, fmt.Errorf("nats not connected")
 	}
@@ -126,7 +125,7 @@ func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error
 
 	var sub *nats.Subscription
 	var err error
-	// 问题16修复：使用 SubMessage 中的 ConsumerName 字段
+	// 使用 SubMessage 中的 ConsumerName 字段
 	if natsMsg.Durable && natsMsg.SubMessage.ConsumerName != "" {
 		sub, err = c.Conn.QueueSubscribe(natsMsg.QueueName, natsMsg.SubMessage.ConsumerName, func(m *nats.Msg) {
 			c.handleMessage(ctx, natsMsg, m)
@@ -171,7 +170,7 @@ func (c *natsMsg) GetMetrics(_ context.Context) *core.Metrics {
 		ServerAddr: c.connURL,
 	}
 
-	// P1修复：检查连接是否为 nil
+	// 检查连接是否为 nil
 	if c.Conn == nil {
 		m.Status = "disconnected"
 		return m
@@ -186,12 +185,10 @@ func (c *natsMsg) GetMetrics(_ context.Context) *core.Metrics {
 	m.BytesOut = int64(stats.OutBytes)
 	m.ReconnectCount = int64(c.Conn.Reconnects)
 
-	// 问题15修复：只提供客户端可获取的真实指标，移除硬编码的虚假数据
+	// 只提供客户端可获取的真实指标，移除硬编码的虚假数据
 	m.ServerMetrics = map[string]interface{}{
 		"serverId":      c.Conn.ConnectedServerId(),
 		"serverVersion": c.Conn.ConnectedServerVersion(),
-		// 注意：totalConnections 和 activeConnections 是服务端视角的指标
-		// NATS 客户端库不提供这些信息，不返回虚假数据
 	}
 
 	return m

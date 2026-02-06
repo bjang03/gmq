@@ -13,7 +13,7 @@ import (
 )
 
 func init() {
-	_ = core.GmqRegister("nats", &natsMsg{})
+	_ = core.GmqRegister("nats", &NatsMsg{})
 }
 
 // NatsPubMessage NATS发布消息结构，支持延迟消息
@@ -31,19 +31,19 @@ type NatsSubMessage struct {
 	Durable bool // 是否持久化订阅（注：需要 NATS JetStream 支持）
 }
 
-// natsMsg NATS消息队列实现
-type natsMsg struct {
+// NatsMsg NATS消息队列实现
+type NatsMsg struct {
 	conn    *nats.Conn // NATS 连接对象
 	connURL string     // 连接地址
 }
 
 // GmqPing 检测NATS连接状态
-func (c *natsMsg) GmqPing(_ context.Context) bool {
+func (c *NatsMsg) GmqPing(_ context.Context) bool {
 	return c.conn != nil && c.conn.IsConnected()
 }
 
 // GmqConnect 连接NATS服务器
-func (c *natsMsg) GmqConnect(_ context.Context) error {
+func (c *NatsMsg) GmqConnect(_ context.Context) error {
 	connURL := config.GetNATSURL()
 	natsCfg := config.GetNATSConfig()
 
@@ -77,7 +77,7 @@ func (c *natsMsg) GmqConnect(_ context.Context) error {
 }
 
 // GmqClose 关闭NATS连接
-func (c *natsMsg) GmqClose(_ context.Context) error {
+func (c *NatsMsg) GmqClose(_ context.Context) error {
 	if c.conn == nil {
 		return nil
 	}
@@ -86,7 +86,7 @@ func (c *natsMsg) GmqClose(_ context.Context) error {
 }
 
 // GmqPublish 发布NATS消息
-func (c *natsMsg) GmqPublish(_ context.Context, msg core.Publish) error {
+func (c *NatsMsg) GmqPublish(_ context.Context, msg core.Publish) error {
 	natsMsg, ok := msg.(*NatsPubMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type: expected *NatsPubMessage")
@@ -112,7 +112,7 @@ func (c *natsMsg) GmqPublish(_ context.Context, msg core.Publish) error {
 }
 
 // GmqSubscribe 订阅NATS消息
-func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error) {
+func (c *NatsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error) {
 	// 检查连接状态
 	if c.conn == nil || !c.conn.IsConnected() {
 		return nil, fmt.Errorf("nats not connected")
@@ -140,7 +140,7 @@ func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error
 }
 
 // handleMessage 处理消息
-func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
+func (c *NatsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
 	if natsMsg.HandleFunc == nil {
 		if err := m.Ack(); err != nil {
 			log.Printf("[NATS] Failed to ack message (no handler): %v", err)
@@ -168,7 +168,7 @@ func (c *natsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m 
 }
 
 // GetMetrics 获取基础监控指标
-func (c *natsMsg) GetMetrics(_ context.Context) *core.Metrics {
+func (c *NatsMsg) GetMetrics(_ context.Context) *core.Metrics {
 	m := &core.Metrics{
 		Type:       "nats",
 		ServerAddr: c.connURL,

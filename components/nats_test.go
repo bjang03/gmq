@@ -12,7 +12,7 @@ import (
 
 // TestNatsPublish 测试NATS发布单条消息
 func TestNatsPublish(t *testing.T) {
-	natsClient := &natsMsg{}
+	natsClient := &NatsMsg{}
 
 	ctx := context.Background()
 	if err := natsClient.GmqConnect(ctx); err != nil {
@@ -42,7 +42,7 @@ func TestNatsPublish(t *testing.T) {
 
 // TestNatsSubscribe 测试NATS订阅消息
 func TestNatsSubscribe(t *testing.T) {
-	natsClient := &natsMsg{}
+	natsClient := &NatsMsg{}
 
 	ctx := context.Background()
 	if err := natsClient.GmqConnect(ctx); err != nil {

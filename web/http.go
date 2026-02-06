@@ -53,14 +53,11 @@ func init() {
 	// 启动WebSocket广播协程
 	controller.StartMetricsBroadcast()
 
-	// 注册业务路由
-	HttpServer.Post("/pub", controller.Publish)
-
 	// 注册静态文件路由
 	RegisterStaticRoutes(HttpServer.GetEngine())
 
-	// WebSocket订阅路由
-	HttpServer.GetEngine().GET("/ws/sub", controller.WSSubscribeHandler)
+	// WebSocket MQ连接路由（支持发布和订阅）
+	HttpServer.GetEngine().GET("/ws/mq", controller.WSConnectHandler)
 
 	// WebSocket指标推送路由（需要直接注册，绕过ControllerAdapter）
 	HttpServer.GetEngine().GET("/ws/metrics", controller.WSMetricsHandler)

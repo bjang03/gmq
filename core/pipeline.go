@@ -142,7 +142,6 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 		return nil, err
 	}
 
-	// 再次检查，防止其他并发订阅已经占用
 	if existingSub, exists := p.subscriptions[subKey]; exists && existingSub != nil {
 		// 取消刚创建的订阅，记录错误日志
 		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {

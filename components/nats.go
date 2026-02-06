@@ -11,6 +11,16 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+func init() {
+	core.GmqRegister("nats", &NatsConn{
+		URL:            "nats://localhost:4222",
+		Timeout:        10,
+		ReconnectWait:  5,
+		MaxReconnects:  -1,
+		MessageTimeout: 30,
+	})
+}
+
 // NatsPubMessage NATS发布消息结构，支持延迟消息
 type NatsPubMessage struct {
 	core.PubMessage

@@ -12,27 +12,14 @@ import (
 
 // TestNatsSubscribe 测试NATS发布/订阅消息
 func TestNatsSubscribe(t *testing.T) {
-	natsClient := &NatsConn{
+	core.GmqRegister("nats", &NatsConn{
 		URL:            "nats://localhost:4222",
 		Timeout:        10,
 		ReconnectWait:  5,
 		MaxReconnects:  -1,
 		MessageTimeout: 30,
-	}
-
-	ctx := context.Background()
-	if err := natsClient.GmqConnect(ctx); err != nil {
-		t.Fatalf("Failed to connect to NATS: %v", err)
-	}
-	defer natsClient.GmqClose(ctx)
-
-	if !natsClient.GmqPing(ctx) {
-		t.Error("NATS connection ping failed")
-	}
-
-	subCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
+	})
+	client := core.GetGmq("nats")
 	queueName := "test.queue"
 	receivedMessages := make([]string, 0)
 	var wg sync.WaitGroup
@@ -57,8 +44,7 @@ func TestNatsSubscribe(t *testing.T) {
 			},
 		},
 	}
-
-	sub, err := natsClient.GmqSubscribe(subCtx, subMsg)
+	sub, err := client.GmqSubscribe(context.Background(), subMsg)
 	if err != nil {
 		t.Fatalf("Failed to subscribe: %v", err)
 	}
@@ -77,7 +63,7 @@ func TestNatsSubscribe(t *testing.T) {
 		},
 	}
 
-	if err := natsClient.GmqPublish(ctx, pubMsg); err != nil {
+	if err := client.GmqPublish(context.Background(), pubMsg); err != nil {
 		t.Fatalf("Failed to publish message: %v", err)
 	}
 

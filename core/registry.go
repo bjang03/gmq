@@ -36,8 +36,6 @@ func GmqRegister(name string, plugin Gmq) {
 
 	pluginsMu.Lock()
 	if _, exists := GmqPlugins[name]; exists {
-		pluginsMu.Unlock()
-		log.Printf("[GMQ] Plugin %s already registered\n", name)
 		return
 	}
 
@@ -138,11 +136,12 @@ func Shutdown(ctx context.Context) error {
 }
 
 // GetGmq 获取已注册的消息队列管道
-func GetGmq(name string) (*GmqPipeline, bool) {
-	pluginsMu.RLock()
-	defer pluginsMu.RUnlock()
+func GetGmq(name string) *GmqPipeline {
 	pipeline, ok := GmqPlugins[name]
-	return pipeline, ok
+	if !ok {
+		return nil
+	}
+	return pipeline
 }
 
 // GetAllGmq 获取所有已注册的消息队列管道的副本

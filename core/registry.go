@@ -44,14 +44,10 @@ func GmqRegister(name string, plugin Gmq) {
 		for {
 			select {
 			case <-globalShutdown:
-				p.mu.Lock()
 				p.clearSubscriptions()
-				p.mu.Unlock()
 				return
 			case <-mgrCtx.Done():
-				p.mu.Lock()
 				p.clearSubscriptions()
-				p.mu.Unlock()
 				return
 			default:
 				pingCtx, pingCancel := context.WithTimeout(mgrCtx, 5*time.Second)

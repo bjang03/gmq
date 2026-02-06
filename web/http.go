@@ -57,9 +57,6 @@ func init() {
 	HttpServer.Post("/publish", controller.Publish)
 	HttpServer.Post("/subscribe", controller.Subscribe)
 
-	// 订阅管理（取消订阅需要直接注册，绕过 ControllerAdapter）
-	HttpServer.GetEngine().POST("/unsubscribe", controller.Unsubscribe)
-
 	// 注册静态文件路由
 	RegisterStaticRoutes(HttpServer.GetEngine())
 

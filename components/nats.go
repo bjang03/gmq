@@ -33,13 +33,13 @@ type NatsSubMessage struct {
 
 // natsMsg NATS消息队列实现
 type natsMsg struct {
-	Conn    *nats.Conn // NATS 连接对象
+	conn    *nats.Conn // NATS 连接对象
 	connURL string     // 连接地址
 }
 
 // GmqPing 检测NATS连接状态
 func (c *natsMsg) GmqPing(_ context.Context) bool {
-	return c.Conn != nil && c.Conn.IsConnected()
+	return c.conn != nil && c.conn.IsConnected()
 }
 
 // GmqConnect 连接NATS服务器
@@ -71,17 +71,17 @@ func (c *natsMsg) GmqConnect(_ context.Context) error {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}
 
-	c.Conn = conn
+	c.conn = conn
 	c.connURL = connURL
 	return nil
 }
 
 // GmqClose 关闭NATS连接
 func (c *natsMsg) GmqClose(_ context.Context) error {
-	if c.Conn == nil {
+	if c.conn == nil {
 		return nil
 	}
-	c.Conn.Close()
+	c.conn.Close()
 	return nil
 }
 
@@ -108,13 +108,13 @@ func (c *natsMsg) GmqPublish(_ context.Context, msg core.Publish) error {
 		}
 	}
 
-	return c.Conn.Publish(natsMsg.QueueName, data)
+	return c.conn.Publish(natsMsg.QueueName, data)
 }
 
 // GmqSubscribe 订阅NATS消息
 func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error) {
 	// 检查连接状态
-	if c.Conn == nil || !c.Conn.IsConnected() {
+	if c.conn == nil || !c.conn.IsConnected() {
 		return nil, fmt.Errorf("nats not connected")
 	}
 
@@ -127,11 +127,11 @@ func (c *natsMsg) GmqSubscribe(ctx context.Context, msg any) (interface{}, error
 	var err error
 	// 使用 SubMessage 中的 ConsumerName 字段
 	if natsMsg.Durable && natsMsg.SubMessage.ConsumerName != "" {
-		sub, err = c.Conn.QueueSubscribe(natsMsg.QueueName, natsMsg.SubMessage.ConsumerName, func(m *nats.Msg) {
+		sub, err = c.conn.QueueSubscribe(natsMsg.QueueName, natsMsg.SubMessage.ConsumerName, func(m *nats.Msg) {
 			c.handleMessage(ctx, natsMsg, m)
 		})
 	} else {
-		sub, err = c.Conn.Subscribe(natsMsg.QueueName, func(m *nats.Msg) {
+		sub, err = c.conn.Subscribe(natsMsg.QueueName, func(m *nats.Msg) {
 			c.handleMessage(ctx, natsMsg, m)
 		})
 	}
@@ -175,24 +175,24 @@ func (c *natsMsg) GetMetrics(_ context.Context) *core.Metrics {
 	}
 
 	// 检查连接是否为 nil
-	if c.Conn == nil {
+	if c.conn == nil {
 		m.Status = "disconnected"
 		return m
 	}
 
 	// 从 NATS 连接获取服务端统计信息
-	stats := c.Conn.Stats()
+	stats := c.conn.Stats()
 	// NATS 提供的统计信息
 	m.MsgsIn = int64(stats.InMsgs)
 	m.MsgsOut = int64(stats.OutMsgs)
 	m.BytesIn = int64(stats.InBytes)
 	m.BytesOut = int64(stats.OutBytes)
-	m.ReconnectCount = int64(c.Conn.Reconnects)
+	m.ReconnectCount = int64(c.conn.Reconnects)
 
 	// 只提供客户端可获取的真实指标，移除硬编码的虚假数据
 	m.ServerMetrics = map[string]interface{}{
-		"serverId":      c.Conn.ConnectedServerId(),
-		"serverVersion": c.Conn.ConnectedServerVersion(),
+		"serverId":      c.conn.ConnectedServerId(),
+		"serverVersion": c.conn.ConnectedServerVersion(),
 	}
 
 	return m

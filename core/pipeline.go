@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"maps"
 	"sync"
 	"sync/atomic"
@@ -161,6 +162,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 		// 取消刚创建的订阅，记录错误日志
 		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
 			if unsubErr := closer.Unsubscribe(); unsubErr != nil {
+				log.Printf("[GMQ] Failed to unsubscribe after conflict: %v", unsubErr)
 			}
 		}
 		return nil, fmt.Errorf("subscription conflict detected for topic: %s", topic)
@@ -278,6 +280,16 @@ func (p *GmqPipeline) restoreSubscriptions() {
 
 	// 记录恢复失败的订阅（如果有）
 	if len(failedSubs) > 0 {
+		log.Printf("[GMQ] Failed to restore %d subscriptions after reconnection", len(failedSubs))
+		for _, subKey := range failedSubs {
+			if info, exists := p.subscriptionParams[subKey]; exists {
+				if qn, ok := info.msg.(interface{ GetQueueName() string }); ok {
+					log.Printf("[GMQ] Failed to restore subscription: queue=%s, key=%s", qn.GetQueueName(), subKey)
+				} else {
+					log.Printf("[GMQ] Failed to restore subscription: key=%s", subKey)
+				}
+			}
+		}
 	}
 }
 

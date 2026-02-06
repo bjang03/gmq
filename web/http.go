@@ -93,7 +93,7 @@ func init() {
 	log.Println("Shutting down server...")
 
 	// 优雅关闭上下文
-	ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// 关闭HTTP服务器（先停止接收新请求）
@@ -193,7 +193,7 @@ func (s *httpServer) Shutdown(ctx context.Context) error {
 
 // ShutdownWithTimeout 使用超时时间优雅关闭HTTP服务器
 func (s *httpServer) ShutdownWithTimeout(timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.TODO(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return s.Shutdown(ctx)
 }

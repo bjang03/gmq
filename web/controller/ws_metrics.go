@@ -84,7 +84,7 @@ func WSMetricsHandler(c *gin.Context) {
 	})
 
 	// 为每个连接创建独立的停止信号（问题1修复：使用 context 控制生命周期）
-	connCtx, connCancel := context.WithCancel(context.TODO())
+	connCtx, connCancel := context.WithCancel(context.Background())
 	defer connCancel() // 确保连接关闭时取消 context
 
 	// 监听广播停止信号，转发到连接级别的停止信号
@@ -144,7 +144,7 @@ func sendMetrics(conn *websocket.Conn) error {
 
 // getAllMetrics 获取所有消息队列的监控指标
 func getAllMetrics() map[string]*core.Metrics {
-	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	result := make(map[string]*core.Metrics)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"maps"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -25,8 +24,6 @@ type GmqPipeline struct {
 	metrics     pipelineMetrics // 管道监控指标
 	connectedAt int64           // 连接时间(Unix时间戳，秒)，原子访问
 	connected   int32           // 连接状态: 0=未连接, 1=已连接，原子访问
-
-	mu sync.RWMutex // 并发控制 - 统一管理所有并发访问
 
 	subscriptions map[string]interface{} // 订阅管理 - 统一管理所有订阅对象，key 为 topic:consumerName
 
@@ -108,15 +105,11 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 	// 提取 topic 和 consumerName（从 msg 中解析）
 	topic, consumerName := p.extractSubscriptionInfo(msg)
 	subKey := p.getSubKey(topic, consumerName)
-
-	p.mu.Lock()
 	if _, alreadySubscribed := p.subscriptions[subKey]; alreadySubscribed {
-		p.mu.Unlock()
 		return nil, fmt.Errorf("already subscribed to topic: %s", topic)
 	}
 	// 预留槽位，标记为"订阅中"状态
 	p.subscriptions[subKey] = nil
-	p.mu.Unlock()
 
 	var subObj interface{}
 	// 带重试的订阅
@@ -127,9 +120,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				p.mu.Lock()
 				delete(p.subscriptions, subKey)
-				p.mu.Unlock()
 				return nil, ctx.Err()
 			}
 		}
@@ -141,9 +132,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 	}
 
 	if err != nil {
-		p.mu.Lock()
 		delete(p.subscriptions, subKey)
-		p.mu.Unlock()
 
 		// 记录指标
 		latency := time.Since(start).Milliseconds()
@@ -153,11 +142,8 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 		return nil, err
 	}
 
-	// 重新加锁保存订阅
-	p.mu.Lock()
 	// 再次检查，防止其他并发订阅已经占用
 	if existingSub, exists := p.subscriptions[subKey]; exists && existingSub != nil {
-		p.mu.Unlock()
 		// 取消刚创建的订阅，记录错误日志
 		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
 			if unsubErr := closer.Unsubscribe(); unsubErr != nil {
@@ -174,7 +160,6 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 	p.subscriptionParams[subKey] = &subscriptionInfo{
 		msg: msg,
 	}
-	p.mu.Unlock()
 
 	// 记录指标
 	latency := time.Since(start).Milliseconds()
@@ -187,8 +172,6 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 
 // GmqUnsubscribe 取消订阅
 func (p *GmqPipeline) GmqUnsubscribe(topic, consumerName string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	subKey := p.getSubKey(topic, consumerName)
 	subObj, exists := p.subscriptions[subKey]
@@ -221,8 +204,6 @@ func (p *GmqPipeline) clearSubscriptions() {
 
 // restoreSubscriptions 断线重连后恢复所有订阅
 func (p *GmqPipeline) restoreSubscriptions() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	// 先清理旧的订阅对象
 	for subKey, subObj := range p.subscriptions {
@@ -350,8 +331,6 @@ func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
 
 // GmqConnect 连接消息队列
 func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	err := p.plugin.GmqConnect(ctx)
 	if err == nil {
@@ -363,9 +342,6 @@ func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
 
 // GmqClose 关闭连接
 func (p *GmqPipeline) GmqClose(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	// 关闭前先清理所有订阅
 	p.clearSubscriptions()
 

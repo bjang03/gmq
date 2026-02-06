@@ -16,7 +16,7 @@ var queueNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-\.]+$`)
 // 默认使用第一个注册的MQ
 func getDefaultMQ() (*core.GmqPipeline, error) {
 	// 优先使用 "nats"，如果不存在则使用第一个
-	if pipeline, ok := core.GetGmq("nats"); ok {
+	if pipeline := core.GetGmq("nats"); pipeline != nil {
 		return pipeline, nil
 	}
 	// 获取第一个注册的MQ

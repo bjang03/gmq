@@ -63,7 +63,7 @@ func TestNatsSubscribe(t *testing.T) {
 		},
 	}
 
-	if err := client.GmqPublish(context.Background(), pubMsg); err != nil {
+	if err = client.GmqPublish(context.Background(), pubMsg); err != nil {
 		t.Fatalf("Failed to publish message: %v", err)
 	}
 

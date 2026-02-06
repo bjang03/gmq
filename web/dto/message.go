@@ -1,10 +1,12 @@
 package dto
 
 type PublishReq struct {
-	Topic   string `json:"topic" form:"topic"`
-	Message string `json:"message" form:"message"`
+	ServerName string `json:"serverName"`
+	QueueName  string `json:"queueName"`
+	Message    string `json:"message" form:"message"`
 }
 
 type SubscribeReq struct {
-	Topic string `json:"topic" form:"topic"`
+	ServerName string `json:"serverName"`
+	QueueName  string `json:"queueName"`
 }

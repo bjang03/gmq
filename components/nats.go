@@ -117,7 +117,7 @@ func (c *NatsConn) GmqPublish(_ context.Context, msg core.Publish) error {
 }
 
 // GmqSubscribe 订阅NATS消息
-func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (interface{}, error) {
+func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (result interface{}, err error) {
 	// 检查连接状态
 	if c.conn == nil || !c.conn.IsConnected() {
 		return nil, fmt.Errorf("nats not connected")
@@ -129,15 +129,14 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (interface{}, erro
 	}
 
 	var sub *nats.Subscription
-	var err error
 	// 使用 SubMessage 中的 ConsumerName 字段
 	if natsMsg.Durable && natsMsg.SubMessage.ConsumerName != "" {
 		sub, err = c.conn.QueueSubscribe(natsMsg.QueueName, natsMsg.SubMessage.ConsumerName, func(m *nats.Msg) {
-			c.handleMessage(ctx, natsMsg, m)
+			result, err = c.handleMessage(ctx, natsMsg, m)
 		})
 	} else {
 		sub, err = c.conn.Subscribe(natsMsg.QueueName, func(m *nats.Msg) {
-			c.handleMessage(ctx, natsMsg, m)
+			result, err = c.handleMessage(ctx, natsMsg, m)
 		})
 	}
 
@@ -145,19 +144,8 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (interface{}, erro
 }
 
 // handleMessage 处理消息
-func (c *NatsConn) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) {
-	if natsMsg.HandleFunc == nil {
-		if err := m.Ack(); err != nil {
-			log.Printf("[NATS] Failed to ack message (no handler): %v", err)
-		}
-		return
-	}
-
-	// 使用传入的 ctx 创建带超时的子 context
-	msgCtx, cancel := context.WithTimeout(ctx, time.Duration(c.MessageTimeout)*time.Second)
-	defer cancel()
-
-	err := natsMsg.HandleFunc(msgCtx, m.Data)
+func (c *NatsConn) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) (result interface{}, err error) {
+	err = natsMsg.HandleFunc(ctx, m.Data)
 	if err != nil {
 		// 处理失败时，根据 AutoAck 决定是否 ACK
 		if !natsMsg.AutoAck {
@@ -169,6 +157,7 @@ func (c *NatsConn) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m
 	if err := m.Ack(); err != nil {
 		log.Printf("[NATS] Failed to ack message: %v", err)
 	}
+	return
 }
 
 // GetMetrics 获取基础监控指标

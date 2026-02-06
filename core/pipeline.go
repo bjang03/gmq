@@ -102,9 +102,8 @@ func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
 }
 
 // GmqSubscribe 订阅消息（带统一监控和重试）
-func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, error) {
+func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interface{}, err error) {
 	start := time.Now()
-	var err error
 
 	// 提取 topic 和 consumerName（从 msg 中解析）
 	topic, consumerName := p.extractSubscriptionInfo(msg)

@@ -11,18 +11,29 @@ const (
 	DefaultRetryDelay    = 500 * time.Millisecond
 )
 
+// SubMessage 订阅消息基础结构
+type SubMessage[T any] struct {
+	QueueName    string                                     // 队列名称
+	ConsumerName string                                     // 消费者名称（用于群组消费）
+	AutoAck      bool                                       // 是否自动确认
+	FetchCount   int                                        // 每次拉取消息数量
+	HandleFunc   func(ctx context.Context, message T) error // 消息处理函数
+}
+
+// GetQueueName 获取队列名称（实现 QueueNameProvider 接口）
+func (m *SubMessage[T]) GetQueueName() string {
+	return m.QueueName
+}
+
+// GetConsumerName 获取消费者名称（实现 ConsumerNameProvider 接口）
+func (m *SubMessage[T]) GetConsumerName() string {
+	return m.ConsumerName
+}
+
 // PubMessage 发布消息基础结构
 type PubMessage struct {
 	QueueName string // 队列名称
 	Data      any    // 消息数据
-}
-
-// SubMessage 订阅消息基础结构
-type SubMessage[T any] struct {
-	QueueName  string                                     // 队列名称
-	AutoAck    bool                                       // 是否自动确认
-	FetchCount int                                        // 每次拉取消息数量
-	HandleFunc func(ctx context.Context, message T) error // 消息处理函数
 }
 
 // Publish 发布消息接口

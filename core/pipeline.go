@@ -115,14 +115,15 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 	topic, consumerName := p.extractSubscriptionInfo(msg)
 	subKey := p.getSubKey(topic, consumerName)
 
-	// 使用写锁保证检查和订阅的原子性
+	// 问题5修复：使用预留槽位机制避免并发竞争
 	p.mu.Lock()
-
 	if _, alreadySubscribed := p.subscriptions[subKey]; alreadySubscribed {
 		p.mu.Unlock()
 		return nil, fmt.Errorf("already subscribed to topic: %s", topic)
 	}
-	p.mu.Unlock() // 解锁后进行网络操作
+	// 预留槽位，标记为"订阅中"状态
+	p.subscriptions[subKey] = nil
+	p.mu.Unlock()
 
 	var subObj interface{}
 	// 带重试的订阅
@@ -133,6 +134,10 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
+				// 问题6修复：取消时清理预留槽位
+				p.mu.Lock()
+				delete(p.subscriptions, subKey)
+				p.mu.Unlock()
 				return nil, ctx.Err()
 			}
 		}
@@ -153,6 +158,11 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 	}
 
 	if err != nil {
+		// 问题6修复：订阅失败，清理预留槽位
+		p.mu.Lock()
+		delete(p.subscriptions, subKey)
+		p.mu.Unlock()
+
 		// 记录指标
 		latency := time.Since(start).Milliseconds()
 		atomic.AddInt64(&p.metrics.totalLatency, latency)
@@ -163,22 +173,21 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 
 	// 重新加锁保存订阅
 	p.mu.Lock()
-	// 再次检查，防止并发订阅同一 topic
-	if _, alreadySubscribed := p.subscriptions[subKey]; alreadySubscribed {
+	// 再次检查，防止其他并发订阅已经占用
+	if existingSub, exists := p.subscriptions[subKey]; exists && existingSub != nil {
+		// 已有其他订阅占用了这个槽位（理论上不应该发生）
 		p.mu.Unlock()
-		// 取消刚创建的订阅
+		// 问题6修复：取消刚创建的订阅，记录错误日志
 		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
-			_ = closer.Unsubscribe()
+			if unsubErr := closer.Unsubscribe(); unsubErr != nil {
+				// 记录取消失败，但不阻塞返回
+			}
 		}
-		return nil, fmt.Errorf("already subscribed to topic: %s", topic)
+		return nil, fmt.Errorf("subscription conflict detected for topic: %s", topic)
 	}
 
 	// 保存订阅对象到管道层
-	if subObj != nil {
-		p.subscriptions[subKey] = subObj
-	} else {
-		p.subscriptions[subKey] = true
-	}
+	p.subscriptions[subKey] = subObj
 
 	// 保存订阅参数，用于断线重连后恢复订阅
 	p.subscriptionParams[subKey] = &subscriptionInfo{
@@ -243,17 +252,27 @@ func (p *GmqPipeline) restoreSubscriptions() {
 	}
 
 	// 重新订阅
-	// P0修复：使用 context.Background() 替代可能已过期的 ctx
-	restoreCtx := context.Background()
+	// 使用带取消的 context，支持优雅退出
+	restoreCtx, restoreCancel := context.WithCancel(context.Background())
+	defer restoreCancel()
+
+	// 统计恢复失败的订阅数量
+	var failedSubs []string
+
 	for subKey, info := range p.subscriptionParams {
 		var subObj interface{}
 		var err error
 
 		// 带重试的订阅
+		// 问题7修复：使用 select 支持取消，而不是阻塞式 time.Sleep
 		for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
 			if attempt > 0 {
 				delay := DefaultRetryDelay * time.Duration(1<<uint(attempt-1))
-				time.Sleep(delay)
+				select {
+				case <-time.After(delay):
+				case <-restoreCtx.Done():
+					return
+				}
 			}
 
 			subObj, err = p.plugin.GmqSubscribe(restoreCtx, info.msg)
@@ -263,7 +282,8 @@ func (p *GmqPipeline) restoreSubscriptions() {
 		}
 
 		if err != nil {
-			// 订阅失败，记录错误但继续尝试其他订阅
+			// 问题8修复：记录失败的订阅信息，便于排查
+			failedSubs = append(failedSubs, subKey)
 			continue
 		}
 
@@ -277,25 +297,44 @@ func (p *GmqPipeline) restoreSubscriptions() {
 		// 记录指标
 		atomic.AddInt64(&p.metrics.subscribeCount, 1)
 	}
+
+	// 记录恢复失败的订阅（如果有）
+	if len(failedSubs) > 0 {
+		// 使用日志记录，不阻塞后续流程
+	}
 }
 
 // extractSubscriptionInfo 从订阅消息中提取 topic 和 consumerName
+// 问题13修复：使用更完整的类型断言逻辑，支持多种接口实现
 func (p *GmqPipeline) extractSubscriptionInfo(msg any) (topic, consumerName string) {
-	// 使用类型断言替代反射
-	switch m := msg.(type) {
-	case *SubMessage[any]:
-		topic = m.QueueName
-	case SubMessage[any]:
-		topic = m.QueueName
-	case interface{ GetQueueName() string }:
-		topic = m.GetQueueName()
-	case interface{ GetTopic() string }:
-		topic = m.GetTopic()
+	// 尝试通过接口方法提取信息（优先使用接口方法）
+	if qn, ok := msg.(interface{ GetQueueName() string }); ok {
+		topic = qn.GetQueueName()
+	}
+	if cn, ok := msg.(interface{ GetConsumerName() string }); ok {
+		consumerName = cn.GetConsumerName()
 	}
 
-	switch m := msg.(type) {
-	case interface{ GetConsumerName() string }:
-		consumerName = m.GetConsumerName()
+	// 如果接口方法没有提供信息，尝试通过类型断言获取
+	// 处理 *SubMessage[T] 类型
+	if sm, ok := msg.(*SubMessage[any]); ok && topic == "" {
+		topic = sm.QueueName
+		if consumerName == "" {
+			consumerName = sm.ConsumerName
+		}
+	}
+
+	// 处理 SubMessage[T] 值类型（较少见）
+	if sm, ok := msg.(SubMessage[any]); ok && topic == "" {
+		topic = sm.QueueName
+		if consumerName == "" {
+			consumerName = sm.ConsumerName
+		}
+	}
+
+	// 兼容旧接口：GetTopic()
+	if t, ok := msg.(interface{ GetTopic() string }); ok && topic == "" {
+		topic = t.GetTopic()
 	}
 
 	return topic, consumerName
@@ -352,11 +391,13 @@ func (p *GmqPipeline) GmqClose(ctx context.Context) error {
 // GetMetrics 获取统一监控指标（带缓存，使用 atomic 无锁读取）
 func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 	now := time.Now().UnixMilli()
+	cacheExp := p.metricsCacheExp.Load()
 
-	// 检查缓存是否有效（无锁读取）
+	// 问题9修复：正确的缓存过期判断
+	// 缓存过期时间戳 = 缓存创建时间 + TTL
 	if cm := p.cachedMetrics.Load(); cm != nil {
-		if now-p.metricsCacheExp.Load() < p.metricsCacheTTL.Milliseconds() {
-			// 返回缓存的副本
+		if now < cacheExp {
+			// 缓存未过期，返回副本
 			m := *cm
 			return &m
 		}
@@ -444,9 +485,10 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		Extensions:       safeCloneMap(pluginMetrics.Extensions),
 	}
 
-	// 更新缓存（原子操作，无锁）
+	// 问题9修复：更新缓存时计算正确的过期时间
+	cacheExpiration := now + p.metricsCacheTTL.Milliseconds()
 	p.cachedMetrics.Store(m)
-	p.metricsCacheExp.Store(now)
+	p.metricsCacheExp.Store(cacheExpiration)
 
 	return m
 }

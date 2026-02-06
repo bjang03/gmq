@@ -41,5 +41,4 @@ type pipelineMetrics struct {
 	subscribeFailed int64
 	totalLatency    int64
 	latencyCount    int64
-	pendingMessages int64
 }

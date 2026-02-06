@@ -39,7 +39,6 @@ type NatsSubMessage struct {
 // NatsConn NATS消息队列实现
 type NatsConn struct {
 	conn           *nats.Conn // NATS 连接对象
-	connURL        string     // 连接地址
 	URL            string     // NATS连接地址
 	Timeout        int        // 连接超时(秒)
 	ReconnectWait  int        // 重连等待(秒)
@@ -79,7 +78,6 @@ func (c *NatsConn) GmqConnect(_ context.Context) error {
 	}
 
 	c.conn = conn
-	c.connURL = c.URL
 	return nil
 }
 
@@ -177,7 +175,7 @@ func (c *NatsConn) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m
 func (c *NatsConn) GetMetrics(_ context.Context) *core.Metrics {
 	m := &core.Metrics{
 		Type:       "nats",
-		ServerAddr: c.connURL,
+		ServerAddr: c.URL,
 	}
 
 	// 检查连接是否为 nil

@@ -11,16 +11,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func init() {
-	core.GmqRegister("nats", &NatsConn{
-		URL:            "nats://localhost:4222",
-		Timeout:        10,
-		ReconnectWait:  5,
-		MaxReconnects:  -1,
-		MessageTimeout: 30,
-	})
-}
-
 // NatsPubMessage NATS发布消息结构，支持延迟消息
 type NatsPubMessage struct {
 	core.PubMessage
@@ -145,17 +135,14 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (result interface{
 
 // handleMessage 处理消息
 func (c *NatsConn) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m *nats.Msg) (result interface{}, err error) {
+	log.Printf("[NATS] handleMessage called, subject: %s, data len: %d", m.Subject, len(m.Data))
+	log.Printf("[NATS] handleMessage, HandleFunc is nil: %v", natsMsg.HandleFunc == nil)
 	err = natsMsg.HandleFunc(ctx, m.Data)
 	if err != nil {
-		// 处理失败时，根据 AutoAck 决定是否 ACK
-		if !natsMsg.AutoAck {
-			// 不自动确认，消息会重新投递
-			return
-		}
-		// AutoAck=true 且处理失败，也 ACK（避免无限重试）
-	}
-	if err := m.Ack(); err != nil {
-		log.Printf("[NATS] Failed to ack message: %v", err)
+		// 处理失败时，记录日志
+		log.Printf("[NATS] Failed to handle message: %v", err)
+	} else {
+		log.Printf("[NATS] Message handled successfully")
 	}
 	return
 }

@@ -7,15 +7,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bjang03/gmq/config"
-	"github.com/bjang03/gmq/core"
 	"github.com/bjang03/gmq/web/controller"
 	"github.com/bjang03/gmq/web/middleware"
 	"github.com/gin-gonic/gin"
@@ -59,10 +55,12 @@ func init() {
 
 	// 注册业务路由
 	HttpServer.Post("/pub", controller.Publish)
-	HttpServer.Get("/sub", controller.Subscribe)
 
 	// 注册静态文件路由
 	RegisterStaticRoutes(HttpServer.GetEngine())
+
+	// WebSocket订阅路由
+	HttpServer.GetEngine().GET("/ws/sub", controller.WSSubscribeHandler)
 
 	// WebSocket指标推送路由（需要直接注册，绕过ControllerAdapter）
 	HttpServer.GetEngine().GET("/ws/metrics", controller.WSMetricsHandler)
@@ -84,32 +82,6 @@ func init() {
 			log.Fatalf("Server failed to start: %v", err)
 		}
 	}()
-
-	// 等待中断信号
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	log.Println("Shutting down server...")
-
-	// 优雅关闭上下文
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// 关闭HTTP服务器（先停止接收新请求）
-	if err := HttpServer.Shutdown(ctx); err != nil {
-		log.Printf("Error shutting down HTTP server: %v", err)
-	}
-
-	// 关闭所有消息队列连接（问题16修复：先关闭MQ，再停止广播）
-	if err := core.Shutdown(ctx); err != nil {
-		log.Printf("Error during MQ shutdown: %v", err)
-	}
-
-	// 停止 WebSocket 广播（最后停止，确保能获取最终指标）
-	controller.StopMetricsBroadcast()
-
-	log.Println("Server gracefully stopped")
 }
 
 // SetPrintRoutes 设置是否打印路由信息

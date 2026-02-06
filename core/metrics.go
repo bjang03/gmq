@@ -34,11 +34,11 @@ type Metrics struct {
 
 // pipelineMetrics 管道监控指标
 type pipelineMetrics struct {
-	messageCount    int64
-	publishCount    int64
-	subscribeCount  int64
-	publishFailed   int64
-	subscribeFailed int64
-	totalLatency    int64
-	latencyCount    int64
+	messageCount    int64 // 消息总数
+	publishCount    int64 // 发布消息数
+	subscribeCount  int64 // 订阅消息数
+	publishFailed   int64 // 发布失败数
+	subscribeFailed int64 // 订阅失败数
+	totalLatency    int64 // 总延迟(毫秒)
+	latencyCount    int64 // 延迟计数
 }

@@ -41,11 +41,6 @@ type Publish interface {
 	GetGmqPublishMsgType()
 }
 
-// Subscribe 订阅消息接口
-type Subscribe interface {
-	GetGmqSubscribeMsgType()
-}
-
 // Gmq 消息队列统一接口定义
 type Gmq interface {
 	GmqConnect(ctx context.Context) error                           // 连接消息队列

@@ -10,39 +10,15 @@ import (
 	"github.com/bjang03/gmq/core"
 )
 
-// TestNatsPublish 测试NATS发布单条消息
-func TestNatsPublish(t *testing.T) {
-	natsClient := &NatsMsg{}
-
-	ctx := context.Background()
-	if err := natsClient.GmqConnect(ctx); err != nil {
-		t.Fatalf("Failed to connect to NATS: %v", err)
-	}
-	defer natsClient.GmqClose(ctx)
-
-	if !natsClient.GmqPing(ctx) {
-		t.Error("NATS connection ping failed")
-	}
-
-	queueName := "test.queue"
-	testMessage := "Hello, NATS!"
-	pubMsg := &NatsPubMessage{
-		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      testMessage,
-		},
-	}
-
-	if err := natsClient.GmqPublish(ctx, pubMsg); err != nil {
-		t.Fatalf("Failed to publish message: %v", err)
-	}
-
-	t.Logf("Successfully published message to queue: %s", queueName)
-}
-
-// TestNatsSubscribe 测试NATS订阅消息
+// TestNatsSubscribe 测试NATS发布/订阅消息
 func TestNatsSubscribe(t *testing.T) {
-	natsClient := &NatsMsg{}
+	natsClient := &NatsConn{
+		URL:            "nats://localhost:4222",
+		Timeout:        10,
+		ReconnectWait:  5,
+		MaxReconnects:  -1,
+		MessageTimeout: 30,
+	}
 
 	ctx := context.Background()
 	if err := natsClient.GmqConnect(ctx); err != nil {

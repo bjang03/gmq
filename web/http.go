@@ -59,10 +59,12 @@ func init() {
 
 	// 注册业务路由
 	HttpServer.Post("/pub", controller.Publish)
-	HttpServer.Get("/sub", controller.Subscribe)
 
 	// 注册静态文件路由
 	RegisterStaticRoutes(HttpServer.GetEngine())
+
+	// WebSocket订阅路由
+	HttpServer.GetEngine().GET("/ws/sub", controller.WSSubscribeHandler)
 
 	// WebSocket指标推送路由（需要直接注册，绕过ControllerAdapter）
 	HttpServer.GetEngine().GET("/ws/metrics", controller.WSMetricsHandler)

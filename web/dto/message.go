@@ -12,5 +12,5 @@ type PublishReq struct {
 
 type SubscribeReq struct {
 	BaseMessage
-	WebHook string `json:"webHook" validate:"required"` //回调路径，与ServerName拼接构成完整回调地址(例: ServerName="http://service-a", WebHook="/api/callback" -> 回调地址为 "http://service-a/api/callback")
+	WebHook string `json:"webHook"` //回调路径，与ServerName拼接构成完整回调地址(例: ServerName="http://service-a", WebHook="/api/callback" -> 回调地址为 "http://service-a/api/callback")
 }

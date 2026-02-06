@@ -2,13 +2,6 @@ server:
   address: ":1688"
   name: "gmq"
 
-nats:
-  url: "nats://localhost:4222"
-  timeout: 10
-  reconnectWait: 5
-  maxReconnects: -1
-  messageTimeout: 30
-
 websocket:
   readBufferSize: 1024
   writeBufferSize: 1024

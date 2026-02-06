@@ -46,16 +46,6 @@ type Subscribe interface {
 	GetGmqSubscribeMsgType()
 }
 
-// Parser 数据解析器接口
-type Parser interface {
-	GmqParseData(data any) (dt any, err error)
-}
-
-// SubscriptionValidator 订阅对象验证接口
-type SubscriptionValidator interface {
-	IsValid() bool
-}
-
 // Gmq 消息队列统一接口定义
 type Gmq interface {
 	GmqConnect(ctx context.Context) error                           // 连接消息队列

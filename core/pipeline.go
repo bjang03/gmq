@@ -140,15 +140,6 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (interface{}, e
 		}
 	}
 
-	// 检查订阅对象是否有效
-	if subObj != nil {
-		if validator, ok := subObj.(SubscriptionValidator); ok {
-			if !validator.IsValid() {
-				err = fmt.Errorf("subscription is not valid")
-			}
-		}
-	}
-
 	if err != nil {
 		p.mu.Lock()
 		delete(p.subscriptions, subKey)

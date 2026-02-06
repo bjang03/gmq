@@ -7,13 +7,18 @@ import (
 	"log"
 	"time"
 
-	"github.com/bjang03/gmq/config"
 	"github.com/bjang03/gmq/core"
 	"github.com/nats-io/nats.go"
 )
 
 func init() {
-	_ = core.GmqRegister("nats", &NatsMsg{})
+	core.GmqRegister("nats", &NatsMsg{
+		URL:            "nats://localhost:4222",
+		Timeout:        10,
+		ReconnectWait:  5,
+		MaxReconnects:  -1,
+		MessageTimeout: 30,
+	})
 }
 
 // NatsPubMessage NATS发布消息结构，支持延迟消息
@@ -33,8 +38,13 @@ type NatsSubMessage struct {
 
 // NatsMsg NATS消息队列实现
 type NatsMsg struct {
-	conn    *nats.Conn // NATS 连接对象
-	connURL string     // 连接地址
+	conn           *nats.Conn // NATS 连接对象
+	connURL        string     // 连接地址
+	URL            string     // NATS连接地址
+	Timeout        int        // 连接超时(秒)
+	ReconnectWait  int        // 重连等待(秒)
+	MaxReconnects  int        // 最大重连次数(-1为无限)
+	MessageTimeout int        // 消息处理超时(秒)
 }
 
 // GmqPing 检测NATS连接状态
@@ -44,14 +54,11 @@ func (c *NatsMsg) GmqPing(_ context.Context) bool {
 
 // GmqConnect 连接NATS服务器
 func (c *NatsMsg) GmqConnect(_ context.Context) error {
-	connURL := config.GetNATSURL()
-	natsCfg := config.GetNATSConfig()
-
 	// 设置连接选项
 	opts := []nats.Option{
-		nats.Timeout(time.Duration(natsCfg.Timeout) * time.Second),
-		nats.ReconnectWait(time.Duration(natsCfg.ReconnectWait) * time.Second),
-		nats.MaxReconnects(natsCfg.MaxReconnects),
+		nats.Timeout(time.Duration(c.Timeout) * time.Second),
+		nats.ReconnectWait(time.Duration(c.ReconnectWait) * time.Second),
+		nats.MaxReconnects(c.MaxReconnects),
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
 			log.Printf("[NATS] Connection disconnected: %v", err)
 		}),
@@ -66,13 +73,13 @@ func (c *NatsMsg) GmqConnect(_ context.Context) error {
 		}),
 	}
 
-	conn, err := nats.Connect(connURL, opts...)
+	conn, err := nats.Connect(c.URL, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}
 
 	c.conn = conn
-	c.connURL = connURL
+	c.connURL = c.URL
 	return nil
 }
 
@@ -148,9 +155,8 @@ func (c *NatsMsg) handleMessage(ctx context.Context, natsMsg *NatsSubMessage, m 
 		return
 	}
 
-	natsCfg := config.GetNATSConfig()
 	// 使用传入的 ctx 创建带超时的子 context
-	msgCtx, cancel := context.WithTimeout(ctx, time.Duration(natsCfg.MessageTimeout)*time.Second)
+	msgCtx, cancel := context.WithTimeout(ctx, time.Duration(c.MessageTimeout)*time.Second)
 	defer cancel()
 
 	err := natsMsg.HandleFunc(msgCtx, m.Data)

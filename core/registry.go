@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -28,15 +27,18 @@ var (
 
 // GmqRegister 注册消息队列插件
 // 启动后台协程自动维护连接状态，断线自动重连
-func GmqRegister(name string, plugin Gmq) error {
+func GmqRegister(name string, plugin Gmq) {
+	log.Printf("[GMQ] Registering plugin: %s\n", name)
 	if name == "" {
-		return fmt.Errorf("plugin name cannot be empty")
+		log.Printf("[GMQ] Plugin name cannot be empty\n")
+		return
 	}
 
 	pluginsMu.Lock()
 	if _, exists := GmqPlugins[name]; exists {
 		pluginsMu.Unlock()
-		return fmt.Errorf("plugin %s already registered", name)
+		log.Printf("[GMQ] Plugin %s already registered\n", name)
+		return
 	}
 
 	pipeline := newGmqPipeline(name, plugin)
@@ -107,8 +109,6 @@ func GmqRegister(name string, plugin Gmq) error {
 			}
 		}
 	}(name, pipeline, mgrCtx)
-
-	return nil
 }
 
 // Shutdown 优雅关闭所有消息队列连接
@@ -135,41 +135,6 @@ func Shutdown(ctx context.Context) error {
 		}
 	}
 	return lastErr
-}
-
-// GmqUnregister 注销消息队列插件
-// 停止后台 goroutine 并清理资源
-func GmqUnregister(name string) error {
-	if name == "" {
-		return fmt.Errorf("plugin name cannot be empty")
-	}
-
-	pluginCancelMu.Lock()
-	cancelFunc, exists := pluginCancelFuncs[name]
-	if exists {
-		cancelFunc()
-		delete(pluginCancelFuncs, name)
-	}
-	pluginCancelMu.Unlock()
-
-	if !exists {
-		return fmt.Errorf("plugin %s not found", name)
-	}
-
-	pluginsMu.Lock()
-	pipeline, exists := GmqPlugins[name]
-	if exists {
-		delete(GmqPlugins, name)
-	}
-	pluginsMu.Unlock()
-
-	if pipeline != nil {
-		if err := pipeline.GmqClose(context.Background()); err != nil {
-			return fmt.Errorf("failed to close plugin %s: %w", name, err)
-		}
-	}
-
-	return nil
 }
 
 // GetGmq 获取已注册的消息队列管道

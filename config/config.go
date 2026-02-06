@@ -14,14 +14,6 @@ const (
 	// 服务器默认配置
 	DefaultServerAddress = ":1688"
 	DefaultServerName    = "gmq"
-
-	// NATS 默认配置
-	DefaultNATSURL            = "nats://localhost:4222"
-	DefaultNATSTimeout        = 10
-	DefaultNATSReconnectWait  = 5
-	DefaultNATSMaxReconnects  = -1
-	DefaultNATSMessageTimeout = 30
-
 	// WebSocket 默认配置
 	DefaultWSReadBufferSize  = 1024
 	DefaultWSWriteBufferSize = 1024
@@ -39,6 +31,8 @@ var GlobalConfig *Config
 type Config struct {
 	Server    ServerConfig    `yaml:"server"`
 	NATS      NATSConfig      `yaml:"nats"`
+	RocketMQ  RocketMQConfig  `yaml:"rocketmq"`
+	Kafka     KafkaConfig     `yaml:"kafka"`
 	WebSocket WebSocketConfig `yaml:"websocket"`
 }
 
@@ -63,6 +57,28 @@ type WebSocketConfig struct {
 	WriteBufferSize int `yaml:"writeBufferSize"`
 	PingInterval    int `yaml:"pingInterval"`
 	ReadTimeout     int `yaml:"readTimeout"`
+}
+
+// RocketMQConfig RocketMQ配置
+type RocketMQConfig struct {
+	NameServers    string `yaml:"nameServers"`    // NameServer地址
+	Timeout        int    `yaml:"timeout"`        // 连接超时(秒)
+	ReconnectWait  int    `yaml:"reconnectWait"`  // 重连等待(秒)
+	MaxReconnects  int    `yaml:"maxReconnects"`  // 最大重连次数(-1为无限)
+	MessageTimeout int    `yaml:"messageTimeout"` // 消息处理超时(秒)
+	ConsumerGroup  string `yaml:"consumerGroup"`  // 消费者组名
+	InstanceName   string `yaml:"instanceName"`   // 实例名称
+}
+
+// KafkaConfig Kafka配置
+type KafkaConfig struct {
+	Brokers        []string `yaml:"brokers"`        // Broker地址列表
+	Timeout        int      `yaml:"timeout"`        // 连接超时(秒)
+	ReconnectWait  int      `yaml:"reconnectWait"`  // 重连等待(秒)
+	MaxReconnects  int      `yaml:"maxReconnects"`  // 最大重连次数(-1为无限)
+	MessageTimeout int      `yaml:"messageTimeout"` // 消息处理超时(秒)
+	ConsumerGroup  string   `yaml:"consumerGroup"`  // 消费者组名
+	ClientID       string   `yaml:"clientId"`       // 客户端ID
 }
 
 // Validate 验证WebSocket配置
@@ -102,10 +118,56 @@ func (c *NATSConfig) Validate() error {
 	return nil
 }
 
+// Validate 验证RocketMQ配置
+func (c *RocketMQConfig) Validate() error {
+	if c.NameServers == "" {
+		return fmt.Errorf("RocketMQ NameServers cannot be empty")
+	}
+	if c.Timeout < 1 || c.Timeout > 300 {
+		return fmt.Errorf("timeout must be between 1 and 300 seconds")
+	}
+	if c.ReconnectWait < 1 || c.ReconnectWait > 3600 {
+		return fmt.Errorf("reconnectWait must be between 1 and 3600 seconds")
+	}
+	if c.MaxReconnects < -1 {
+		return fmt.Errorf("maxReconnects must be -1 or positive")
+	}
+	if c.MessageTimeout < 1 || c.MessageTimeout > 3600 {
+		return fmt.Errorf("messageTimeout must be between 1 and 3600 seconds")
+	}
+	return nil
+}
+
+// Validate 验证Kafka配置
+func (c *KafkaConfig) Validate() error {
+	if len(c.Brokers) == 0 {
+		return fmt.Errorf("Kafka brokers cannot be empty")
+	}
+	if c.Timeout < 1 || c.Timeout > 300 {
+		return fmt.Errorf("timeout must be between 1 and 300 seconds")
+	}
+	if c.ReconnectWait < 1 || c.ReconnectWait > 3600 {
+		return fmt.Errorf("reconnectWait must be between 1 and 3600 seconds")
+	}
+	if c.MaxReconnects < -1 {
+		return fmt.Errorf("maxReconnects must be -1 or positive")
+	}
+	if c.MessageTimeout < 1 || c.MessageTimeout > 3600 {
+		return fmt.Errorf("messageTimeout must be between 1 and 3600 seconds")
+	}
+	return nil
+}
+
 // Validate 验证整个配置
 func (c *Config) Validate() error {
 	if err := c.NATS.Validate(); err != nil {
 		return fmt.Errorf("NATS config error: %w", err)
+	}
+	if err := c.RocketMQ.Validate(); err != nil {
+		return fmt.Errorf("RocketMQ config error: %w", err)
+	}
+	if err := c.Kafka.Validate(); err != nil {
+		return fmt.Errorf("Kafka config error: %w", err)
 	}
 	if err := c.WebSocket.Validate(); err != nil {
 		return fmt.Errorf("WebSocket config error: %w", err)
@@ -131,21 +193,6 @@ func LoadConfig(path string) error {
 	}
 	if cfg.Server.Name == "" {
 		cfg.Server.Name = DefaultServerName
-	}
-	if cfg.NATS.URL == "" {
-		cfg.NATS.URL = DefaultNATSURL
-	}
-	if cfg.NATS.Timeout == 0 {
-		cfg.NATS.Timeout = DefaultNATSTimeout
-	}
-	if cfg.NATS.ReconnectWait == 0 {
-		cfg.NATS.ReconnectWait = DefaultNATSReconnectWait
-	}
-	if cfg.NATS.MaxReconnects == 0 {
-		cfg.NATS.MaxReconnects = DefaultNATSMaxReconnects
-	}
-	if cfg.NATS.MessageTimeout == 0 {
-		cfg.NATS.MessageTimeout = DefaultNATSMessageTimeout
 	}
 	// WebSocket 默认配置
 	if cfg.WebSocket.ReadBufferSize == 0 {
@@ -182,16 +229,6 @@ func GetServerAddress() string {
 	return GlobalConfig.Server.Address
 }
 
-// GetNATSURL 获取NATS连接地址
-func GetNATSURL() string {
-	configMu.RLock()
-	defer configMu.RUnlock()
-	if GlobalConfig == nil {
-		return DefaultNATSURL
-	}
-	return GlobalConfig.NATS.URL
-}
-
 // GetWebSocketConfig 获取WebSocket配置
 func GetWebSocketConfig() WebSocketConfig {
 	configMu.RLock()
@@ -205,20 +242,4 @@ func GetWebSocketConfig() WebSocketConfig {
 		}
 	}
 	return GlobalConfig.WebSocket
-}
-
-// GetNATSConfig 获取NATS配置
-func GetNATSConfig() NATSConfig {
-	configMu.RLock()
-	defer configMu.RUnlock()
-	if GlobalConfig == nil {
-		return NATSConfig{
-			URL:            DefaultNATSURL,
-			Timeout:        DefaultNATSTimeout,
-			ReconnectWait:  DefaultNATSReconnectWait,
-			MaxReconnects:  DefaultNATSMaxReconnects,
-			MessageTimeout: DefaultNATSMessageTimeout,
-		}
-	}
-	return GlobalConfig.NATS
 }

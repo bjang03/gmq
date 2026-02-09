@@ -3,15 +3,16 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/bjang03/gmq/api"
 	"github.com/bjang03/gmq/core"
 	"github.com/bjang03/gmq/mq"
-	"github.com/bjang03/gmq/web"
-	"github.com/bjang03/gmq/web/controller"
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
@@ -22,6 +23,26 @@ func main() {
 		MaxReconnects:  -1,
 		MessageTimeout: 30,
 	})
+
+	// 设置 Gin 路由
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.Default()
+	api.SetupRouter(router)
+
+	// 创建 HTTP 服务器
+	srv := &http.Server{
+		Addr:    ":1688",
+		Handler: router,
+	}
+
+	// 启动 HTTP 服务器
+	go func() {
+		log.Println("HTTP server starting on :1688")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
+
 	// 等待中断信号
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -30,11 +51,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := web.HttpServer.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("Error shutting down HTTP server: %v", err)
 	}
 	if err := core.Shutdown(ctx); err != nil {
 		log.Printf("Error during MQ shutdown: %v", err)
 	}
-	controller.StopMetricsBroadcast()
+	api.StopMetricsBroadcast()
+	log.Println("Server stopped")
 }

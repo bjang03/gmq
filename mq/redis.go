@@ -1,17 +1,18 @@
-package components
+package mq
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/bjang03/gmq/core"
-	"github.com/bjang03/gmq/utils"
-	"github.com/redis/go-redis/v9"
-	"github.com/spf13/cast"
 	"log"
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/bjang03/gmq/core"
+	"github.com/bjang03/gmq/utils"
+	"github.com/redis/go-redis/v9"
+	"github.com/spf13/cast"
 )
 
 type RedisPubMessage struct {

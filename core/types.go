@@ -7,8 +7,11 @@ import (
 
 // 默认重试配置
 const (
-	DefaultRetryAttempts = 3                      // 默认重试次数
+	DefaultRetryAttempts = 300                    // 默认重试次数
 	DefaultRetryDelay    = 500 * time.Millisecond // 默认重试间隔
+
+	MsgRetryDeliver = 5                      // 消息的最大重试次数，达到此值后进入死信队列(默认3次)
+	MsgRetryDelay   = 500 * time.Millisecond // 消息的重试延迟时间(毫秒，默认500ms)
 )
 
 // SubMessage 订阅消息基础结构
@@ -46,13 +49,27 @@ type PublishDelay interface {
 	GetGmqPublishDelayMsgType()
 }
 
+// DeadLetterMsgDTO 死信消息DTO（给前端返回的结构化数据）
+type DeadLetterMsgDTO struct {
+	MessageID   string                 `json:"message_id"`   // 消息ID
+	Body        string                 `json:"body"`         // 消息体
+	Headers     map[string]interface{} `json:"headers"`      // 消息头（包含死信原因等信息）
+	Timestamp   string                 `json:"timestamp"`    // 消息发布时间
+	Exchange    string                 `json:"exchange"`     // 原交换机
+	RoutingKey  string                 `json:"routing_key"`  // 原路由键
+	DeadReason  string                 `json:"dead_reason"`  // 死信原因（解析自headers）
+	QueueName   string                 `json:"queue_name"`   // 死信队列名称
+	DeliveryTag uint64                 `json:"delivery_tag"` // 投递标签（用于手动操作）
+}
+
 // Gmq 消息队列统一接口定义
 type Gmq interface {
 	GmqConnect(ctx context.Context) error              // 连接消息队列
 	GmqPublish(ctx context.Context, msg Publish) error // 发布消息
 	GmqPublishDelay(ctx context.Context, msg PublishDelay) error
-	GmqSubscribe(ctx context.Context, msg any) (result interface{}, err error) // 订阅消息，返回订阅对象
-	GmqPing(ctx context.Context) bool                                          // 检测连接状态
-	GmqClose(ctx context.Context) error                                        // 关闭连接
-	GetMetrics(ctx context.Context) *Metrics                                   // 获取监控指标
+	GmqSubscribe(ctx context.Context, msg any) error                          // 订阅消息，返回订阅对象
+	GmqGetDeadLetter(queueName string, limit int) ([]DeadLetterMsgDTO, error) // 获取死信队列消息
+	GmqPing(ctx context.Context) bool                                         // 检测连接状态
+	GmqClose(ctx context.Context) error                                       // 关闭连接
+	GetMetrics(ctx context.Context) *Metrics                                  // 获取监控指标
 }

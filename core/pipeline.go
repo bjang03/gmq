@@ -65,10 +65,10 @@ func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
 	var err error
 
 	// 带重试的发布（无锁，网络操作）
-	for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
+	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
 		if attempt > 0 {
 			// 重试前等待，使用指数退避
-			delay := DefaultRetryDelay * time.Duration(1<<uint(attempt-1))
+			delay := MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
@@ -109,10 +109,10 @@ func (p *GmqPipeline) GmqPublishDelay(ctx context.Context, msg PublishDelay) err
 	var err error
 
 	// 带重试的发布（无锁，网络操作）
-	for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
+	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
 		if attempt > 0 {
 			// 重试前等待，使用指数退避
-			delay := DefaultRetryDelay * time.Duration(1<<uint(attempt-1))
+			delay := MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
@@ -157,10 +157,10 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 
 	var subObj interface{}
 	// 带重试的订阅
-	for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
+	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
 		if attempt > 0 {
 			// 重试前等待，使用指数退避
-			delay := DefaultRetryDelay * time.Duration(1<<uint(attempt-1))
+			delay := MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
@@ -269,9 +269,9 @@ func (p *GmqPipeline) restoreSubscriptions() {
 		var err error
 
 		// 带重试的订阅
-		for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
+		for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
 			if attempt > 0 {
-				delay := DefaultRetryDelay * time.Duration(1<<uint(attempt-1))
+				delay := MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 				select {
 				case <-time.After(delay):
 				case <-restoreCtx.Done():

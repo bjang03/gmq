@@ -7,9 +7,6 @@ import (
 
 // 默认重试配置
 const (
-	DefaultRetryAttempts = 300                    // 默认重试次数
-	DefaultRetryDelay    = 500 * time.Millisecond // 默认重试间隔
-
 	MsgRetryDeliver = 3               // 消息的最大重试次数，达到此值后进入死信队列(默认3次)
 	MsgRetryDelay   = 3 * time.Second // 消息的重试延迟时间(秒，默认3m)
 )

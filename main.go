@@ -16,7 +16,7 @@ import (
 
 func main() {
 	core.GmqRegister("nats", &components.NatsConn{
-		URL:            "nats://localhost:4222",
+		Url:            "nats://localhost:4222",
 		Timeout:        10,
 		ReconnectWait:  5,
 		MaxReconnects:  -1,

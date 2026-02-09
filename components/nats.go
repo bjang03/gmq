@@ -6,12 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/bjang03/gmq/core"
-	"github.com/bjang03/gmq/utils"
-	"github.com/nats-io/nats.go"
 	"log"
 	"strings"
 	"time"
+
+	"github.com/bjang03/gmq/core"
+	"github.com/bjang03/gmq/utils"
+	"github.com/nats-io/nats.go"
 )
 
 type NatsPubMessage struct {
@@ -43,27 +44,27 @@ func (n NatsPubDelayMessage) GetGmqPublishDelayMsgType() {
 
 // NatsConn NATS消息队列实现
 type NatsConn struct {
-	NatsURL            string     // NATS连接地址
-	NatsTimeout        int        // 连接超时(秒)
-	NatsReconnectWait  int        // 重连等待(秒)
-	NatsMaxReconnects  int        // 最大重连次数(-1为无限)
-	NatsMessageTimeout int        // 消息处理超时(秒)
-	natsConn           *nats.Conn // NATS 连接对象
-	natsJS             nats.JetStreamContext
+	Url            string     // NATS连接地址
+	Timeout        int        // 连接超时(秒)
+	ReconnectWait  int        // 重连等待(秒)
+	MaxReconnects  int        // 最大重连次数(-1为无限)
+	MessageTimeout int        // 消息处理超时(秒)
+	conn           *nats.Conn // NATS 连接对象
+	js             nats.JetStreamContext
 }
 
 // GmqPing 检测NATS连接状态
 func (c *NatsConn) GmqPing(_ context.Context) bool {
-	return c.natsConn != nil && c.natsConn.IsConnected()
+	return c.conn != nil && c.conn.IsConnected()
 }
 
 // GmqConnect 连接NATS服务器
 func (c *NatsConn) GmqConnect(_ context.Context) error {
 	// 设置连接选项
 	opts := []nats.Option{
-		nats.Timeout(time.Duration(c.NatsTimeout) * time.Second),
-		nats.ReconnectWait(time.Duration(c.NatsReconnectWait) * time.Second),
-		nats.MaxReconnects(c.NatsMaxReconnects),
+		nats.Timeout(time.Duration(c.Timeout) * time.Second),
+		nats.ReconnectWait(time.Duration(c.ReconnectWait) * time.Second),
+		nats.MaxReconnects(c.MaxReconnects),
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
 			log.Printf("[NATS] Connection disconnected: %v", err)
 		}),
@@ -78,7 +79,7 @@ func (c *NatsConn) GmqConnect(_ context.Context) error {
 		}),
 	}
 
-	conn, err := nats.Connect(c.NatsURL, opts...)
+	conn, err := nats.Connect(c.Url, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}
@@ -89,17 +90,17 @@ func (c *NatsConn) GmqConnect(_ context.Context) error {
 		conn.Close()
 		return fmt.Errorf("NATS JetStream connect failed: %w", err)
 	}
-	c.natsConn = conn
-	c.natsJS = newJS
+	c.conn = conn
+	c.js = newJS
 	return nil
 }
 
 // GmqClose 关闭NATS连接
 func (c *NatsConn) GmqClose(_ context.Context) error {
-	if c.natsConn == nil {
+	if c.conn == nil {
 		return nil
 	}
-	c.natsConn.Close()
+	c.conn.Close()
 	return nil
 }
 
@@ -152,10 +153,10 @@ func getStreamNameAndStorage(isDelayMsg, durable bool) (string, nats.StorageType
 
 // checkInitialized 检查NATS连接和JetStream是否已初始化
 func (c *NatsConn) checkInitialized() error {
-	if c.natsConn == nil {
+	if c.conn == nil {
 		return fmt.Errorf("NATS connection is not initialized")
 	}
-	if c.natsJS == nil {
+	if c.js == nil {
 		return fmt.Errorf("NATS JetStream is not initialized")
 	}
 	return nil
@@ -189,7 +190,7 @@ func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable 
 		return err
 	}
 
-	if err := jsStreamCreate(c.natsConn, jsConfig); err != nil {
+	if err := jsStreamCreate(c.conn, jsConfig); err != nil {
 		return fmt.Errorf("NATS Failed to create Stream: %w", err)
 	}
 
@@ -219,11 +220,11 @@ func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable 
 	pubOpts := []nats.PubOpt{
 		nats.Context(ctx),
 	}
-	ack, err := c.natsJS.PublishMsg(&m, pubOpts...)
+	ack, err := c.js.PublishMsg(&m, pubOpts...)
 	if err != nil {
 		return fmt.Errorf("NATS Failed to publish message: %w", err)
 	}
-	log.Println(fmt.Sprintf("NATS [%s] message success publish: Stream=%v, StreamSeq=%d", c.NatsURL, ack.Stream, ack.Sequence))
+	log.Println(fmt.Sprintf("NATS [%s] message success publish: Stream=%v, StreamSeq=%d", c.Url, ack.Stream, ack.Sequence))
 	return nil
 }
 
@@ -300,7 +301,7 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 		Discard:      nats.DiscardNew,
 		MaxConsumers: -1,
 	}
-	if err = jsStreamCreate(c.natsConn, dlqConfig); err != nil {
+	if err = jsStreamCreate(c.conn, dlqConfig); err != nil {
 		log.Printf("⚠️  死信队列创建失败: %v, Stream=%s", err, dlqStreamName)
 	} else {
 		log.Printf("✅ 死信队列创建成功: Stream=%s", dlqStreamName)
@@ -322,7 +323,7 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	consumerOpts := []nats.JSOpt{
 		nats.Context(ctx),
 	}
-	_, err = c.natsJS.AddConsumer(streamName, consumerConfig, consumerOpts...)
+	_, err = c.js.AddConsumer(streamName, consumerConfig, consumerOpts...)
 	if err != nil {
 		// 如果 Consumer 已存在，忽略错误
 		if !strings.Contains(err.Error(), "consumer name already in use") {
@@ -346,7 +347,7 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	}
 
 	// 使用 Subscribe 创建推送订阅，绑定到已存在的 Consumer
-	sub, err := c.natsJS.Subscribe(cfg.QueueName, msgHandler, subOpts...)
+	sub, err := c.js.Subscribe(cfg.QueueName, msgHandler, subOpts...)
 	if err != nil {
 		log.Printf("⚠️  NATS 订阅失败: %v, Queue=%s, Consumer=%s, Stream=%s", err, cfg.QueueName, cfg.ConsumerName, streamName)
 		return fmt.Errorf("NATS Failed to subscribe: %w", err)
@@ -387,7 +388,7 @@ func (c *NatsConn) listenForDeliveryExceeded(ctx context.Context, streamName, co
 	// 主题格式: $JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer>
 	advisorySubject := fmt.Sprintf("$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.%s.%s", streamName, consumerName)
 
-	sub, err := c.natsConn.Subscribe(advisorySubject, func(msg *nats.Msg) {
+	sub, err := c.conn.Subscribe(advisorySubject, func(msg *nats.Msg) {
 		var advisory JSConsumerDeliveryExceededAdvisory
 		if err := json.Unmarshal(msg.Data, &advisory); err != nil {
 			log.Printf("⚠️  解析 DLQ advisory 失败: %v, Subject=%s", err, msg.Subject)
@@ -428,7 +429,7 @@ func (c *NatsConn) moveToDLQ(ctx context.Context, streamName string, streamSeq u
 		return fmt.Errorf("marshal get msg request failed: %w", err)
 	}
 
-	resp, err := c.natsConn.Request(getMsgSubject, reqData, 5*time.Second)
+	resp, err := c.conn.Request(getMsgSubject, reqData, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("get msg request failed: %w", err)
 	}
@@ -506,7 +507,7 @@ func (c *NatsConn) moveToDLQ(ctx context.Context, streamName string, streamSeq u
 	pubOpts := []nats.PubOpt{
 		nats.Context(ctx),
 	}
-	ack, err := c.natsJS.PublishMsg(dlqMsg, pubOpts...)
+	ack, err := c.js.PublishMsg(dlqMsg, pubOpts...)
 	if err != nil {
 		return fmt.Errorf("publish to DLQ failed: %w", err)
 	}
@@ -566,7 +567,7 @@ func (c *NatsConn) findDLQStreamName() (string, error) {
 	}
 
 	for _, name := range streamNames {
-		if _, err := c.natsJS.StreamInfo(name); err == nil {
+		if _, err := c.js.StreamInfo(name); err == nil {
 			return name, nil
 		}
 	}
@@ -586,9 +587,9 @@ func (c *NatsConn) GmqGetDeadLetter(queueName string, limit int) (msgs []core.De
 
 	// 获取死信队列的消费者(用于读取消息)
 	consumerName := "dlq_reader_" + queueName
-	if _, err := c.natsJS.ConsumerInfo(streamName, consumerName); err != nil {
+	if _, err := c.js.ConsumerInfo(streamName, consumerName); err != nil {
 		// 创建消费者
-		if _, err := c.natsJS.AddConsumer(streamName, &nats.ConsumerConfig{
+		if _, err := c.js.AddConsumer(streamName, &nats.ConsumerConfig{
 			Durable:   consumerName,
 			AckPolicy: nats.AckExplicitPolicy,
 		}); err != nil && !strings.Contains(err.Error(), "consumer name already in use") {
@@ -597,7 +598,7 @@ func (c *NatsConn) GmqGetDeadLetter(queueName string, limit int) (msgs []core.De
 	}
 
 	// 获取消息
-	sub, err := c.natsJS.PullSubscribe(deadLetterQueue, consumerName, nats.BindStream(streamName))
+	sub, err := c.js.PullSubscribe(deadLetterQueue, consumerName, nats.BindStream(streamName))
 	if err != nil {
 		return nil, fmt.Errorf("failed to subscribe to dead letter queue: %w", err)
 	}
@@ -650,28 +651,28 @@ func (c *NatsConn) GmqGetDeadLetter(queueName string, limit int) (msgs []core.De
 func (c *NatsConn) GetMetrics(_ context.Context) *core.Metrics {
 	m := &core.Metrics{
 		Type:       "nats",
-		ServerAddr: c.NatsURL,
+		ServerAddr: c.Url,
 	}
 
 	// 检查连接是否为 nil
-	if c.natsConn == nil {
+	if c.conn == nil {
 		m.Status = "disconnected"
 		return m
 	}
 
 	// 从 NATS 连接获取服务端统计信息
-	stats := c.natsConn.Stats()
+	stats := c.conn.Stats()
 	// NATS 提供的统计信息
 	m.MsgsIn = int64(stats.InMsgs)
 	m.MsgsOut = int64(stats.OutMsgs)
 	m.BytesIn = int64(stats.InBytes)
 	m.BytesOut = int64(stats.OutBytes)
-	m.ReconnectCount = int64(c.natsConn.Reconnects)
+	m.ReconnectCount = int64(c.conn.Reconnects)
 
 	// 只提供客户端可获取的真实指标，移除硬编码的虚假数据
 	m.ServerMetrics = map[string]interface{}{
-		"serverId":      c.natsConn.ConnectedServerId(),
-		"serverVersion": c.natsConn.ConnectedServerVersion(),
+		"serverId":      c.conn.ConnectedServerId(),
+		"serverVersion": c.conn.ConnectedServerVersion(),
 	}
 
 	return m

@@ -250,13 +250,13 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 
 	// 创建推送订阅的回调函数
 	msgHandler := func(natsMsg *nats.Msg) {
+		log.Printf("NATS 收到消息: Subject=%s, Data=%s", natsMsg.Subject, string(natsMsg.Data))
 		var data map[string]any
 		if err := json.Unmarshal(natsMsg.Data, &data); err != nil {
-			log.Printf("⚠️  消息反序列化失败: %v, Subject=%s", err, natsMsg.Subject)
-			if !cfg.AutoAck {
-				_ = natsMsg.Nak()
+			// 如果不是 JSON，直接使用原始内容
+			data = map[string]interface{}{
+				"data": string(natsMsg.Data),
 			}
-			return
 		}
 
 		// 调用用户提供的处理函数处理业务逻辑

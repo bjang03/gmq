@@ -237,7 +237,7 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 		return fmt.Errorf("must provide consumer name")
 	}
 	if cfg.FetchCount <= 0 {
-		return fmt.Errorf("must provide fetch count")
+		cfg.FetchCount = 1
 	}
 	if cfg.HandleFunc == nil {
 		return fmt.Errorf("must provide handle func")

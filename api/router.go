@@ -19,7 +19,6 @@ func SetupRouter(engine *gin.Engine) {
 
 	// 注册业务路由 - 使用gin默认注册方式
 	engine.POST("/publish", PublishHandler)
-	engine.POST("/subscribe", SubscribeHandler)
 
 	// WebSocket 订阅路由
 	engine.GET("/ws/subscribe", WSSubscribeHandler)

@@ -195,11 +195,7 @@ func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable 
 	}
 
 	// 构建消息
-	//m := nats.NewMsg(queueName)
-	m := nats.Msg{
-		//Subject: subject,
-		Header: make(map[string][]string),
-	}
+	m := nats.NewMsg(queueName)
 	// 序列化数据
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -220,7 +216,7 @@ func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable 
 	pubOpts := []nats.PubOpt{
 		nats.Context(ctx),
 	}
-	ack, err := c.js.PublishMsg(&m, pubOpts...)
+	ack, err := c.js.PublishMsg(m, pubOpts...)
 	if err != nil {
 		return fmt.Errorf("NATS Failed to publish message: %w", err)
 	}

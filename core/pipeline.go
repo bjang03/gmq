@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -25,9 +26,8 @@ type GmqPipeline struct {
 	connectedAt int64           // 连接时间(Unix时间戳，秒)，原子访问
 	connected   int32           // 连接状态: 0=未连接, 1=已连接，原子访问
 
-	subscriptions map[string]interface{} // 订阅管理 - 统一管理所有订阅对象，key 为 topic:consumerName
-
-	subscriptionParams map[string]*subscriptionInfo // 订阅参数缓存 - 用于断线重连后恢复订阅
+	subscriptions      sync.Map // 订阅管理 - key: subKey, value: subscription object
+	subscriptionParams sync.Map // 订阅参数缓存 - key: subKey, value: *subscriptionInfo
 
 	cachedMetrics   atomic.Pointer[Metrics] // 指标缓存 - 原子指针，无锁读取
 	metricsCacheExp atomic.Int64            // 指标缓存过期时间戳 - 原子操作
@@ -37,11 +37,9 @@ type GmqPipeline struct {
 // newGmqPipeline 创建新的管道包装器
 func newGmqPipeline(name string, plugin Gmq) *GmqPipeline {
 	p := &GmqPipeline{
-		name:               name,
-		plugin:             plugin,
-		subscriptions:      make(map[string]interface{}),
-		subscriptionParams: make(map[string]*subscriptionInfo),
-		metricsCacheTTL:    5 * time.Second,
+		name:            name,
+		plugin:          plugin,
+		metricsCacheTTL: 5 * time.Second,
 	}
 	return p
 }
@@ -149,11 +147,13 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 	// 提取 topic 和 consumerName（从 msg 中解析）
 	topic, consumerName := p.extractSubscriptionInfo(msg)
 	subKey := p.getSubKey(topic, consumerName)
-	if _, alreadySubscribed := p.subscriptions[subKey]; alreadySubscribed {
+
+	// 检查是否已订阅
+	if _, alreadySubscribed := p.subscriptions.Load(subKey); alreadySubscribed {
 		return nil, fmt.Errorf("already subscribed to topic: %s", topic)
 	}
 	// 预留槽位，标记为"订阅中"状态
-	p.subscriptions[subKey] = nil
+	p.subscriptions.Store(subKey, nil)
 
 	var subObj interface{}
 	// 带重试的订阅
@@ -164,7 +164,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
-				delete(p.subscriptions, subKey)
+				p.subscriptions.Delete(subKey)
 				return nil, ctx.Err()
 			}
 		}
@@ -176,7 +176,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 	}
 
 	if err != nil {
-		delete(p.subscriptions, subKey)
+		p.subscriptions.Delete(subKey)
 
 		// 记录指标
 		latency := time.Since(start).Milliseconds()
@@ -186,7 +186,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 		return nil, err
 	}
 
-	if existingSub, exists := p.subscriptions[subKey]; exists && existingSub != nil {
+	if existingSub, exists := p.subscriptions.Load(subKey); exists && existingSub != nil {
 		// 取消刚创建的订阅，记录错误日志
 		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
 			if unsubErr := closer.Unsubscribe(); unsubErr != nil {
@@ -197,12 +197,12 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 	}
 
 	// 保存订阅对象到管道层
-	p.subscriptions[subKey] = subObj
+	p.subscriptions.Store(subKey, subObj)
 
 	// 保存订阅参数，用于断线重连后恢复订阅
-	p.subscriptionParams[subKey] = &subscriptionInfo{
+	p.subscriptionParams.Store(subKey, &subscriptionInfo{
 		msg: msg,
-	}
+	})
 
 	// 记录指标
 	latency := time.Since(start).Milliseconds()
@@ -215,9 +215,9 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 
 // GmqUnsubscribe 取消订阅
 func (p *GmqPipeline) GmqUnsubscribe(topic, consumerName string) error {
-
 	subKey := p.getSubKey(topic, consumerName)
-	subObj, exists := p.subscriptions[subKey]
+
+	subObj, exists := p.subscriptions.Load(subKey)
 	if !exists {
 		return fmt.Errorf("subscription not found: %s", subKey)
 	}
@@ -229,32 +229,37 @@ func (p *GmqPipeline) GmqUnsubscribe(topic, consumerName string) error {
 		}
 	}
 
-	delete(p.subscriptions, subKey)
-	delete(p.subscriptionParams, subKey) // 同时删除订阅参数缓存
+	p.subscriptions.Delete(subKey)
+	p.subscriptionParams.Delete(subKey) // 同时删除订阅参数缓存
 	return nil
 }
 
-// clearSubscriptions 清理所有订阅（需要在持有锁的情况下调用）
+// clearSubscriptions 清理所有订阅
 func (p *GmqPipeline) clearSubscriptions() {
-	for subKey, subObj := range p.subscriptions {
+	p.subscriptions.Range(func(key, value any) bool {
+		subKey := key.(string)
+		subObj := value
 		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
 			_ = closer.Unsubscribe()
 		}
-		delete(p.subscriptions, subKey)
-		delete(p.subscriptionParams, subKey)
-	}
+		p.subscriptions.Delete(subKey)
+		p.subscriptionParams.Delete(subKey)
+		return true
+	})
 }
 
 // restoreSubscriptions 断线重连后恢复所有订阅
 func (p *GmqPipeline) restoreSubscriptions() {
-
 	// 先清理旧的订阅对象
-	for subKey, subObj := range p.subscriptions {
+	p.subscriptions.Range(func(key, value any) bool {
+		subKey := key.(string)
+		subObj := value
 		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
 			_ = closer.Unsubscribe()
 		}
-		delete(p.subscriptions, subKey)
-	}
+		p.subscriptions.Delete(subKey)
+		return true
+	})
 
 	// 使用带取消的 context，支持优雅退出
 	restoreCtx, restoreCancel := context.WithCancel(context.Background())
@@ -264,7 +269,9 @@ func (p *GmqPipeline) restoreSubscriptions() {
 	var failedSubs []string
 
 	// 重新订阅
-	for subKey, info := range p.subscriptionParams {
+	p.subscriptionParams.Range(func(key, value any) bool {
+		subKey := key.(string)
+		info := value.(*subscriptionInfo)
 		var subObj interface{}
 		var err error
 
@@ -275,7 +282,7 @@ func (p *GmqPipeline) restoreSubscriptions() {
 				select {
 				case <-time.After(delay):
 				case <-restoreCtx.Done():
-					return
+					return false
 				}
 			}
 
@@ -287,26 +294,27 @@ func (p *GmqPipeline) restoreSubscriptions() {
 
 		if err != nil {
 			failedSubs = append(failedSubs, subKey)
-			continue
+			return true
 		}
 
 		// 保存新的订阅对象
 		if subObj != nil {
-			p.subscriptions[subKey] = subObj
+			p.subscriptions.Store(subKey, subObj)
 		} else {
-			p.subscriptions[subKey] = nil
+			p.subscriptions.Store(subKey, nil)
 		}
 
 		// 记录指标
 		atomic.AddInt64(&p.metrics.subscribeCount, 1)
-	}
+		return true
+	})
 
 	// 记录恢复失败的订阅（如果有）
 	if len(failedSubs) > 0 {
 		log.Printf("[GMQ] Failed to restore %d subscriptions after reconnection", len(failedSubs))
 		for _, subKey := range failedSubs {
-			if info, exists := p.subscriptionParams[subKey]; exists {
-				if qn, ok := info.msg.(interface{ GetQueueName() string }); ok {
+			if info, exists := p.subscriptionParams.Load(subKey); exists {
+				if qn, ok := info.(*subscriptionInfo).msg.(interface{ GetQueueName() string }); ok {
 					log.Printf("[GMQ] Failed to restore subscription: queue=%s, key=%s", qn.GetQueueName(), subKey)
 				} else {
 					log.Printf("[GMQ] Failed to restore subscription: key=%s", subKey)

@@ -1,4 +1,4 @@
-package components
+package mq
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 // TestNatsSubscribe 测试NATS发布/订阅消息
 func TestNatsSubscribe(t *testing.T) {
 	core.GmqRegister("nats", &NatsConn{
-		URL:            "nats://localhost:4222",
+		Url:            "nats://localhost:4222",
 		Timeout:        10,
 		ReconnectWait:  5,
 		MaxReconnects:  -1,

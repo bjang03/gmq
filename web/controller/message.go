@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bjang03/gmq/components"
 	"github.com/bjang03/gmq/config"
 	"github.com/bjang03/gmq/core"
+	"github.com/bjang03/gmq/mq"
 	"github.com/bjang03/gmq/web/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -34,7 +34,7 @@ func Publish(ctx context.Context, req *dto.PublishReq) (res interface{}, err err
 		return nil, fmt.Errorf("[%s] pipeline not found", req.MqName)
 	}
 
-	err = pipeline.GmqPublish(ctx, &components.NatsPubMessage{
+	err = pipeline.GmqPublish(ctx, &mq.NatsPubMessage{
 		PubMessage: core.PubMessage{
 			QueueName: req.QueueName,
 			Data:      req.Message,
@@ -62,7 +62,7 @@ func createMQSubscription(ctx context.Context, mqName, queueName, subType string
 		return nil, fmt.Errorf("[%s] pipeline not found", mqName)
 	}
 
-	subMsg := &components.NatsSubMessage{
+	subMsg := &mq.NatsSubMessage{
 		SubMessage: core.SubMessage[any]{
 			QueueName:    queueName,
 			ConsumerName: fmt.Sprintf("%s-sub-%s-%d", subType, queueName, time.Now().UnixNano()),

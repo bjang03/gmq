@@ -8,14 +8,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bjang03/gmq/components"
 	"github.com/bjang03/gmq/core"
+	"github.com/bjang03/gmq/mq"
 	"github.com/bjang03/gmq/web"
 	"github.com/bjang03/gmq/web/controller"
 )
 
 func main() {
-	core.GmqRegister("nats", &components.NatsConn{
+	core.GmqRegister("nats", &mq.NatsConn{
 		Url:            "nats://localhost:4222",
 		Timeout:        10,
 		ReconnectWait:  5,

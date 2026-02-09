@@ -1,14 +1,15 @@
-package components
+package mq
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"time"
+
 	"github.com/bjang03/gmq/core"
 	"github.com/bjang03/gmq/utils"
 	amqp "github.com/rabbitmq/amqp091-go"
-	"log"
-	"time"
 )
 
 type RabbitMQPubMessage struct {

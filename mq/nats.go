@@ -280,16 +280,12 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	}
 
 	// 构建流名称和存储类型
-	streamName, _ := getStreamNameAndStorage(cfg.IsDelayMsg, cfg.Durable)
+	streamName, storage := getStreamNameAndStorage(cfg.IsDelayMsg, cfg.Durable)
 
 	// 配置死信队列
 	deadLetterQueue := cfg.QueueName + "_DLQ" // 默认死信队列名称
 	dlqStreamName := streamName + "_DLQ"
 	dlqSubjects := []string{deadLetterQueue}
-	storage := nats.MemoryStorage
-	if cfg.Durable {
-		storage = nats.FileStorage
-	}
 	dlqConfig := &StreamConfig{
 		Name:         dlqStreamName,
 		Subjects:     dlqSubjects,

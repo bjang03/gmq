@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -10,6 +11,11 @@ import (
 func SetupRouter(engine *gin.Engine) {
 	// 启动WebSocket广播协程
 	StartMetricsBroadcast()
+
+	// 静态文件服务
+	engine.Static("/statics", "./statics")
+	engine.Static("/ui", "./statics")
+	engine.StaticFile("/", "./statics/html/index.html")
 
 	// 注册业务路由 - 使用gin默认注册方式
 	engine.POST("/publish", PublishHandler)
@@ -25,6 +31,14 @@ func SetupRouter(engine *gin.Engine) {
 	engine.GET("/health", func(c *gin.Context) {
 		c.JSON(200, map[string]string{"status": "ok"})
 	})
+
+	// 输出已注册的路由
+	fmt.Println("\n========== 已注册路由 ==========")
+	routes := engine.Routes()
+	for _, route := range routes {
+		fmt.Printf("%-8s %s\n", route.Method, route.Path)
+	}
+	fmt.Println("================================\n")
 }
 
 // PublishHandler 发布消息处理器

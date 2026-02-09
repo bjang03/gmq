@@ -98,6 +98,50 @@ func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
 	return err
 }
 
+// GmqPublishDelay 发布延迟消息（带统一监控和重试）
+func (p *GmqPipeline) GmqPublishDelay(ctx context.Context, msg PublishDelay) error {
+	// 只检查连接状态，不持有锁进行网络操作
+	if atomic.LoadInt32(&p.connected) == 0 {
+		return fmt.Errorf("not connected")
+	}
+
+	start := time.Now()
+	var err error
+
+	// 带重试的发布（无锁，网络操作）
+	for attempt := 0; attempt < DefaultRetryAttempts; attempt++ {
+		if attempt > 0 {
+			// 重试前等待，使用指数退避
+			delay := DefaultRetryDelay * time.Duration(1<<uint(attempt-1))
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				err = ctx.Err()
+				break
+			}
+		}
+
+		err = p.plugin.GmqPublishDelay(ctx, msg)
+		if err == nil {
+			break
+		}
+	}
+
+	// 记录指标（原子操作，无需锁）
+	latency := time.Since(start).Milliseconds()
+	atomic.AddInt64(&p.metrics.totalLatency, latency)
+	atomic.AddInt64(&p.metrics.latencyCount, 1)
+
+	if err != nil {
+		atomic.AddInt64(&p.metrics.publishFailed, 1)
+	} else {
+		atomic.AddInt64(&p.metrics.publishCount, 1)
+		atomic.AddInt64(&p.metrics.messageCount, 1)
+	}
+
+	return err
+}
+
 // GmqSubscribe 订阅消息（带统一监控和重试）
 func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interface{}, err error) {
 	start := time.Now()
@@ -125,7 +169,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 			}
 		}
 
-		subObj, err = p.plugin.GmqSubscribe(ctx, msg)
+		err = p.plugin.GmqSubscribe(ctx, msg)
 		if err == nil {
 			break
 		}
@@ -235,7 +279,7 @@ func (p *GmqPipeline) restoreSubscriptions() {
 				}
 			}
 
-			subObj, err = p.plugin.GmqSubscribe(restoreCtx, info.msg)
+			err = p.plugin.GmqSubscribe(restoreCtx, info.msg)
 			if err == nil {
 				break
 			}
@@ -315,6 +359,11 @@ func (p *GmqPipeline) getSubKey(topic, consumerName string) string {
 	// 使用原子计数器生成唯一后缀，确保相同 topic 多次订阅不会冲突
 	counter := anonConsumerCounter.Add(1)
 	return fmt.Sprintf("%s:anon-%d", topic, counter)
+}
+
+// GmqGetDeadLetter 获取死信消息
+func (p *GmqPipeline) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]DeadLetterMsgDTO, error) {
+	return p.plugin.GmqGetDeadLetter(queueName, limit)
 }
 
 // GmqPing 检测连接状态

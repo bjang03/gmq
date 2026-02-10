@@ -141,7 +141,7 @@ func (p *GmqPipeline) GmqPublishDelay(ctx context.Context, msg PublishDelay) err
 }
 
 // GmqSubscribe 订阅消息（带统一监控和重试）
-func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interface{}, err error) {
+func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	start := time.Now()
 
 	// 提取 topic 和 consumerName（从 msg 中解析）
@@ -150,7 +150,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 
 	// 检查是否已订阅
 	if _, alreadySubscribed := p.subscriptions.Load(subKey); alreadySubscribed {
-		return nil, fmt.Errorf("already subscribed to topic: %s", topic)
+		return fmt.Errorf("already subscribed to topic: %s", topic)
 	}
 	// 预留槽位，标记为"订阅中"状态
 	p.subscriptions.Store(subKey, nil)
@@ -165,7 +165,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 			case <-time.After(delay):
 			case <-ctx.Done():
 				p.subscriptions.Delete(subKey)
-				return nil, ctx.Err()
+				return ctx.Err()
 			}
 		}
 
@@ -183,7 +183,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 		atomic.AddInt64(&p.metrics.totalLatency, latency)
 		atomic.AddInt64(&p.metrics.latencyCount, 1)
 		atomic.AddInt64(&p.metrics.subscribeFailed, 1)
-		return nil, err
+		return err
 	}
 
 	if existingSub, exists := p.subscriptions.Load(subKey); exists && existingSub != nil {
@@ -193,7 +193,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 				log.Printf("[GMQ] Failed to unsubscribe after conflict: %v", unsubErr)
 			}
 		}
-		return nil, fmt.Errorf("subscription conflict detected for topic: %s", topic)
+		return fmt.Errorf("subscription conflict detected for topic: %s", topic)
 	}
 
 	// 保存订阅对象到管道层
@@ -210,7 +210,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (result interfa
 	atomic.AddInt64(&p.metrics.latencyCount, 1)
 	atomic.AddInt64(&p.metrics.subscribeCount, 1)
 
-	return subObj, nil
+	return nil
 }
 
 // GmqUnsubscribe 取消订阅
@@ -371,7 +371,7 @@ func (p *GmqPipeline) getSubKey(topic, consumerName string) string {
 
 // GmqGetDeadLetter 获取死信消息
 func (p *GmqPipeline) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]DeadLetterMsgDTO, error) {
-	return p.plugin.GmqGetDeadLetter(queueName, limit)
+	return p.plugin.GmqGetDeadLetter(ctx, queueName, limit)
 }
 
 // GmqPing 检测连接状态

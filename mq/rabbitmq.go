@@ -409,7 +409,7 @@ func (c *RabbitMQMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 // queueName: 队列名称
 // limit: 限制查询数量（0表示查询所有）
 // return: 结构化的死信消息列表 + 错误
-func (c *RabbitMQMsg) GmqGetDeadLetter(queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
+func (c *RabbitMQMsg) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
 	if c.rabbitMQChannel == nil {
 		return nil, fmt.Errorf("rabbitMQChannel is nil")
 	}

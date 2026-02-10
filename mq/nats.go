@@ -567,7 +567,7 @@ func (c *NatsConn) findDLQStreamName() (string, error) {
 	return "", fmt.Errorf("no DLQ stream found")
 }
 
-func (c *NatsConn) GmqGetDeadLetter(queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
+func (c *NatsConn) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
 	// 死信队列名称
 	deadLetterQueue := queueName + "_DLQ"
 

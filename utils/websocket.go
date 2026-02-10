@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bjang03/gmq/config"
 	"github.com/gorilla/websocket"
 )
 
@@ -54,13 +53,10 @@ func NewWebSocketManager() *WebSocketManager {
 // GetUpgrader 获取WebSocket upgrader(单例模式)
 func (m *WebSocketManager) GetUpgrader() *websocket.Upgrader {
 	m.upgraderOnce.Do(func() {
-		wsCfg := config.GetWebSocketConfig()
 		m.upgrader = &websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true
 			},
-			ReadBufferSize:  wsCfg.ReadBufferSize,
-			WriteBufferSize: wsCfg.WriteBufferSize,
 		}
 	})
 	return m.upgrader
@@ -187,9 +183,8 @@ func (m *WebSocketManager) HandleConnection(
 	handler MessageHandler,
 	initialData *WebSocketMessage,
 ) (*websocket.Conn, error) {
-	wsCfg := config.GetWebSocketConfig()
-	pingInterval := time.Duration(wsCfg.PingInterval) * time.Second
-	readTimeout := time.Duration(wsCfg.ReadTimeout) * time.Second
+	pingInterval := 30 * time.Second
+	readTimeout := 60 * time.Second
 
 	conn, err := m.Upgrade(w, r)
 	if err != nil {

@@ -1,9 +1,0 @@
-server:
-  address: ":1688"
-  name: "gmq"
-
-websocket:
-  readBufferSize: 1024
-  writeBufferSize: 1024
-  pingInterval: 30
-  readTimeout: 60

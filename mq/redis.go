@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/bjang03/gmq/core"
-	"github.com/bjang03/gmq/utils"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cast"
 )
@@ -19,22 +18,8 @@ type RedisPubMessage struct {
 	core.PubMessage
 }
 
-type RedisPubDelayMessage struct {
-	core.PubMessage
-}
-
 type RedisSubMessage struct {
 	core.SubMessage[any]
-}
-
-func (n RedisPubMessage) GetGmqPublishMsgType() {
-	//TODO implement me
-	panic("implement me")
-}
-
-func (n RedisPubDelayMessage) GetGmqPublishDelayMsgType() {
-	//TODO implement me
-	panic("implement me")
 }
 
 // RedisMsg Redis消息队列实现
@@ -140,12 +125,6 @@ func (c *RedisMsg) GmqPublish(ctx context.Context, msg core.Publish) (err error)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RedisPubMessage")
 	}
-	if cfg.QueueName == "" {
-		return fmt.Errorf("must provide queue name")
-	}
-	if utils.IsEmpty(cfg.Data) {
-		return fmt.Errorf("must provide data")
-	}
 	// 将数据转换为 map[string]interface{}
 	values := make(map[string]interface{})
 	switch v := cfg.Data.(type) {
@@ -216,16 +195,7 @@ func (c *RedisMsg) GmqPublishDelay(_ context.Context, _ core.PublishDelay) (err 
 func (c *RedisMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	cfg, ok := msg.(*RedisSubMessage)
 	if !ok {
-		return fmt.Errorf("invalid message type, expected *RabbitMQPubMessage")
-	}
-	if cfg.QueueName == "" {
-		return fmt.Errorf("must provide queue name")
-	}
-	if cfg.ConsumerName == "" {
-		return fmt.Errorf("must provide consumer name")
-	}
-	if cfg.FetchCount <= 0 {
-		return fmt.Errorf("must provide fetch count")
+		return fmt.Errorf("invalid message type, expected *RedisSubMessage")
 	}
 	if cfg.HandleFunc == nil {
 		return fmt.Errorf("must provide handle func")

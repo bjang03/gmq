@@ -52,8 +52,24 @@ func safeCloneMap(m map[string]interface{}) map[string]interface{} {
 	return maps.Clone(m)
 }
 
+// validatePublishMsg 统一校验发布消息公共参数
+func validatePublishMsg(msg Publish) error {
+	if msg.GetQueueName() == "" {
+		return fmt.Errorf("queue name is required")
+	}
+	if msg.GetData() == nil {
+		return fmt.Errorf("data is required")
+	}
+	return nil
+}
+
 // GmqPublish 发布消息（带统一监控和重试）
 func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
+	// 统一校验公共参数
+	if err := validatePublishMsg(msg); err != nil {
+		return err
+	}
+
 	// 只检查连接状态，不持有锁进行网络操作
 	if atomic.LoadInt32(&p.connected) == 0 {
 		return fmt.Errorf("not connected")
@@ -96,8 +112,27 @@ func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
 	return err
 }
 
+// validatePublishDelayMsg 统一校验延迟发布消息公共参数
+func validatePublishDelayMsg(msg PublishDelay) error {
+	if msg.GetQueueName() == "" {
+		return fmt.Errorf("queue name is required")
+	}
+	if msg.GetData() == nil {
+		return fmt.Errorf("data is required")
+	}
+	if msg.GetDelaySeconds() <= 0 {
+		return fmt.Errorf("delay seconds must be greater than 0")
+	}
+	return nil
+}
+
 // GmqPublishDelay 发布延迟消息（带统一监控和重试）
 func (p *GmqPipeline) GmqPublishDelay(ctx context.Context, msg PublishDelay) error {
+	// 统一校验公共参数
+	if err := validatePublishDelayMsg(msg); err != nil {
+		return err
+	}
+
 	// 只检查连接状态，不持有锁进行网络操作
 	if atomic.LoadInt32(&p.connected) == 0 {
 		return fmt.Errorf("not connected")
@@ -140,11 +175,40 @@ func (p *GmqPipeline) GmqPublishDelay(ctx context.Context, msg PublishDelay) err
 	return err
 }
 
+// validateSubscribeMsg 统一校验订阅消息公共参数
+func validateSubscribeMsg(msg Subscribe) error {
+	if msg.GetQueueName() == "" {
+		return fmt.Errorf("queue name is required")
+	}
+	if msg.GetConsumerName() == "" {
+		return fmt.Errorf("consumer name is required")
+	}
+	if msg.GetFetchCount() <= 0 {
+		return fmt.Errorf("fetch count must be greater than 0")
+	}
+	// 校验 HandleFunc 是否为 nil（通过接口无法直接获取，需要类型断言）
+	if sm, ok := msg.(*SubMessage[any]); ok {
+		if sm.HandleFunc == nil {
+			return fmt.Errorf("handle func is required")
+		}
+	}
+	return nil
+}
+
 // GmqSubscribe 订阅消息（带统一监控和重试）
 func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	start := time.Now()
 
-	// 提取 topic 和 consumerName（从 msg 中解析）
+	// 统一校验公共参数（先类型断言为 Subscribe 接口）
+	subMsg, ok := msg.(Subscribe)
+	if !ok {
+		return fmt.Errorf("invalid message type: must implement Subscribe interface (GetQueueName, GetConsumerName, GetAutoAck, GetFetchCount)")
+	}
+	if err := validateSubscribeMsg(subMsg); err != nil {
+		return err
+	}
+
+	// 提取 topic 和 consumerName
 	topic, consumerName := p.extractSubscriptionInfo(msg)
 	subKey := p.getSubKey(topic, consumerName)
 

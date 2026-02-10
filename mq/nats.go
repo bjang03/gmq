@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/bjang03/gmq/core"
-	"github.com/bjang03/gmq/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -26,20 +25,15 @@ type NatsPubDelayMessage struct {
 	DelaySeconds int  // 延迟时间(秒)
 }
 
+// GetDelaySeconds 获取延迟时间
+func (m *NatsPubDelayMessage) GetDelaySeconds() int {
+	return m.DelaySeconds
+}
+
 type NatsSubMessage struct {
 	core.SubMessage[any]
 	Durable    bool // 是否持久化
 	IsDelayMsg bool // 是延迟消息
-}
-
-func (n NatsPubMessage) GetGmqPublishMsgType() {
-	//TODO implement me
-	panic("implement me")
-}
-
-func (n NatsPubDelayMessage) GetGmqPublishDelayMsgType() {
-	//TODO implement me
-	panic("implement me")
 }
 
 // NatsConn NATS消息队列实现
@@ -55,6 +49,9 @@ type NatsConn struct {
 
 // GmqPing 检测NATS连接状态
 func (c *NatsConn) GmqPing(_ context.Context) bool {
+	if c.conn == nil || c.js == nil {
+		return false
+	}
 	return c.conn != nil && c.conn.IsConnected()
 }
 
@@ -110,12 +107,6 @@ func (c *NatsConn) GmqPublish(ctx context.Context, msg core.Publish) (err error)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *NatsPubMessage")
 	}
-	if cfg.QueueName == "" {
-		return fmt.Errorf("must provide queue name")
-	}
-	if utils.IsEmpty(cfg.Data) {
-		return fmt.Errorf("must provide data")
-	}
 	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, 0, cfg.Data)
 }
 
@@ -125,16 +116,7 @@ func (c *NatsConn) GmqPublishDelay(ctx context.Context, msg core.PublishDelay) (
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *NatsPubDelayMessage")
 	}
-	if cfg.QueueName == "" {
-		return fmt.Errorf("must provide queue name")
-	}
-	if utils.IsEmpty(cfg.Data) {
-		return fmt.Errorf("must provide data")
-	}
-	if cfg.DelaySeconds <= 0 {
-		return fmt.Errorf("must provide delay seconds")
-	}
-	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, cfg.DelaySeconds, cfg.Data)
+	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, cfg.GetDelaySeconds(), cfg.GetData())
 }
 
 // getStreamNameAndStorage 获取流名称和存储类型
@@ -151,24 +133,11 @@ func getStreamNameAndStorage(isDelayMsg, durable bool) (string, nats.StorageType
 	return "ordinary_msg_memory", nats.MemoryStorage
 }
 
-// checkInitialized 检查NATS连接和JetStream是否已初始化
-func (c *NatsConn) checkInitialized() error {
-	if c.conn == nil {
-		return fmt.Errorf("NATS connection is not initialized")
-	}
-	if c.js == nil {
-		return fmt.Errorf("NATS JetStream is not initialized")
-	}
-	return nil
-}
-
 // Publish 发布消息
 func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable bool, delayTime int, data any) error {
 	delayMsg := delayTime > 0
-
 	// 构建流名称和存储类型
 	streamName, storage := getStreamNameAndStorage(delayMsg, durable)
-
 	// 构建流配置
 	// 如果是延迟消息，需要包含两个 subjects:
 	// 1. subject.schedule - 用于发送调度消息
@@ -185,23 +154,17 @@ func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable 
 		Discard:           nats.DiscardNew, // 达到上限删除旧消息
 	}
 
-	// 检查初始化状态
-	if err := c.checkInitialized(); err != nil {
-		return err
-	}
-
 	if err := jsStreamCreate(c.conn, jsConfig); err != nil {
 		return fmt.Errorf("NATS Failed to create Stream: %w", err)
 	}
 
 	// 构建消息
 	m := nats.NewMsg(queueName)
-	// 序列化数据
 	payload, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
-	m.Data = payload // 所有消息都需要设置数据
+	m.Data = payload
 
 	// 延迟消息
 	if delayMsg {
@@ -212,7 +175,6 @@ func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable 
 		m.Header.Set("Nats-Schedule-Target", queueName)
 	}
 
-	// 发布消息到 JetStream
 	pubOpts := []nats.PubOpt{
 		nats.Context(ctx),
 	}
@@ -230,37 +192,10 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *NatsSubMessage")
 	}
-	if cfg.QueueName == "" {
-		return fmt.Errorf("must provide queue name")
-	}
-	if cfg.ConsumerName == "" {
-		return fmt.Errorf("must provide consumer name")
-	}
-	if cfg.FetchCount <= 0 {
-		cfg.FetchCount = 1
-	}
-	if cfg.HandleFunc == nil {
-		return fmt.Errorf("must provide handle func")
-	}
-
-	// 获取 JetStream 上下文
-	if err := c.checkInitialized(); err != nil {
-		return err
-	}
-
 	// 创建推送订阅的回调函数
 	msgHandler := func(natsMsg *nats.Msg) {
-		log.Printf("NATS 收到消息: Subject=%s, Data=%s", natsMsg.Subject, string(natsMsg.Data))
-		var data map[string]any
-		if err := json.Unmarshal(natsMsg.Data, &data); err != nil {
-			// 如果不是 JSON，直接使用原始内容
-			data = map[string]interface{}{
-				"data": string(natsMsg.Data),
-			}
-		}
-
 		// 调用用户提供的处理函数处理业务逻辑
-		handleErr := cfg.HandleFunc(ctx, data)
+		handleErr := cfg.HandleFunc(ctx, natsMsg.Data)
 
 		// 只有在手动确认模式下才需要手动 Ack/Nak
 		// 自动确认模式下，NATS 客户端会自动确认消息
@@ -281,7 +216,6 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 
 	// 构建流名称和存储类型
 	streamName, storage := getStreamNameAndStorage(cfg.IsDelayMsg, cfg.Durable)
-
 	// 配置死信队列
 	deadLetterQueue := cfg.QueueName + "_DLQ" // 默认死信队列名称
 	dlqStreamName := streamName + "_DLQ"
@@ -681,74 +615,50 @@ type StreamConfig struct {
 }
 
 const (
-	// JSApiStreamCreateT is the endpoint to create new streams.
-	// Will return JSON response.
 	JSApiStreamCreateT = "$JS.API.STREAM.CREATE.%s"
-
-	// JSApiStreamUpdateT is the endpoint to update existing streams.
-	// Will return JSON response.
 	JSApiStreamUpdateT = "$JS.API.STREAM.UPDATE.%s"
 )
 
-// jsStreamCreate is for sending a stream create for fields that nats.go does not know about yet.
-func jsStreamCreate(nc *nats.Conn, cfg *StreamConfig) error {
+// 检查 API 响应中的错误
+var resp struct {
+	Error *struct {
+		Code        int    `json:"code"`
+		ErrCode     int    `json:"err_code"`
+		Description string `json:"description"`
+	} `json:"error,omitempty"`
+}
+
+// jsStreamRequest 发送 Stream API 请求（创建或更新）
+func jsStreamRequest(nc *nats.Conn, apiTemplate string, cfg *StreamConfig) error {
 	j, err := json.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-
-	msg, err := nc.Request(fmt.Sprintf(JSApiStreamCreateT, cfg.Name), j, time.Second*3)
+	msg, err := nc.Request(fmt.Sprintf(apiTemplate, cfg.Name), j, time.Second*3)
 	if err != nil {
 		return err
-	}
-
-	// 检查 API 响应中的错误
-	var resp struct {
-		Error *struct {
-			Code        int    `json:"code"`
-			ErrCode     int    `json:"err_code"`
-			Description string `json:"description"`
-		} `json:"error,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Data, &resp); err != nil {
 		return err
 	}
 	if resp.Error != nil {
-		// 如果 Stream 已存在，尝试更新
-		if resp.Error.ErrCode == 10058 { // JSStreamNameExistErr
-			return jsStreamUpdate(nc, cfg)
-		}
 		return fmt.Errorf("JS API error: %s", resp.Error.Description)
 	}
 
 	return nil
 }
 
+// jsStreamCreate is for sending a stream create for fields that nats.go does not know about yet.
+func jsStreamCreate(nc *nats.Conn, cfg *StreamConfig) (err error) {
+	if err = jsStreamRequest(nc, JSApiStreamCreateT, cfg); err != nil {
+		if strings.Contains(err.Error(), "10058") {
+			return jsStreamUpdate(nc, cfg)
+		}
+	}
+	return err
+}
+
 // jsStreamUpdate is for sending a stream create for fields that nats.go does not know about yet.
 func jsStreamUpdate(nc *nats.Conn, cfg *StreamConfig) error {
-	j, err := json.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	msg, err := nc.Request(fmt.Sprintf(JSApiStreamUpdateT, cfg.Name), j, time.Second*3)
-	if err != nil {
-		return err
-	}
-
-	// 检查 API 响应中的错误
-	var resp struct {
-		Error *struct {
-			Code        int    `json:"code"`
-			ErrCode     int    `json:"err_code"`
-			Description string `json:"description"`
-		} `json:"error,omitempty"`
-	}
-	if err := json.Unmarshal(msg.Data, &resp); err != nil {
-		return err
-	}
-	if resp.Error != nil {
-		return fmt.Errorf("JS API error: %s", resp.Error.Description)
-	}
-
-	return nil
+	return jsStreamRequest(nc, JSApiStreamUpdateT, cfg)
 }

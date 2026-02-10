@@ -30,20 +30,51 @@ func (m *SubMessage[T]) GetConsumerName() string {
 	return m.ConsumerName
 }
 
+// GetAutoAck 获取是否自动确认
+func (m *SubMessage[T]) GetAutoAck() bool {
+	return m.AutoAck
+}
+
+// GetFetchCount 获取每次拉取消息数量
+func (m *SubMessage[T]) GetFetchCount() int {
+	return m.FetchCount
+}
+
 // PubMessage 发布消息基础结构
 type PubMessage struct {
 	QueueName string // 队列名称
 	Data      any    // 消息数据
 }
 
-// Publish 发布消息接口
-type Publish interface {
-	GetGmqPublishMsgType()
+// GetQueueName 获取队列名称
+func (m *PubMessage) GetQueueName() string {
+	return m.QueueName
 }
 
-// PublishDelay 发布延迟消息接口
+// GetData 获取消息数据
+func (m *PubMessage) GetData() any {
+	return m.Data
+}
+
+// Publish 发布消息接口（用于类型约束）
+type Publish interface {
+	GetQueueName() string
+	GetData() any
+}
+
+// PublishDelay 发布延迟消息接口（用于类型约束）
 type PublishDelay interface {
-	GetGmqPublishDelayMsgType()
+	GetQueueName() string
+	GetData() any
+	GetDelaySeconds() int
+}
+
+// Subscribe 订阅消息接口（用于类型约束）
+type Subscribe interface {
+	GetQueueName() string
+	GetConsumerName() string
+	GetAutoAck() bool
+	GetFetchCount() int
 }
 
 // DeadLetterMsgDTO 死信消息DTO（给前端返回的结构化数据）

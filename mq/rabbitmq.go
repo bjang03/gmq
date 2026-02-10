@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/bjang03/gmq/core"
-	"github.com/bjang03/gmq/utils"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -23,19 +22,14 @@ type RabbitMQPubDelayMessage struct {
 	DelaySeconds int  // 延迟时间(秒)
 }
 
+// GetDelaySeconds 获取延迟时间
+func (m *RabbitMQPubDelayMessage) GetDelaySeconds() int {
+	return m.DelaySeconds
+}
+
 // RabbitMQSubMessage RabbitMQ订阅消息结构，支持持久化订阅和延迟消费
 type RabbitMQSubMessage struct {
 	core.SubMessage[any]
-}
-
-func (n RabbitMQPubMessage) GetGmqPublishMsgType() {
-	//TODO implement me
-	panic("implement me")
-}
-
-func (n RabbitMQPubDelayMessage) GetGmqPublishDelayMsgType() {
-	//TODO implement me
-	panic("implement me")
 }
 
 // RabbitMQMsg RabbitMQ消息队列实现
@@ -130,12 +124,6 @@ func (c *RabbitMQMsg) GmqPublish(ctx context.Context, msg core.Publish) (err err
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RabbitMQPubMessage")
 	}
-	if cfg.QueueName == "" {
-		return fmt.Errorf("must provide queue name")
-	}
-	if utils.IsEmpty(cfg.Data) {
-		return fmt.Errorf("must provide data")
-	}
 	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, 0, cfg.Data)
 }
 
@@ -143,16 +131,7 @@ func (c *RabbitMQMsg) GmqPublish(ctx context.Context, msg core.Publish) (err err
 func (c *RabbitMQMsg) GmqPublishDelay(ctx context.Context, msg core.PublishDelay) (err error) {
 	cfg, ok := msg.(*RabbitMQPubDelayMessage)
 	if !ok {
-		return fmt.Errorf("invalid message type, expected *RabbitMQPubMessage")
-	}
-	if cfg.QueueName == "" {
-		return fmt.Errorf("must provide queue name")
-	}
-	if utils.IsEmpty(cfg.Data) {
-		return fmt.Errorf("must provide data")
-	}
-	if cfg.DelaySeconds <= 0 {
-		return fmt.Errorf("must provide delay seconds")
+		return fmt.Errorf("invalid message type, expected *RabbitMQPubDelayMessage")
 	}
 	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, cfg.DelaySeconds, cfg.Data)
 }
@@ -163,9 +142,6 @@ func (c *RabbitMQMsg) GmqPublishDelay(ctx context.Context, msg core.PublishDelay
 // delayTime: 延迟时间（秒），0 表示不延迟
 // data: 消息体
 func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durable bool, delayTime int, data any) error {
-	if c.rabbitMQChannel == nil {
-		return fmt.Errorf("rabbitMQChannel is nil")
-	}
 	delayMsg := delayTime > 0
 
 	// 1. 基础配置
@@ -311,24 +287,9 @@ func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durab
 func (c *RabbitMQMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	cfg, ok := msg.(*RabbitMQSubMessage)
 	if !ok {
-		return fmt.Errorf("invalid message type, expected *RabbitMQPubMessage")
-	}
-	if cfg.QueueName == "" {
-		return fmt.Errorf("must provide queue name")
-	}
-	if cfg.ConsumerName == "" {
-		return fmt.Errorf("must provide consumer name")
-	}
-	if cfg.FetchCount <= 0 {
-		return fmt.Errorf("must provide fetch count")
-	}
-	if cfg.HandleFunc == nil {
-		return fmt.Errorf("must provide handle func")
+		return fmt.Errorf("invalid message type, expected *RabbitMQSubMessage")
 	}
 
-	if c.rabbitMQChannel == nil {
-		return fmt.Errorf("RabbitMQ channel is not initialized")
-	}
 	if err = c.rabbitMQChannel.Qos(cfg.FetchCount, 0, false); err != nil {
 		return fmt.Errorf("set qos failed: %w", err)
 	}

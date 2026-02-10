@@ -386,7 +386,7 @@ func (c *RedisMsg) sendToDeadLetter(ctx context.Context, queueName, msgID, paylo
 }
 
 // GmqGetDeadLetter 从死信队列查询所有消息（不删除，仅读取）
-func (c *RedisMsg) GmqGetDeadLetter(queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
+func (c *RedisMsg) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
 	if c.redisConn == nil {
 		return nil, fmt.Errorf("redis connection is nil")
 	}

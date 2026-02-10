@@ -64,9 +64,9 @@ type Gmq interface {
 	GmqConnect(ctx context.Context) error              // 连接消息队列
 	GmqPublish(ctx context.Context, msg Publish) error // 发布消息
 	GmqPublishDelay(ctx context.Context, msg PublishDelay) error
-	GmqSubscribe(ctx context.Context, msg any) error                          // 订阅消息，返回订阅对象
-	GmqGetDeadLetter(queueName string, limit int) ([]DeadLetterMsgDTO, error) // 获取死信队列消息
-	GmqPing(ctx context.Context) bool                                         // 检测连接状态
-	GmqClose(ctx context.Context) error                                       // 关闭连接
-	GetMetrics(ctx context.Context) *Metrics                                  // 获取监控指标
+	GmqSubscribe(ctx context.Context, msg any) error                                               // 订阅消息，返回订阅对象
+	GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]DeadLetterMsgDTO, error) // 获取死信队列消息
+	GmqPing(ctx context.Context) bool                                                              // 检测连接状态
+	GmqClose(ctx context.Context) error                                                            // 关闭连接
+	GetMetrics(ctx context.Context) *Metrics                                                       // 获取监控指标
 }

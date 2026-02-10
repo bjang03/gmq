@@ -44,15 +44,15 @@ func TestNatsSubscribe(t *testing.T) {
 			},
 		},
 	}
-	sub, err := client.GmqSubscribe(context.Background(), subMsg)
+	err := client.GmqSubscribe(context.Background(), subMsg)
 	if err != nil {
 		t.Fatalf("Failed to subscribe: %v", err)
 	}
-	defer func() {
-		if unsub, ok := sub.(interface{ Unsubscribe() error }); ok {
-			_ = unsub.Unsubscribe()
-		}
-	}()
+	//defer func() {
+	//	if unsub, ok := sub.(interface{ Unsubscribe() error }); ok {
+	//		_ = unsub.Unsubscribe()
+	//	}
+	//}()
 
 	time.Sleep(100 * time.Millisecond)
 

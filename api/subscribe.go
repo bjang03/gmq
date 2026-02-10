@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/spf13/cast"
 	"log"
 	"net/http"
 	"sync"
@@ -30,19 +31,24 @@ var (
 
 // SubscribeReq 订阅请求
 type SubscribeReq struct {
-	ServerName string `json:"serverName" validate:"required"` // 回调服务名
-	MqName     string `json:"mqName" validate:"required"`     // 消息队列名
-	QueueName  string `json:"queueName" validate:"required"`
-	WebHook    string `json:"webHook"` // 回调路径，与ServerName拼接构成完整回调地址
+	ServerName   string `json:"serverName" validate:"required"` // 回调服务名
+	MqName       string `json:"mqName" validate:"required"`     // 消息队列名
+	QueueName    string `json:"queueName" validate:"required"`
+	ConsumerName string `json:"consumerName" validate:"required"`
+	AutoAck      bool   `json:"autoAck"`
+	FetchCount   int    `json:"fetchCount"`
+	Durable      bool   `json:"durable"`
+	IsDelayMsg   bool   `json:"isDelayMsg"`
+	WebHook      string `json:"webHook"` // 回调路径，与ServerName拼接构成完整回调地址
 }
 
 // Subscribe 订阅消息（HTTP接口）
 // 创建 MQ 订阅，收到消息后通过 WebHook 回调通知
 func Subscribe(ctx context.Context, req *SubscribeReq) (res interface{}, err error) {
-	key := req.ServerName + ":" + req.WebHook
+	//key := req.ServerName + ":" + req.WebHook
 	callbackURL := req.ServerName + req.WebHook
 
-	subObj, err := createMQSubscription(ctx, req.MqName, req.QueueName, "http", func(ctx context.Context, data []byte) error {
+	err = createMQSubscription(ctx, req.MqName, req.QueueName, req.ConsumerName, req.AutoAck, req.FetchCount, req.Durable, req.IsDelayMsg, func(ctx context.Context, data []byte) error {
 		return sendHttpCallback(ctx, callbackURL, data)
 	})
 	if err != nil {
@@ -54,7 +60,7 @@ func Subscribe(ctx context.Context, req *SubscribeReq) (res interface{}, err err
 	if httpSubscribers[req.QueueName] == nil {
 		httpSubscribers[req.QueueName] = make(map[string]interface{})
 	}
-	httpSubscribers[req.QueueName][key] = subObj
+	//httpSubscribers[req.QueueName][key] = subObj
 	httpSubsMux.Unlock()
 
 	log.Printf("[HTTP-Subscribe] Success - MqName: %s, Queue: %s, WebHook: %s",
@@ -67,6 +73,11 @@ func Subscribe(ctx context.Context, req *SubscribeReq) (res interface{}, err err
 func WSSubscribeHandler(c *gin.Context) {
 	mqName := c.Query("mqName")
 	queueName := c.Query("queueName")
+	consumerName := c.Query("consumerName")
+	autoAck := cast.ToBool(c.Query("autoAck"))
+	fetchCount := cast.ToInt(c.Query("fetchCount"))
+	durable := cast.ToBool(c.Query("durable"))
+	isDelayMsg := cast.ToBool(c.Query("isDelayMsg"))
 
 	if mqName == "" || queueName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "mqName and queueName are required"})
@@ -77,7 +88,7 @@ func WSSubscribeHandler(c *gin.Context) {
 	msgChan := make(chan []byte, 100)
 
 	// 创建MQ订阅
-	subObj, err := createMQSubscription(context.Background(), mqName, queueName, "ws", func(ctx context.Context, data []byte) error {
+	err := createMQSubscription(context.Background(), mqName, queueName, consumerName, autoAck, fetchCount, durable, isDelayMsg, func(ctx context.Context, data []byte) error {
 		select {
 		case msgChan <- data:
 		case <-ctx.Done():
@@ -108,11 +119,11 @@ func WSSubscribeHandler(c *gin.Context) {
 
 	// 订阅消息转发
 	go func() {
-		defer func() {
-			if unsubber, ok := subObj.(interface{ Unsubscribe() error }); ok {
-				_ = unsubber.Unsubscribe()
-			}
-		}()
+		//defer func() {
+		//	if unsubber, ok := subObj.(interface{ Unsubscribe() error }); ok {
+		//		_ = unsubber.Unsubscribe()
+		//	}
+		//}()
 		for {
 			select {
 			case msg := <-msgChan:
@@ -140,27 +151,36 @@ func marshalMessage(message any) ([]byte, error) {
 }
 
 // createMQSubscription 创建 MQ 订阅
-func createMQSubscription(ctx context.Context, mqName, queueName, subType string, handler func(context.Context, []byte) error) (interface{}, error) {
+func createMQSubscription(ctx context.Context, mqName, queueName, consumerName string, autoAck bool, fetchCount int, durable bool, delaySeconds bool, handler func(context.Context, []byte) error) error {
 	pipeline := core.GetGmq(mqName)
 	if pipeline == nil {
-		return nil, fmt.Errorf("[%s] pipeline not found", mqName)
+		return fmt.Errorf("[%s] pipeline not found", mqName)
 	}
 
-	subMsg := &mq.NatsSubMessage{
-		SubMessage: core.SubMessage[any]{
-			QueueName:    queueName,
-			ConsumerName: fmt.Sprintf("%s-sub-%s-%d", subType, queueName, time.Now().UnixNano()),
-			HandleFunc: func(ctx context.Context, message any) error {
-				data, err := marshalMessage(message)
-				if err != nil {
-					return err
-				}
-				return handler(ctx, data)
-			},
+	baseMsg := core.SubMessage[any]{
+		QueueName:    queueName,
+		ConsumerName: consumerName,
+		AutoAck:      autoAck,
+		FetchCount:   fetchCount,
+		HandleFunc: func(ctx context.Context, message any) error {
+			data, err := marshalMessage(message)
+			if err != nil {
+				return err
+			}
+			return handler(ctx, data)
 		},
 	}
 
-	return pipeline.GmqSubscribe(ctx, subMsg)
+	switch mqName {
+	case "nats":
+		return pipeline.GmqSubscribe(ctx, &mq.NatsSubMessage{SubMessage: baseMsg, Durable: durable, IsDelayMsg: delaySeconds})
+	case "rabbitmq":
+		return pipeline.GmqSubscribe(ctx, &mq.RabbitMQSubMessage{SubMessage: baseMsg})
+	case "redis":
+		return pipeline.GmqSubscribe(ctx, &mq.RedisSubMessage{SubMessage: baseMsg})
+	default:
+		return fmt.Errorf("unsupported mq type: %s", mqName)
+	}
 }
 
 // sendHttpCallback 发送 HTTP 回调

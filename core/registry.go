@@ -9,7 +9,7 @@ import (
 
 // globalShutdown 用于优雅关闭信号
 var (
-	GmqPlugins         = make(map[string]*GmqPipeline)
+	GmqPlugins         = make(map[string]*GmqAgent)
 	globalShutdown     = make(chan struct{})
 	globalShutdownOnce sync.Once
 	pluginCancelFuncs  = make(map[string]context.CancelFunc)
@@ -27,13 +27,13 @@ func GmqRegister(name string, plugin Gmq) {
 		return
 	}
 
-	pipeline := newGmqPipeline(name, plugin)
-	GmqPlugins[name] = pipeline
+	agent := newGmqAgent(name, plugin)
+	GmqPlugins[name] = agent
 
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())
 	pluginCancelFuncs[name] = mgrCancel
 
-	go func(name string, p *GmqPipeline, mgrCtx context.Context) {
+	go func(name string, p *GmqAgent, mgrCtx context.Context) {
 		const (
 			baseReconnectDelay = 5 * time.Second  // 基础重连延迟
 			maxReconnectDelay  = 60 * time.Second // 最大重连延迟
@@ -86,7 +86,7 @@ func GmqRegister(name string, plugin Gmq) {
 				p.restoreSubscriptions()
 			}
 		}
-	}(name, pipeline, mgrCtx)
+	}(name, agent, mgrCtx)
 }
 
 // Shutdown 优雅关闭所有消息队列连接
@@ -99,32 +99,32 @@ func Shutdown(ctx context.Context) error {
 		}
 	})
 
-	pipelines := make([]*GmqPipeline, 0, len(GmqPlugins))
-	for _, p := range GmqPlugins {
-		pipelines = append(pipelines, p)
+	agents := make([]*GmqAgent, 0, len(GmqPlugins))
+	for _, a := range GmqPlugins {
+		agents = append(agents, a)
 	}
 
 	var lastErr error
-	for _, p := range pipelines {
-		if err := p.GmqClose(ctx); err != nil {
+	for _, a := range agents {
+		if err := a.GmqClose(ctx); err != nil {
 			lastErr = err
 		}
 	}
 	return lastErr
 }
 
-// GetGmq 获取已注册的消息队列管道
-func GetGmq(name string) *GmqPipeline {
-	pipeline, ok := GmqPlugins[name]
+// GetGmq 获取已注册的消息队列代理
+func GetGmq(name string) *GmqAgent {
+	agent, ok := GmqPlugins[name]
 	if !ok {
 		return nil
 	}
-	return pipeline
+	return agent
 }
 
-// GetAllGmq 获取所有已注册的消息队列管道的副本
-func GetAllGmq() map[string]*GmqPipeline {
-	result := make(map[string]*GmqPipeline, len(GmqPlugins))
+// GetAllGmq 获取所有已注册的消息队列代理的副本
+func GetAllGmq() map[string]*GmqAgent {
+	result := make(map[string]*GmqAgent, len(GmqPlugins))
 	for k, v := range GmqPlugins {
 		result[k] = v
 	}

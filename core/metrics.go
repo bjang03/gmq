@@ -32,8 +32,8 @@ type Metrics struct {
 	Extensions       map[string]interface{} `json:"extensions"`       // 扩展指标
 }
 
-// pipelineMetrics 管道监控指标
-type pipelineMetrics struct {
+// agentMetrics 代理监控指标
+type agentMetrics struct {
 	messageCount    int64 // 消息总数
 	publishCount    int64 // 发布消息数
 	subscribeCount  int64 // 订阅消息数

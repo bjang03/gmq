@@ -1,28 +1,63 @@
 package utils
 
 import (
+	"encoding/json"
+	"fmt"
+	"github.com/spf13/cast"
 	"reflect"
 	"time"
 )
 
-// iString is used for type assert api for String().
-type iString interface {
-	String() string
-}
+// ConvertToMap 通用数据转map[string]interface{}方法（修复基础类型兼容问题）
+func ConvertToMap(data interface{}) (map[string]interface{}, error) {
+	if data == nil {
+		return nil, fmt.Errorf("data is nil")
+	}
 
-// iInterfaces is used for type assert api for Interfaces.
-type iInterfaces interface {
-	Interfaces() []any
-}
+	// 1. 优先处理原生map类型（减少序列化开销）
+	switch v := data.(type) {
+	case map[string]interface{}:
+		return v, nil
+	case map[string]string:
+		res := make(map[string]interface{}, len(v))
+		for k, val := range v {
+			res[k] = val
+		}
+		return res, nil
+	}
 
-// iMapStrAny is the interface support for converting struct parameter to map.
-type iMapStrAny interface {
-	MapStrAny() map[string]any
-}
+	// 2. 处理基础类型（string/int/float/bool等）
+	switch v := data.(type) {
+	case string, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, bool:
+		// 封装为 map["data"] = 原始值
+		return map[string]interface{}{"data": v}, nil
+	}
 
-type iTime interface {
-	Date() (year int, month time.Month, day int)
-	IsZero() bool
+	// 3. 通用方案：JSON序列化（处理结构体/切片等复杂类型）
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		// 兜底：如果JSON序列化失败，使用cast包
+		res := cast.ToStringMap(data)
+		if len(res) == 0 {
+			return nil, fmt.Errorf("json marshal failed: %v, cast also return empty", err)
+		}
+		return res, nil
+	}
+
+	// 4. 尝试反序列化为map（结构体/切片等）
+	var res map[string]interface{}
+	if err = json.Unmarshal(jsonBytes, &res); err == nil {
+		return res, nil
+	}
+
+	// 5. 如果反序列化map失败（比如切片/数组），封装为 map["data"] = 原始序列化结果
+	var raw interface{}
+	if err = json.Unmarshal(jsonBytes, &raw); err != nil {
+		return nil, fmt.Errorf("unmarshal to raw failed: %v", err)
+	}
+	return map[string]interface{}{"data": raw}, nil
 }
 
 func IsEmpty(value any, traceSource ...bool) bool {
@@ -247,4 +282,24 @@ func ValueToInterface(v reflect.Value) (value any, ok bool) {
 	default:
 		return nil, false
 	}
+}
+
+// iString is used for type assert api for String().
+type iString interface {
+	String() string
+}
+
+// iInterfaces is used for type assert api for Interfaces.
+type iInterfaces interface {
+	Interfaces() []any
+}
+
+// iMapStrAny is the interface support for converting struct parameter to map.
+type iMapStrAny interface {
+	MapStrAny() map[string]any
+}
+
+type iTime interface {
+	Date() (year int, month time.Month, day int)
+	IsZero() bool
 }

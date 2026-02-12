@@ -126,5 +126,4 @@ type Gmq interface {
 	GetMetrics(ctx context.Context) *Metrics                                                       // 获取监控指标
 	Ack(msg *AckMessage) error                                                                     // 确认消息
 	Nak(msg *AckMessage) error                                                                     // 拒绝消息（可重新入队，直到 MaxDeliver）
-	Term(msg *AckMessage) error                                                                    // 终止消息（直接丢弃，不进入死信队列）
 }

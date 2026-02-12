@@ -173,7 +173,8 @@ function initOverviewCache() {
         totalSubscribe: document.getElementById('total-subscribe'),
         avgLatency: document.getElementById('avg-latency'),
         activeConnections: document.getElementById('active-connections'),
-        serverNodes: document.getElementById('server-nodes')
+        serverNodes: document.getElementById('server-nodes'),
+        deadLetterCount: document.getElementById('dead-letter-count')
     };
 }
 
@@ -359,6 +360,9 @@ function renderMetrics(metrics) {
 
     // 更新概览
     updateOverview(metrics);
+
+    // 更新死信队列数量
+    updateDeadLetterCount(metrics);
 }
 
 // 显示错误
@@ -378,4 +382,492 @@ function showError(error) {
 document.addEventListener('DOMContentLoaded', () => {
     initOverviewCache();
     initWebSocket();
+
+    // 初始化生成 mock 数据并更新死信队列数量
+    currentDeadLetterMessages = generateMockDeadLetterMessages();
+    currentMqName = 'redis';
+    currentQueueName = 'default-queue';
+    updateDeadLetterCountFromMock();
 });
+
+// ==================== 死信队列管理 ====================
+
+let currentDeadLetterMessages = [];
+let editingDeadLetterMessage = null;
+let currentMqName = '';
+let currentQueueName = '';
+let currentPage = 1;
+let pageSize = 20;
+
+// Mock 死信消息数据
+function generateMockDeadLetterMessages() {
+    const messages = [];
+    const queues = ['user-order', 'payment-queue', 'notification-queue', 'email-queue', 'log-queue'];
+    const deadReasons = [
+        '消息消费超时',
+        '重试次数超过阈值',
+        '业务逻辑处理失败',
+        '数据格式错误',
+        '下游服务不可用',
+        '连接中断'
+    ];
+    const mqTypes = ['redis', 'rabbitmq', 'nats'];
+    const servers = [
+        '192.168.1.100:6379',
+        '192.168.1.101:5672',
+        '192.168.1.102:4222',
+        '192.168.1.103:6379',
+        '192.168.1.104:5672'
+    ];
+
+    for (let i = 1; i <= 50; i++) {
+        messages.push({
+            message_id: `msg_${Date.now()}_${i}`,
+            queue_name: queues[Math.floor(Math.random() * queues.length)],
+            queue_type: mqTypes[Math.floor(Math.random() * mqTypes.length)],
+            server_addr: servers[Math.floor(Math.random() * servers.length)],
+            timestamp: new Date(Date.now() - Math.random() * 86400000).toISOString(),
+            delivery_tag: Math.floor(Math.random() * 1000000),
+            dead_reason: deadReasons[Math.floor(Math.random() * deadReasons.length)],
+            body: JSON.stringify({
+                event: `event_${i}`,
+                data: {
+                    userId: 1000 + i,
+                    orderId: `ORD${Date.now()}${i}`,
+                    amount: (Math.random() * 1000).toFixed(2),
+                    status: 'failed'
+                },
+                timestamp: Date.now()
+            }),
+            headers: {
+                'Content-Type': 'application/json',
+                'Retry-Count': (Math.floor(Math.random() * 5) + 1).toString(),
+                'Original-Queue': queues[Math.floor(Math.random() * queues.length)],
+                'Error-Code': 'E' + (Math.floor(Math.random() * 900) + 100)
+            }
+        });
+    }
+
+    return messages;
+}
+
+// 更新死信队列数量
+function updateDeadLetterCount(metrics) {
+    // 使用 mock 数据的数量
+    if (domCache.overview.deadLetterCount) {
+        domCache.overview.deadLetterCount.textContent = formatNumber(currentDeadLetterMessages.length);
+    }
+}
+
+// 从 mock 数据更新死信队列数量
+function updateDeadLetterCountFromMock() {
+    if (domCache.overview.deadLetterCount) {
+        domCache.overview.deadLetterCount.textContent = formatNumber(currentDeadLetterMessages.length);
+    }
+}
+
+// 显示死信队列模态框
+function showDeadLetterModal() {
+    document.getElementById('deadletter-modal').classList.add('active');
+
+    // 设置默认值
+    document.getElementById('dlq-mq-select').value = currentMqName;
+    document.getElementById('dlq-queue-input').value = currentQueueName;
+
+    // 渲染数据
+    currentPage = 1;
+    renderDeadLetterMessages();
+}
+
+// 关闭死信队列模态框
+function closeDeadLetterModal() {
+    document.getElementById('deadletter-modal').classList.remove('active');
+}
+
+// 加载死信消息
+async function loadDeadLetterMessages() {
+    currentMqName = document.getElementById('dlq-mq-select').value;
+    currentQueueName = document.getElementById('dlq-queue-input').value.trim();
+
+    console.log('loadDeadLetterMessages 调用, MQ:', currentMqName, '队列:', currentQueueName);
+
+    if (!currentMqName) {
+        showToast('请选择 MQ', 'error');
+        return;
+    }
+
+    if (!currentQueueName) {
+        showToast('请输入队列名称', 'error');
+        return;
+    }
+
+    const container = document.getElementById('dead-letter-list');
+    container.innerHTML = `
+        <div class="loading-state">
+            <div class="loading-spinner"></div>
+            <div>正在加载死信消息...</div>
+        </div>
+    `;
+
+    // 直接使用 mock 数据
+    console.log('使用 mock 数据');
+    currentDeadLetterMessages = generateMockDeadLetterMessages();
+    console.log('生成 mock 数据数量:', currentDeadLetterMessages.length);
+    currentPage = 1;
+    renderDeadLetterMessages();
+    showToast('已加载 mock 数据', 'success');
+}
+
+// 刷新死信消息
+async function refreshDeadLetterMessages() {
+    if (currentMqName && currentQueueName) {
+        await loadDeadLetterMessages();
+        showToast('刷新成功', 'success');
+    } else {
+        showToast('请先选择 MQ 并输入队列名称', 'error');
+    }
+}
+
+// 渲染死信消息列表
+function renderDeadLetterMessages() {
+    const wrapper = document.querySelector('.dead-letter-list-wrapper');
+    const container = document.getElementById('dead-letter-list');
+
+    console.log('renderDeadLetterMessages 调用，数据量:', currentDeadLetterMessages.length);
+
+    if (!currentDeadLetterMessages || currentDeadLetterMessages.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">✓</div>
+                <div class="empty-text">当前队列没有死信消息</div>
+            </div>
+        `;
+        return;
+    }
+
+    // 计算分页
+    const totalItems = currentDeadLetterMessages.length;
+    const totalPages = Math.ceil(totalItems / pageSize);
+    const startIndex = (currentPage - 1) * pageSize;
+    const endIndex = startIndex + pageSize;
+    const pageMessages = currentDeadLetterMessages.slice(startIndex, endIndex);
+
+    console.log('当前页:', currentPage, '总页数:', totalPages, '当前页数据量:', pageMessages.length);
+
+    let html = `
+        <table class="dead-letter-table">
+            <thead>
+                <tr>
+                    <th class="message-id">消息ID</th>
+                    <th class="queue-name">队列名</th>
+                    <th class="queue-type">队列类型</th>
+                    <th class="server-addr">服务器地址</th>
+                    <th class="timestamp">时间</th>
+                    <th class="dead-reason">死信原因</th>
+                    <th class="actions">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    pageMessages.forEach(msg => {
+        html += `
+            <tr data-message-id="${encodeURIComponent(msg.message_id || '')}">
+                <td class="message-id">${escapeHtml(msg.message_id || 'N/A')}</td>
+                <td class="queue-name">${escapeHtml(msg.queue_name || 'N/A')}</td>
+                <td class="queue-type">${escapeHtml(msg.queue_type || 'N/A')}</td>
+                <td class="server-addr">${escapeHtml(msg.server_addr || 'N/A')}</td>
+                <td class="timestamp">${escapeHtml(msg.timestamp || 'N/A')}</td>
+                <td class="dead-reason">${escapeHtml(msg.dead_reason || 'N/A')}</td>
+                <td class="actions">
+                    <button class="btn btn-primary btn-sm" onclick="retryDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="重新执行">
+                        🔄
+                    </button>
+                    <button class="btn btn-warning btn-sm" onclick="editDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="编辑">
+                        ✏️
+                    </button>
+                    <button class="btn btn-danger btn-sm" onclick="discardDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="丢弃">
+                        🗑️
+                    </button>
+                </td>
+            </tr>
+        `;
+    });
+
+    html += `
+            </tbody>
+        </table>
+    `;
+
+    container.innerHTML = html;
+
+    // 添加分页控件到 wrapper 的底部
+    const paginationHtml = `
+        <div class="pagination">
+            <button onclick="goToPage(1)" ${currentPage === 1 ? 'disabled' : ''}>首页</button>
+            <button onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>上一页</button>
+            ${generatePageNumbers(currentPage, totalPages)}
+            <button onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>下一页</button>
+            <button onclick="goToPage(${totalPages})" ${currentPage === totalPages ? 'disabled' : ''}>末页</button>
+            <span class="pagination-info">共 ${totalItems} 条，第 ${currentPage} / ${totalPages} 页</span>
+        </div>
+    `;
+
+    // 先移除旧的分页
+    const oldPagination = wrapper.querySelector('.pagination');
+    if (oldPagination) {
+        oldPagination.remove();
+    }
+
+    // 添加新的分页
+    wrapper.insertAdjacentHTML('beforeend', paginationHtml);
+
+    console.log('渲染完成');
+}
+
+// 生成页码按钮
+function generatePageNumbers(current, total) {
+    let html = '';
+    const maxVisible = 5;
+
+    if (total <= maxVisible) {
+        for (let i = 1; i <= total; i++) {
+            html += `<button onclick="goToPage(${i})" class="${i === current ? 'active' : ''}">${i}</button>`;
+        }
+    } else {
+        if (current <= 3) {
+            for (let i = 1; i <= 4; i++) {
+                html += `<button onclick="goToPage(${i})" class="${i === current ? 'active' : ''}">${i}</button>`;
+            }
+            html += `<button disabled>...</button>`;
+            html += `<button onclick="goToPage(${total})">${total}</button>`;
+        } else if (current >= total - 2) {
+            html += `<button onclick="goToPage(1)">1</button>`;
+            html += `<button disabled>...</button>`;
+            for (let i = total - 3; i <= total; i++) {
+                html += `<button onclick="goToPage(${i})" class="${i === current ? 'active' : ''}">${i}</button>`;
+            }
+        } else {
+            html += `<button onclick="goToPage(1)">1</button>`;
+            html += `<button disabled>...</button>`;
+            html += `<button onclick="goToPage(${current - 1})">${current - 1}</button>`;
+            html += `<button onclick="goToPage(${current})" class="active">${current}</button>`;
+            html += `<button onclick="goToPage(${current + 1})">${current + 1}</button>`;
+            html += `<button disabled>...</button>`;
+            html += `<button onclick="goToPage(${total})">${total}</button>`;
+        }
+    }
+
+    return html;
+}
+
+// 跳转到指定页
+function goToPage(page) {
+    const totalPages = Math.ceil(currentDeadLetterMessages.length / pageSize);
+    if (page < 1 || page > totalPages) return;
+
+    currentPage = page;
+    renderDeadLetterMessages();
+    const container = document.getElementById('dead-letter-list');
+    if (container) {
+        container.scrollTop = 0;
+    }
+}
+
+// 重新执行死信消息
+async function retryDeadLetterMessage(messageId) {
+    const message = currentDeadLetterMessages.find(m => m.message_id === messageId);
+    if (!message) {
+        showToast('消息不存在', 'error');
+        return;
+    }
+
+    if (!confirm(`确定要重新执行消息 "${messageId}" 吗？`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/deadletter/retry', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                mqName: currentMqName,
+                queueName: currentQueueName,
+                messageId: messageId
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.code === 200) {
+            showToast('消息已重新执行', 'success');
+            await refreshDeadLetterMessages();
+        } else {
+            throw new Error(result.msg || '操作失败');
+        }
+    } catch (error) {
+        console.error('重新执行失败:', error);
+        showToast('重新执行失败: ' + error.message, 'error');
+    }
+}
+
+// 编辑死信消息
+function editDeadLetterMessage(messageId) {
+    const message = currentDeadLetterMessages.find(m => m.message_id === messageId);
+    if (!message) {
+        showToast('消息不存在', 'error');
+        return;
+    }
+
+    editingDeadLetterMessage = message;
+    document.getElementById('edit-message-body').value = message.body || '';
+    document.getElementById('edit-modal').classList.add('active');
+}
+
+// 关闭编辑模态框
+function closeEditModal() {
+    document.getElementById('edit-modal').classList.remove('active');
+    editingDeadLetterMessage = null;
+    document.getElementById('edit-message-body').value = '';
+}
+
+// 保存死信消息
+async function saveDeadLetterMessage() {
+    if (!editingDeadLetterMessage) {
+        showToast('没有正在编辑的消息', 'error');
+        return;
+    }
+
+    const newBody = document.getElementById('edit-message-body').value.trim();
+
+    if (!newBody) {
+        showToast('消息内容不能为空', 'error');
+        return;
+    }
+
+    // 验证 JSON 格式（如果是 JSON）
+    if (newBody.startsWith('{') || newBody.startsWith('[')) {
+        try {
+            JSON.parse(newBody);
+        } catch (e) {
+            if (!confirm('消息格式不是有效的 JSON，确定要保存吗？')) {
+                return;
+            }
+        }
+    }
+
+    try {
+        const response = await fetch('/api/deadletter/update', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                mqName: currentMqName,
+                queueName: currentQueueName,
+                messageId: editingDeadLetterMessage.message_id,
+                newBody: newBody
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.code === 200) {
+            showToast('消息已更新', 'success');
+            closeEditModal();
+            await refreshDeadLetterMessages();
+        } else {
+            throw new Error(result.msg || '更新失败');
+        }
+    } catch (error) {
+        console.error('更新失败:', error);
+        showToast('更新失败: ' + error.message, 'error');
+    }
+}
+
+// 丢弃死信消息
+async function discardDeadLetterMessage(messageId) {
+    const message = currentDeadLetterMessages.find(m => m.message_id === messageId);
+    if (!message) {
+        showToast('消息不存在', 'error');
+        return;
+    }
+
+    if (!confirm(`确定要丢弃消息 "${messageId}" 吗？此操作不可恢复！`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/deadletter/discard', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                mqName: currentMqName,
+                queueName: currentQueueName,
+                messageId: messageId
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.code === 200) {
+            showToast('消息已丢弃', 'success');
+            await refreshDeadLetterMessages();
+        } else {
+            throw new Error(result.msg || '操作失败');
+        }
+    } catch (error) {
+        console.error('丢弃失败:', error);
+        showToast('丢弃失败: ' + error.message, 'error');
+    }
+}
+
+// 显示 Toast 提示
+function showToast(message, type = 'success') {
+    const existingToasts = document.querySelectorAll('.toast');
+    existingToasts.forEach(toast => toast.remove());
+
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+
+    setTimeout(() => {
+        toast.style.animation = 'slideInRight 0.3s ease reverse';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+// HTML 转义
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// 点击模态框外部关闭
+document.addEventListener('click', (e) => {
+    const deadletterModal = document.getElementById('deadletter-modal');
+    const editModal = document.getElementById('edit-modal');
+
+    if (e.target === deadletterModal) {
+        closeDeadLetterModal();
+    }
+    if (e.target === editModal) {
+        closeEditModal();
+    }
+});
+
+// ESC 键关闭模态框
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeDeadLetterModal();
+        closeEditModal();
+    }
+});
+

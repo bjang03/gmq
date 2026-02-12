@@ -55,10 +55,67 @@
                     <div class="stat-value" id="server-nodes">0</div>
                 </div>
             </div>
+            <div class="stat-card stat-card-clickable" onclick="showDeadLetterModal()">
+                <div class="stat-icon">☠️</div>
+                <div class="stat-info">
+                    <div class="stat-label">死信队列</div>
+                    <div class="stat-value" id="dead-letter-count">0</div>
+                </div>
+            </div>
         </div>
 
         <div class="metrics-container" id="metrics-container">
             <!-- 动态生成监控卡片 -->
+        </div>
+
+        <!-- 死信队列模态框 -->
+        <div class="modal" id="deadletter-modal">
+            <div class="modal-content deadletter-modal-content">
+                <div class="modal-header">
+                    <h3>☠️ 死信队列</h3>
+                    <button class="modal-close" onclick="closeDeadLetterModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="dead-letter-controls">
+                        <select id="dlq-mq-select" class="form-select">
+                            <option value="redis" selected>Redis Stream</option>
+                            <option value="rabbitmq">RabbitMQ</option>
+                            <option value="nats">NATS</option>
+                        </select>
+                        <input type="text" id="dlq-queue-input" class="form-input" value="default-queue" placeholder="输入队列名称">
+                        <button class="btn btn-primary" onclick="loadDeadLetterMessages()">查询</button>
+                        <button class="btn btn-refresh" onclick="refreshDeadLetterMessages()">刷新</button>
+                    </div>
+                    <div class="dead-letter-list-wrapper">
+                        <div class="dead-letter-list" id="dead-letter-list">
+                            <div class="loading-state">
+                                <div class="loading-spinner"></div>
+                                <div>正在加载死信消息...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 死信消息编辑模态框 -->
+        <div class="modal" id="edit-modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>编辑死信消息</h3>
+                    <button class="modal-close" onclick="closeEditModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>消息内容 (JSON)</label>
+                        <textarea id="edit-message-body" class="form-textarea" rows="20"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeEditModal()">取消</button>
+                    <button class="btn btn-primary" onclick="saveDeadLetterMessage()">保存并投递</button>
+                </div>
+            </div>
         </div>
     </div>
 

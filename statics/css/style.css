@@ -99,6 +99,20 @@ header h1 {
     height: auto;
 }
 
+/* 确认弹窗样式 */
+.confirm-modal-content {
+    max-width: 450px;
+    width: 90%;
+}
+
+.confirm-message {
+    font-size: 15px;
+    color: #374151;
+    line-height: 1.6;
+    margin: 0;
+    padding: 10px 0;
+}
+
 .dead-letter-controls {
     display: flex;
     gap: 12px;
@@ -468,6 +482,20 @@ header h1 {
     height: auto;
 }
 
+/* 确认弹窗样式 */
+.confirm-modal-content {
+    max-width: 450px;
+    width: 90%;
+}
+
+.confirm-message {
+    font-size: 15px;
+    color: #374151;
+    line-height: 1.6;
+    margin: 0;
+    padding: 10px 0;
+}
+
 .dead-letter-controls {
     display: flex;
     gap: 12px;
@@ -560,13 +588,15 @@ header h1 {
 }
 
 .btn-secondary {
-    background: rgba(100, 116, 139, 0.2);
-    color: #e2e8f0;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: #f1f5f9;
+    color: #475569;
+    border: 1px solid #cbd5e1;
 }
 
 .btn-secondary:hover {
-    background: rgba(100, 116, 139, 0.3);
+    background: #e2e8f0;
+    color: #334155;
+    border-color: #94a3b8;
 }
 
 .btn-refresh {

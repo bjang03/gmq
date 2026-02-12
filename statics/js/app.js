@@ -794,6 +794,35 @@ async function saveDeadLetterMessage() {
     }
 }
 
+// 显示自定义确认弹窗
+let confirmCallback = null;
+
+function showConfirmModal(title, message, onConfirm) {
+    const modal = document.getElementById('confirm-modal');
+    const titleEl = document.getElementById('confirm-title');
+    const messageEl = document.getElementById('confirm-message');
+    const confirmBtn = document.getElementById('confirm-btn');
+
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    confirmCallback = onConfirm;
+
+    confirmBtn.onclick = function() {
+        closeConfirmModal();
+        if (confirmCallback) {
+            confirmCallback();
+        }
+    };
+
+    modal.classList.add('active');
+}
+
+function closeConfirmModal() {
+    const modal = document.getElementById('confirm-modal');
+    modal.classList.remove('active');
+    confirmCallback = null;
+}
+
 // 丢弃死信消息
 async function discardDeadLetterMessage(messageId) {
     const message = currentDeadLetterMessages.find(m => m.message_id === messageId);
@@ -802,35 +831,37 @@ async function discardDeadLetterMessage(messageId) {
         return;
     }
 
-    if (!confirm(`确定要丢弃消息 "${messageId}" 吗？此操作不可恢复！`)) {
-        return;
-    }
+    showConfirmModal(
+        '确认丢弃',
+        `确定要丢弃消息 "${messageId}" 吗？此操作不可恢复！`,
+        async () => {
+            try {
+                const response = await fetch('/api/deadletter/discard', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        mqName: currentMqName,
+                        queueName: currentQueueName,
+                        messageId: messageId
+                    })
+                });
 
-    try {
-        const response = await fetch('/api/deadletter/discard', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                mqName: currentMqName,
-                queueName: currentQueueName,
-                messageId: messageId
-            })
-        });
+                const result = await response.json();
 
-        const result = await response.json();
-
-        if (result.code === 200) {
-            showToast('消息已丢弃', 'success');
-            await refreshDeadLetterMessages();
-        } else {
-            throw new Error(result.msg || '操作失败');
+                if (result.code === 200) {
+                    showToast('消息已丢弃', 'success');
+                    await refreshDeadLetterMessages();
+                } else {
+                    throw new Error(result.msg || '操作失败');
+                }
+            } catch (error) {
+                console.error('丢弃失败:', error);
+                showToast('丢弃失败: ' + error.message, 'error');
+            }
         }
-    } catch (error) {
-        console.error('丢弃失败:', error);
-        showToast('丢弃失败: ' + error.message, 'error');
-    }
+    );
 }
 
 // 显示 Toast 提示

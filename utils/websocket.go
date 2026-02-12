@@ -184,7 +184,9 @@ func (m *WebSocketManager) HandleConnection(
 	initialData *WebSocketMessage,
 ) (*websocket.Conn, error) {
 	pingInterval := 30 * time.Second
-	readTimeout := 60 * time.Second
+	// 延长读取超时到24小时，因为metrics WebSocket是服务器推送模式
+	// 客户端不需要频繁发送消息，依靠Ping/Pong保持连接活跃
+	readTimeout := 24 * time.Hour
 
 	conn, err := m.Upgrade(w, r)
 	if err != nil {

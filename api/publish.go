@@ -59,16 +59,19 @@ func PublishDelay(ctx context.Context, req *PublishDelayReq) (res interface{}, e
 		return nil, fmt.Errorf("[%s] pipeline not found", req.MqName)
 	}
 
-	baseMsg := core.PubMessage{
-		QueueName: req.QueueName,
-		Data:      req.Message,
+	baseMsg := core.PubDelayMessage{
+		PubMessage: core.PubMessage{
+			QueueName: req.QueueName,
+			Data:      req.Message,
+		},
+		DelaySeconds: req.DelaySeconds,
 	}
 
 	switch req.MqName {
 	case "nats":
-		err = pipeline.GmqPublishDelay(ctx, &mq.NatsPubDelayMessage{PubMessage: baseMsg, Durable: req.Durable, DelaySeconds: req.DelaySeconds})
+		err = pipeline.GmqPublishDelay(ctx, &mq.NatsPubDelayMessage{PubDelayMessage: baseMsg, Durable: req.Durable})
 	case "rabbitmq":
-		err = pipeline.GmqPublishDelay(ctx, &mq.RabbitMQPubDelayMessage{PubMessage: baseMsg, Durable: req.Durable, DelaySeconds: req.DelaySeconds})
+		err = pipeline.GmqPublishDelay(ctx, &mq.RabbitMQPubDelayMessage{PubDelayMessage: baseMsg, Durable: req.Durable})
 	case "redis":
 		return nil, fmt.Errorf("redis does not support delay message")
 	default:

@@ -11,6 +11,31 @@ const (
 	MsgRetryDelay   = 3 * time.Second // 消息的重试延迟时间(秒，默认3m)
 )
 
+// PubMessage 发布消息基础结构
+type PubMessage struct {
+	QueueName string // 队列名称
+	Data      any    // 消息数据
+}
+
+// GetQueueName 获取队列名称
+func (m *PubMessage) GetQueueName() string {
+	return m.QueueName
+}
+
+// GetData 获取消息数据
+func (m *PubMessage) GetData() any {
+	return m.Data
+}
+
+type PubDelayMessage struct {
+	PubMessage
+	DelaySeconds int
+}
+
+func (m *PubDelayMessage) GetDelaySeconds() int {
+	return m.DelaySeconds
+}
+
 // SubMessage 订阅消息基础结构
 type SubMessage[T any] struct {
 	QueueName    string                                     // 队列名称
@@ -40,20 +65,17 @@ func (m *SubMessage[T]) GetFetchCount() int {
 	return m.FetchCount
 }
 
-// PubMessage 发布消息基础结构
-type PubMessage struct {
-	QueueName string // 队列名称
-	Data      any    // 消息数据
+func (m *SubMessage[T]) GetHandleFunc() func(ctx context.Context, message T) error {
+	return m.HandleFunc
 }
 
-// GetQueueName 获取队列名称
-func (m *PubMessage) GetQueueName() string {
-	return m.QueueName
+func (m *SubMessage[T]) SetHandleFunc(handleFunc func(ctx context.Context, message T) error) {
+	m.HandleFunc = handleFunc
 }
 
-// GetData 获取消息数据
-func (m *PubMessage) GetData() any {
-	return m.Data
+type AckMessage struct {
+	MessageData     any
+	AckRequiredAttr map[string]any
 }
 
 // Publish 发布消息接口（用于类型约束）
@@ -75,6 +97,8 @@ type Subscribe interface {
 	GetConsumerName() string
 	GetAutoAck() bool
 	GetFetchCount() int
+	GetHandleFunc() func(ctx context.Context, message any) error
+	SetHandleFunc(handleFunc func(ctx context.Context, message any) error)
 }
 
 // DeadLetterMsgDTO 死信消息DTO（给前端返回的结构化数据）
@@ -100,4 +124,7 @@ type Gmq interface {
 	GmqPing(ctx context.Context) bool                                                              // 检测连接状态
 	GmqClose(ctx context.Context) error                                                            // 关闭连接
 	GetMetrics(ctx context.Context) *Metrics                                                       // 获取监控指标
+	Ack(msg *AckMessage) error                                                                     // 确认消息
+	Nak(msg *AckMessage) error                                                                     // 拒绝消息（可重新入队，直到 MaxDeliver）
+	Term(msg *AckMessage) error                                                                    // 终止消息（直接丢弃，不进入死信队列）
 }

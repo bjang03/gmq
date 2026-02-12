@@ -197,13 +197,6 @@ func (c *RedisMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RedisSubMessage")
 	}
-	if cfg.HandleFunc == nil {
-		return fmt.Errorf("must provide handle func")
-	}
-
-	if c.redisConn == nil {
-		return fmt.Errorf("redis connection is nil")
-	}
 	group := fmt.Sprintf("%s_default_group", cfg.ConsumerName)
 	_, err = c.redisConn.XGroupCreateMkStream(ctx, cfg.QueueName, group, "0").Result()
 	if err != nil {
@@ -219,9 +212,6 @@ func (c *RedisMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 		Block:    0,                            // 阻塞时间（0 = 永久阻塞，time.Millisecond 单位）
 		Streams:  []string{cfg.QueueName, ">"}, // 消费的流 + 起始 ID（> 表示消费新消息）
 	}
-	if cfg.AutoAck {
-		readArgs.NoAck = true
-	}
 	for {
 		if c.redisConn == nil {
 			return fmt.Errorf("redis connection is nil")
@@ -234,90 +224,83 @@ func (c *RedisMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 		case <-ctx.Done():
 			return nil
 		default:
-			// 获取重试次数配置
-			maxDeliver := core.MsgRetryDeliver
-			retryDelay := core.MsgRetryDelay
-
 			// 解析结构化结果（示例）
 			for _, stream := range streams {
 				for _, msg := range stream.Messages {
-					// 从消息中获取当前重试次数
-					currentRetry := 0
-					if retryCount, ok := msg.Values["retry_count"]; ok {
-						currentRetry, _ = cast.ToIntE(retryCount)
+					message := core.AckMessage{
+						MessageData: msg.Values,
+						AckRequiredAttr: map[string]any{
+							"MessageId": msg.ID,
+							"QueueName": cfg.QueueName,
+							"Group":     group,
+						},
 					}
-
-					data, err := json.Marshal(msg.Values)
-					if err != nil {
-						// 处理反序列化错误
-						log.Printf("JSON反序列化失败: %v", err)
-						err = c.sendToDeadLetter(ctx, cfg.QueueName, msg.ID, string(data), "JSON反序列化失败")
-						if err != nil {
-							log.Printf("❌ 发送到死信队列失败: %v", err)
-							return err
-						}
-						// 确认原消息
-						_, _ = c.redisConn.XAck(ctx, cfg.QueueName, group, msg.ID).Result()
-						continue
-					}
-
-					// 调用用户提供的处理函数处理业务逻辑
-					if err := cfg.HandleFunc(ctx, data); err == nil {
-						if !cfg.AutoAck {
-							// 业务处理完后，手动确认消息（XACK）
-							result, err := c.redisConn.XAck(ctx, cfg.QueueName, group, msg.ID).Result()
-							if err != nil {
-								log.Printf("❌ 确认消息失败: %v", err)
-							} else {
-								log.Printf("✅ 确认消息成功: %v", result)
-							}
-						}
-					} else {
-						// 处理失败，检查是否超过最大重试次数
-						currentRetry++
-						if currentRetry > maxDeliver {
-							// 超过最大重试次数，发送到死信队列
-							deadReason := fmt.Sprintf("处理失败，重试%d次后进入死信队列: %v", maxDeliver, err)
-							err := c.sendToDeadLetter(ctx, cfg.QueueName, msg.ID, string(data), deadReason)
-							if err != nil {
-								log.Printf("❌ 发送到死信队列失败: %v", err)
-								continue
-							}
-							// 确认原消息
-							_, _ = c.redisConn.XAck(ctx, cfg.QueueName, group, msg.ID).Result()
-						} else {
-							// 未超过最大重试次数，等待后重新投递
-							log.Printf("⚠️ 消息处理失败 (第%d次重试，最大%d次): %v", currentRetry, maxDeliver, err)
-							time.Sleep(time.Duration(retryDelay) * time.Millisecond)
-							// XCLAIM 重新投递消息给自己，实现重试
-							claimed, err := c.redisConn.XClaim(ctx, &redis.XClaimArgs{
-								Group:    group,
-								Consumer: cfg.ConsumerName,
-								MinIdle:  0,
-								Messages: []string{msg.ID},
-							}).Result()
-							if err != nil {
-								log.Printf("❌ 重新投递消息失败: %v", err)
-								// 如果重新投递失败，也发送到死信队列
-								deadReason := fmt.Sprintf("重新投递失败: %v", err)
-								err := c.sendToDeadLetter(ctx, cfg.QueueName, msg.ID, string(data), deadReason)
-								if err != nil {
-									log.Printf("❌ 发送到死信队列失败: %v", err)
-									continue
-								}
-								_, _ = c.redisConn.XAck(ctx, cfg.QueueName, group, msg.ID).Result()
-							} else {
-								// 更新重试次数
-								for _, claimedMsg := range claimed {
-									claimedMsg.Values["retry_count"] = currentRetry
-								}
-							}
-						}
-					}
+					cfg.HandleFunc(ctx, &message)
 				}
 			}
 		}
 	}
+}
+
+// Ack 确认消息
+func (c *RedisMsg) Ack(msg *core.AckMessage) error {
+	attr := msg.AckRequiredAttr
+	msgId, ok := attr["MessageId"].(string)
+	if !ok {
+		return fmt.Errorf("invalid message type, expected *redis.XMessage")
+	}
+	queueName, ok := attr["QueueName"].(string)
+	if !ok {
+		return fmt.Errorf("invalid queue name type, expected string")
+	}
+	group, ok := attr["Group"].(string)
+	if !ok {
+		return fmt.Errorf("invalid group name type, expected string")
+	}
+	_, err := c.redisConn.XAck(context.Background(), queueName, group, msgId).Result()
+	return err
+}
+
+// Nak 否定确认消息 - Redis 不支持 Nak，需要手动重新投递或进入死信队列
+func (c *RedisMsg) Nak(msg *core.AckMessage) error {
+	// Redis Streams 没有原生的 Nak 操作
+	// 这里选择不确认消息，让它保留在 Pending 列表中，等待下次消费
+	// 或者可以实现为：发送到死信队列 + 确认原消息
+	return fmt.Errorf("Redis does not support Nak operation natively, message remains in pending list")
+}
+
+// Term 终止消息 - 将消息移入死信队列并确认
+func (c *RedisMsg) Term(msg *core.AckMessage) error {
+	attr := msg.AckRequiredAttr
+	msgId, ok := attr["MessageId"].(string)
+	if !ok {
+		return fmt.Errorf("invalid message type, expected *redis.XMessage")
+	}
+	queueName, ok := attr["QueueName"].(string)
+	if !ok {
+		return fmt.Errorf("invalid queue name type, expected string")
+	}
+	group, ok := attr["Group"].(string)
+	if !ok {
+		return fmt.Errorf("invalid group name type, expected string")
+	}
+
+	// 获取消息内容
+	msgData, ok := attr["MessageData"].(map[string]interface{})
+	if !ok {
+		msgData = make(map[string]interface{})
+	}
+	payload, _ := json.Marshal(msgData)
+
+	// 发送到死信队列
+	ctx := context.Background()
+	if err := c.sendToDeadLetter(ctx, queueName, msgId, string(payload), "message terminated"); err != nil {
+		return err
+	}
+
+	// 确认原消息（从 pending 列表中移除）
+	_, err := c.redisConn.XAck(ctx, queueName, group, msgId).Result()
+	return err
 }
 
 // -------------------------- 核心：死信队列操作 --------------------------

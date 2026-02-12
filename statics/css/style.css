@@ -6,9 +6,9 @@
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
     min-height: 100vh;
-    color: #e2e8f0;
+    color: #1e293b;
 }
 
 .container {
@@ -22,19 +22,21 @@ header {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 30px;
-    padding: 20px;
-    background: rgba(30, 41, 59, 0.8);
-    border-radius: 16px;
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 20px 24px;
+    background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+    border-radius: 12px;
+    border: none;
+    box-shadow: 0 4px 16px rgba(30, 64, 175, 0.15);
 }
 
 header h1 {
-    font-size: 28px;
-    background: linear-gradient(135deg, #60a5fa, #a78bfa);
+    font-size: 26px;
+    background: linear-gradient(135deg, #ffffff, #dbeafe);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+    font-weight: 700;
+    letter-spacing: -0.5px;
 }
 
 
@@ -47,32 +49,33 @@ header h1 {
 }
 
 .stat-card {
-    background: rgba(30, 41, 59, 0.8);
-    border-radius: 16px;
-    padding: 20px;
+    background: #ffffff;
+    border-radius: 12px;
+    padding: 16px 20px;
     display: flex;
     align-items: center;
-    gap: 15px;
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    transition: all 0.3s ease;
+    gap: 14px;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    transition: all 0.25s ease;
 }
 
 .stat-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(30, 64, 175, 0.12);
+    border-color: #3b82f6;
 }
 
 .stat-card-clickable {
     cursor: pointer;
-    background: rgba(239, 68, 68, 0.1);
-    border: 2px solid rgba(239, 68, 68, 0.2);
+    background: linear-gradient(135deg, #fef2f2 0%, #ffffff 100%);
+    border: 1px solid #fca5a5;
 }
 
 .stat-card-clickable:hover {
-    background: rgba(239, 68, 68, 0.2);
-    border-color: rgba(239, 68, 68, 0.4);
-    box-shadow: 0 10px 30px rgba(239, 68, 68, 0.3);
+    background: linear-gradient(135deg, #fecaca 0%, #fef2f2 100%);
+    border-color: #ef4444;
+    box-shadow: 0 6px 20px rgba(239, 68, 68, 0.15);
 }
 
 .stat-card-clickable .stat-icon {
@@ -90,9 +93,9 @@ header h1 {
 
 /* 死信队列模态框 */
 .deadletter-modal-content {
-    max-width: 1200px;
-    width: 95%;
-    max-height: 98vh;
+    max-width: 1400px;
+    width: 98%;
+    max-height: 92vh;
     height: auto;
 }
 
@@ -103,9 +106,9 @@ header h1 {
     align-items: center;
     margin-bottom: 20px;
     padding: 16px;
-    background: rgba(15, 23, 42, 0.5);
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: #f8fafc;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
 }
 
 .dead-letter-controls .form-select,
@@ -123,15 +126,24 @@ header h1 {
 }
 
 .stat-label {
-    font-size: 14px;
-    color: #94a3b8;
-    margin-bottom: 5px;
+    font-size: 13px;
+    color: #64748b;
+    margin-bottom: 4px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
 }
 
 .stat-value {
-    font-size: 28px;
+    font-size: 26px;
     font-weight: 700;
-    background: linear-gradient(135deg, #60a5fa, #a78bfa);
+    background: linear-gradient(135deg, #1e40af, #3b82f6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.stat-card-clickable .stat-value {
+    background: linear-gradient(135deg, #dc2626, #ef4444);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -146,18 +158,19 @@ header h1 {
 
 /* 列表项 */
 .metric-list-item {
-    background: rgba(30, 41, 59, 0.8);
+    background: #ffffff;
     border-radius: 12px;
     display: flex;
     gap: 20px;
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
     transition: all 0.2s ease;
 }
 
 .metric-list-item:hover {
-    background: rgba(30, 41, 59, 0.95);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    background: #f8fafc;
+    border-color: #3b82f6;
+    box-shadow: 0 4px 12px rgba(30, 64, 175, 0.1);
 }
 
 /* 左侧信息区（跨行水平排列） */
@@ -170,6 +183,8 @@ header h1 {
     padding: 16px 20px;
     border-right: 1px solid rgba(255, 255, 255, 0.1);
     flex-wrap: wrap;
+    background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+    border-radius: 12px 0 0 12px;
 }
 
 .type-badge {
@@ -178,12 +193,15 @@ header h1 {
     font-size: 13px;
     font-weight: 600;
     white-space: nowrap;
+    color: #ffffff !important;
+    background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+    border: 2px solid #fcd34d;
 }
 
 .metric-name {
     font-size: 16px;
     font-weight: 600;
-    color: #f1f5f9;
+    color: #1e293b;
     white-space: nowrap;
 }
 
@@ -246,9 +264,9 @@ header h1 {
     min-width: 120px;
     font-size: 12px;
     font-weight: 600;
-    color: #64748b;
+    color: #3b82f6;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.8px;
     padding-top: 2px;
 }
 
@@ -272,16 +290,16 @@ header h1 {
 
 .metric-content-value {
     font-size: 14px;
-    font-weight: 600;
-    color: #e2e8f0;
+    font-weight: 500;
+    color: #1e293b;
 }
 
 .text-success {
-    color: #22c55e !important;
+    color: #16a34a !important;
 }
 
 .text-error {
-    color: #ef4444 !important;
+    color: #dc2626 !important;
 }
 
 /* 加载和错误状态 */
@@ -295,9 +313,10 @@ header h1 {
 .error {
     text-align: center;
     padding: 60px;
-    color: #ef4444;
+    color: #dc2626;
     font-size: 16px;
-    background: rgba(239, 68, 68, 0.1);
+    background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+    border: 2px solid #fecaca;
     border-radius: 16px;
 }
 
@@ -379,11 +398,10 @@ header h1 {
 }
 
 .modal-content {
-    background: rgba(30, 41, 59, 0.95);
-    border-radius: 16px;
-    backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+    background: #ffffff;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
     max-width: 800px;
     width: 95%;
     max-height: 90vh;
@@ -401,16 +419,17 @@ header h1 {
 }
 
 .modal-header h3 {
-    font-size: 20px;
+    font-size: 18px;
     font-weight: 600;
     margin: 0;
+    color: #1e293b;
 }
 
 .modal-close {
     background: none;
     border: none;
     color: #94a3b8;
-    font-size: 28px;
+    font-size: 26px;
     cursor: pointer;
     padding: 0;
     width: 32px;
@@ -418,13 +437,13 @@ header h1 {
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 8px;
+    border-radius: 6px;
     transition: all 0.2s ease;
 }
 
 .modal-close:hover {
-    background: rgba(239, 68, 68, 0.2);
-    color: #ef4444;
+    background: #fef2f2;
+    color: #dc2626;
 }
 
 .modal-body {
@@ -443,9 +462,9 @@ header h1 {
 
 /* 死信队列模态框 */
 .deadletter-modal-content {
-    max-width: 1200px;
-    width: 95%;
-    max-height: 98vh;
+    max-width: 1400px;
+    width: 98%;
+    max-height: 92vh;
     height: auto;
 }
 
@@ -456,9 +475,9 @@ header h1 {
     align-items: center;
     margin-bottom: 20px;
     padding: 16px;
-    background: rgba(15, 23, 42, 0.5);
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: #f8fafc;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
 }
 
 .dead-letter-controls .form-select,
@@ -476,8 +495,8 @@ header h1 {
     display: block;
     margin-bottom: 8px;
     font-size: 14px;
-    color: #e2e8f0;
-    font-weight: 500;
+    color: #1e293b;
+    font-weight: 600;
 }
 
 .form-input,
@@ -485,10 +504,10 @@ header h1 {
 .form-textarea {
     width: 100%;
     padding: 10px 14px;
-    background: rgba(15, 23, 42, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
-    color: #e2e8f0;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    color: #1e293b;
     font-size: 14px;
     font-family: inherit;
     transition: all 0.2s ease;
@@ -498,8 +517,9 @@ header h1 {
 .form-select:focus,
 .form-textarea:focus {
     outline: none;
-    border-color: #60a5fa;
-    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.1);
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    background: #ffffff;
 }
 
 .form-textarea {
@@ -586,8 +606,9 @@ header h1 {
     gap: 0;
     max-height: 600px;
     overflow: hidden;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid #e5e7eb;
     border-radius: 8px;
+    background: #ffffff;
 }
 
 /* 死信消息列表 */
@@ -609,19 +630,19 @@ header h1 {
 .dead-letter-table thead {
     position: sticky;
     top: 0;
-    background: rgba(15, 23, 42, 0.95);
+    background: #dc2626;
     z-index: 10;
 }
 
 .dead-letter-table th {
-    padding: 12px;
+    padding: 12px 14px;
     text-align: left;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
-    color: #94a3b8;
+    color: #ffffff;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+    letter-spacing: 0.8px;
+    border-bottom: 2px solid #ef4444;
 }
 
 .dead-letter-table th.message-id {
@@ -648,29 +669,27 @@ header h1 {
     width: 150px;
 }
 
-.dead-letter-table th.message-body {
-    flex: 1;
-}
-
 .dead-letter-table th.actions {
-    width: 260px;
+    width: 200px;
+    min-width: 200px;
     text-align: center;
 }
 
 .dead-letter-table tbody tr {
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid #f1f5f9;
     transition: background 0.2s ease;
 }
 
 .dead-letter-table tbody tr:hover {
-    background: rgba(59, 130, 246, 0.1);
+    background: #eff6ff;
 }
 
 .dead-letter-table td {
-    padding: 12px;
+    padding: 10px 12px;
     font-size: 13px;
-    color: #e2e8f0;
-    vertical-align: top;
+    color: #1e293b;
+    vertical-align: middle;
+    white-space: nowrap;
 }
 
 .dead-letter-table td.message-id {
@@ -680,7 +699,8 @@ header h1 {
 }
 
 .dead-letter-table td.dead-reason {
-    color: #e2e8f0;
+    color: #dc2626;
+    font-weight: 600;
 }
 
 .dead-letter-table td.message-body {
@@ -706,25 +726,25 @@ header h1 {
 }
 
 .dead-letter-list::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.2);
-    border-radius: 4px;
+    background: #f1f5f9;
+    border-radius: 3px;
 }
 
 .dead-letter-list::-webkit-scrollbar-thumb {
-    background: rgba(100, 116, 139, 0.4);
-    border-radius: 4px;
+    background: #94a3b8;
+    border-radius: 3px;
 }
 
 .dead-letter-list::-webkit-scrollbar-thumb:hover {
-    background: rgba(100, 116, 139, 0.6);
+    background: #3b82f6;
 }
 
 /* 分页固定底部 */
 .dead-letter-list-wrapper .pagination {
     flex-shrink: 0;
     padding: 16px;
-    background: rgba(15, 23, 42, 0.95);
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    background: #ffffff;
+    border-top: 1px solid #e5e7eb;
     margin-top: 0;
 }
 
@@ -797,8 +817,8 @@ header h1 {
 }
 
 .dead-letter-headers {
-    background: rgba(0, 0, 0, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: #f8fafc;
+    border: 2px solid #e0e7ff;
     border-radius: 8px;
     padding: 12px;
 }
@@ -806,7 +826,7 @@ header h1 {
 .dead-letter-headers-title {
     font-size: 12px;
     font-weight: 600;
-    color: #64748b;
+    color: #3b82f6;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin-bottom: 8px;
@@ -820,13 +840,13 @@ header h1 {
 }
 
 .dead-letter-header-key {
-    color: #60a5fa;
+    color: #3b82f6;
     font-weight: 500;
     min-width: 100px;
 }
 
 .dead-letter-header-value {
-    color: #cbd5e1;
+    color: #1e293b;
     word-break: break-all;
 }
 
@@ -843,12 +863,13 @@ header h1 {
 .empty-icon {
     font-size: 48px;
     margin-bottom: 16px;
-    opacity: 0.5;
+    opacity: 0.6;
 }
 
 .empty-text {
     color: #64748b;
     font-size: 14px;
+    font-weight: 500;
 }
 
 /* 加载状态 */
@@ -863,7 +884,7 @@ header h1 {
 .loading-spinner {
     width: 40px;
     height: 40px;
-    border: 3px solid rgba(255, 255, 255, 0.1);
+    border: 4px solid #e0e7ff;
     border-top-color: #3b82f6;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
@@ -913,38 +934,44 @@ header h1 {
     min-width: 36px;
     height: 36px;
     padding: 0 12px;
-    background: rgba(30, 41, 59, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
     border-radius: 6px;
-    color: #e2e8f0;
+    color: #475569;
     font-size: 13px;
     cursor: pointer;
     transition: all 0.2s ease;
     display: flex;
     align-items: center;
     justify-content: center;
+    font-weight: 500;
 }
 
 .pagination button:hover:not(:disabled) {
-    background: rgba(59, 130, 246, 0.2);
-    border-color: rgba(59, 130, 246, 0.4);
+    background: #3b82f6;
+    border-color: #3b82f6;
+    color: #ffffff;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.2);
 }
 
 .pagination button.active {
-    background: linear-gradient(135deg, #3b82f6, #2563eb);
-    border-color: transparent;
-    color: white;
+    background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+    border-color: #ef4444;
+    color: #ffffff;
+    font-weight: 600;
 }
 
 .pagination button:disabled {
-    opacity: 0.4;
+    opacity: 0.35;
     cursor: not-allowed;
 }
 
 .pagination-info {
-    color: #94a3b8;
+    color: #64748b;
     font-size: 13px;
     padding: 0 12px;
+    font-weight: 500;
 }
 
 @keyframes slideInRight {

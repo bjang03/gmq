@@ -317,8 +317,14 @@ function updateListItemValues(name, metric) {
                     const statusClass = isConnected ? 'status-connected' : 'status-disconnected';
                     valueEl.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span>`;
                 } else {
-                    if (valueEl.textContent !== formatted) {
-                        valueEl.textContent = formatted;
+                    // 异常类统计使用红色
+                    const errorKeys = ['publishFailed', 'subscribeFailed', 'errorRate'];
+                    if (errorKeys.includes(config.key) && value > 0) {
+                        valueEl.innerHTML = `<span class="text-error" style="color: #dc2626; font-weight: 700;">${formatted}</span>`;
+                    } else {
+                        if (valueEl.textContent !== formatted) {
+                            valueEl.textContent = formatted;
+                        }
                     }
                 }
                 valueEl.parentElement.style.display = 'flex';
@@ -570,14 +576,15 @@ function renderDeadLetterMessages() {
             <tbody>
     `;
 
-    pageMessages.forEach(msg => {
-        html += `
+        pageMessages.forEach(msg => {
+            const timestamp = msg.timestamp ? formatTimestamp(msg.timestamp) : 'N/A';
+            html += `
             <tr data-message-id="${encodeURIComponent(msg.message_id || '')}">
                 <td class="message-id">${escapeHtml(msg.message_id || 'N/A')}</td>
                 <td class="queue-name">${escapeHtml(msg.queue_name || 'N/A')}</td>
                 <td class="queue-type">${escapeHtml(msg.queue_type || 'N/A')}</td>
                 <td class="server-addr">${escapeHtml(msg.server_addr || 'N/A')}</td>
-                <td class="timestamp">${escapeHtml(msg.timestamp || 'N/A')}</td>
+                <td class="timestamp">${timestamp}</td>
                 <td class="dead-reason">${escapeHtml(msg.dead_reason || 'N/A')}</td>
                 <td class="actions">
                     <button class="btn btn-primary btn-sm" onclick="retryDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="重新执行">
@@ -848,6 +855,21 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// 格式化时间戳
+function formatTimestamp(isoString) {
+    if (!isoString) return 'N/A';
+
+    const date = new Date(isoString);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 // 点击模态框外部关闭

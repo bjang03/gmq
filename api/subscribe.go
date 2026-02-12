@@ -151,7 +151,7 @@ func marshalMessage(message any) ([]byte, error) {
 }
 
 // createMQSubscription 创建 MQ 订阅
-func createMQSubscription(ctx context.Context, mqName, queueName, consumerName string, autoAck bool, fetchCount int, durable bool, delaySeconds bool, handler func(context.Context, []byte) error) error {
+func createMQSubscription(ctx context.Context, mqName, queueName, consumerName string, autoAck bool, fetchCount int, durable bool, isDelayMsg bool, handler func(context.Context, []byte) error) error {
 	pipeline := core.GetGmq(mqName)
 	if pipeline == nil {
 		return fmt.Errorf("[%s] pipeline not found", mqName)
@@ -173,7 +173,7 @@ func createMQSubscription(ctx context.Context, mqName, queueName, consumerName s
 
 	switch mqName {
 	case "nats":
-		return pipeline.GmqSubscribe(ctx, &mq.NatsSubMessage{SubMessage: baseMsg, Durable: durable, IsDelayMsg: delaySeconds})
+		return pipeline.GmqSubscribe(ctx, &mq.NatsSubMessage{SubMessage: baseMsg, Durable: durable, IsDelayMsg: isDelayMsg})
 	case "rabbitmq":
 		return pipeline.GmqSubscribe(ctx, &mq.RabbitMQSubMessage{SubMessage: baseMsg})
 	case "redis":

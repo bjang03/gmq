@@ -81,6 +81,9 @@ func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
 	// 带重试的发布（无锁，网络操作）
 	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
 		if attempt > 0 {
+			if p.plugin.GmqPing(ctx) {
+				break
+			}
 			// 重试前等待，使用指数退避
 			delay := MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			select {
@@ -144,6 +147,9 @@ func (p *GmqPipeline) GmqPublishDelay(ctx context.Context, msg PublishDelay) err
 	// 带重试的发布（无锁，网络操作）
 	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
 		if attempt > 0 {
+			if p.plugin.GmqPing(ctx) {
+				break
+			}
 			// 重试前等待，使用指数退避
 			delay := MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			select {
@@ -186,13 +192,45 @@ func validateSubscribeMsg(msg Subscribe) error {
 	if msg.GetFetchCount() <= 0 {
 		return fmt.Errorf("fetch count must be greater than 0")
 	}
-	// 校验 HandleFunc 是否为 nil（通过接口无法直接获取，需要类型断言）
-	if sm, ok := msg.(*SubMessage[any]); ok {
-		if sm.HandleFunc == nil {
-			return fmt.Errorf("handle func is required")
-		}
+	if msg.GetHandleFunc() == nil {
+		return fmt.Errorf("handle func is required")
 	}
 	return nil
+}
+
+// wrapHandleFunc 包装用户的 HandleFunc，在管道层统一控制ACK
+func (p *GmqPipeline) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message any) error {
+	return func(ctx context.Context, message any) error {
+		ackMessage, ok := message.(*AckMessage)
+		if !ok {
+			return fmt.Errorf("invalid message type: must be *AckMessage")
+		}
+		// 执行用户处理函数
+		err := originalFunc(ctx, ackMessage.MessageData)
+		if autoAck {
+			// 自动确认模式：无论处理成功或失败，都确认消息
+			err = p.plugin.Ack(ackMessage)
+			if err != nil {
+				return err
+			}
+		} else {
+			// 手动确认模式：处理成功则确认，处理失败则终止消息
+			if err == nil {
+				// 处理成功：确认消息
+				err = p.plugin.Ack(ackMessage)
+				if err != nil {
+					return err
+				}
+			} else {
+				// 处理失败：终止消息
+				err = p.plugin.Nak(ackMessage)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
 }
 
 // GmqSubscribe 订阅消息（带统一监控和重试）
@@ -207,22 +245,24 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	if err := validateSubscribeMsg(subMsg); err != nil {
 		return err
 	}
-
-	// 提取 topic 和 consumerName
-	topic, consumerName := p.extractSubscriptionInfo(msg)
-	subKey := p.getSubKey(topic, consumerName)
+	subKey := p.getSubKey(subMsg.GetQueueName(), subMsg.GetConsumerName())
 
 	// 检查是否已订阅
 	if _, alreadySubscribed := p.subscriptions.Load(subKey); alreadySubscribed {
-		return fmt.Errorf("already subscribed to topic: %s", topic)
+		return fmt.Errorf("already subscribed to topic: %s", subMsg.GetQueueName())
 	}
 	// 预留槽位，标记为"订阅中"状态
 	p.subscriptions.Store(subKey, nil)
 
+	// 包装 HandleFunc，在管道层统一控制ACK
+	subMsg.SetHandleFunc(p.wrapHandleFunc(subMsg.GetHandleFunc(), subMsg.GetAutoAck()))
 	var subObj interface{}
 	// 带重试的订阅
 	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
 		if attempt > 0 {
+			if p.plugin.GmqPing(ctx) {
+				break
+			}
 			// 重试前等待，使用指数退避
 			delay := MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			select {
@@ -232,8 +272,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (err error) {
 				return ctx.Err()
 			}
 		}
-
-		err = p.plugin.GmqSubscribe(ctx, msg)
+		err = p.plugin.GmqSubscribe(ctx, subMsg)
 		if err == nil {
 			break
 		}
@@ -257,7 +296,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (err error) {
 				log.Printf("[GMQ] Failed to unsubscribe after conflict: %v", unsubErr)
 			}
 		}
-		return fmt.Errorf("subscription conflict detected for topic: %s", topic)
+		return fmt.Errorf("subscription conflict detected for topic: %s", subMsg.GetQueueName())
 	}
 
 	// 保存订阅对象到管道层
@@ -265,7 +304,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (err error) {
 
 	// 保存订阅参数，用于断线重连后恢复订阅
 	p.subscriptionParams.Store(subKey, &subscriptionInfo{
-		msg: msg,
+		msg: subMsg,
 	})
 
 	// 记录指标
@@ -389,38 +428,21 @@ func (p *GmqPipeline) restoreSubscriptions() {
 }
 
 // extractSubscriptionInfo 从订阅消息中提取 topic 和 consumerName
-func (p *GmqPipeline) extractSubscriptionInfo(msg any) (topic, consumerName string) {
+func (p *GmqPipeline) extractSubscriptionInfo(msg any) (queueName, consumerName string, handleFunc func(ctx context.Context, message any)) {
 	// 尝试通过接口方法提取信息（优先使用接口方法）
 	if qn, ok := msg.(interface{ GetQueueName() string }); ok {
-		topic = qn.GetQueueName()
+		queueName = qn.GetQueueName()
 	}
 	if cn, ok := msg.(interface{ GetConsumerName() string }); ok {
 		consumerName = cn.GetConsumerName()
 	}
-
-	// 如果接口方法没有提供信息，尝试通过类型断言获取
-	// 处理 *SubMessage[T] 类型
-	if sm, ok := msg.(*SubMessage[any]); ok && topic == "" {
-		topic = sm.QueueName
-		if consumerName == "" {
-			consumerName = sm.ConsumerName
-		}
+	if cn, ok := msg.(interface {
+		GetHandleFunc() func(ctx context.Context, message any)
+	}); ok {
+		handleFunc = cn.GetHandleFunc()
 	}
 
-	// 处理 SubMessage[T] 值类型（较少见）
-	if sm, ok := msg.(SubMessage[any]); ok && topic == "" {
-		topic = sm.QueueName
-		if consumerName == "" {
-			consumerName = sm.ConsumerName
-		}
-	}
-
-	// 兼容旧接口：GetTopic()
-	if t, ok := msg.(interface{ GetTopic() string }); ok && topic == "" {
-		topic = t.GetTopic()
-	}
-
-	return topic, consumerName
+	return queueName, consumerName, handleFunc
 }
 
 // getSubKey 生成订阅的唯一key，使用原子计数器避免相同 topic 不同消费者的冲突
@@ -458,6 +480,18 @@ func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
 		atomic.StoreInt64(&p.connectedAt, time.Now().Unix())
 	}
 	return err
+}
+
+func (p *GmqPipeline) Ack(msg *AckMessage) error {
+	return p.plugin.Ack(msg)
+}
+
+func (p *GmqPipeline) Nak(msg *AckMessage) error {
+	return p.plugin.Nak(msg)
+}
+
+func (p *GmqPipeline) Term(msg *AckMessage) error {
+	return p.plugin.Term(msg)
 }
 
 // GmqClose 关闭连接

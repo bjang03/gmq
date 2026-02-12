@@ -20,14 +20,8 @@ type NatsPubMessage struct {
 }
 
 type NatsPubDelayMessage struct {
-	core.PubMessage
-	Durable      bool // 是否持久化
-	DelaySeconds int  // 延迟时间(秒)
-}
-
-// GetDelaySeconds 获取延迟时间
-func (m *NatsPubDelayMessage) GetDelaySeconds() int {
-	return m.DelaySeconds
+	core.PubDelayMessage
+	Durable bool // 是否持久化
 }
 
 type NatsSubMessage struct {
@@ -105,6 +99,7 @@ func (c *NatsConn) GmqClose(_ context.Context) error {
 func (c *NatsConn) GmqPublish(ctx context.Context, msg core.Publish) (err error) {
 	cfg, ok := msg.(*NatsPubMessage)
 	if !ok {
+		log.Printf("⚠️  invalid message type, expected *NatsPubMessage")
 		return fmt.Errorf("invalid message type, expected *NatsPubMessage")
 	}
 	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, 0, cfg.Data)
@@ -114,75 +109,39 @@ func (c *NatsConn) GmqPublish(ctx context.Context, msg core.Publish) (err error)
 func (c *NatsConn) GmqPublishDelay(ctx context.Context, msg core.PublishDelay) (err error) {
 	cfg, ok := msg.(*NatsPubDelayMessage)
 	if !ok {
+		log.Printf("⚠️  invalid message type, expected *NatsPubDelayMessage")
 		return fmt.Errorf("invalid message type, expected *NatsPubDelayMessage")
 	}
-	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, cfg.GetDelaySeconds(), cfg.GetData())
-}
-
-// getStreamNameAndStorage 获取流名称和存储类型
-func getStreamNameAndStorage(isDelayMsg, durable bool) (string, nats.StorageType) {
-	if isDelayMsg {
-		if durable {
-			return "delay_msg_file", nats.FileStorage
-		}
-		return "delay_msg_memory", nats.MemoryStorage
-	}
-	if durable {
-		return "ordinary_msg_file", nats.FileStorage
-	}
-	return "ordinary_msg_memory", nats.MemoryStorage
+	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, cfg.DelaySeconds, cfg.Data)
 }
 
 // Publish 发布消息
 func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable bool, delayTime int, data any) error {
-	delayMsg := delayTime > 0
-	// 构建流名称和存储类型
-	streamName, storage := getStreamNameAndStorage(delayMsg, durable)
-	// 构建流配置
-	// 如果是延迟消息，需要包含两个 subjects:
-	// 1. subject.schedule - 用于发送调度消息
-	// 2. subject - 用于实际投递目标
-	subjects := []string{queueName}
-	if delayMsg {
-		subjects = []string{queueName, queueName + ".schedule"}
+	// 创建 Stream
+	if _, _, err := c.createStream(ctx, queueName, durable, delayTime > 0, false); err != nil {
+		return err
 	}
-	jsConfig := &StreamConfig{
-		Name:              streamName,
-		Subjects:          subjects,
-		AllowMsgSchedules: delayMsg, // 延迟消息核心开关
-		Storage:           storage,
-		Discard:           nats.DiscardNew, // 达到上限删除旧消息
-	}
-
-	if err := jsStreamCreate(c.conn, jsConfig); err != nil {
-		return fmt.Errorf("NATS Failed to create Stream: %w", err)
-	}
-
 	// 构建消息
 	m := nats.NewMsg(queueName)
 	payload, err := json.Marshal(data)
 	if err != nil {
-		return err
+		log.Printf("⚠️  json marshal failed: %v", err)
+		return fmt.Errorf("json marshal failed: %w", err)
 	}
 	m.Data = payload
-
 	// 延迟消息
-	if delayMsg {
+	if delayTime > 0 {
 		// 使用 @at 指定具体延迟时间，而不是 @every 重复执行
 		futureTime := time.Now().Add(time.Duration(delayTime) * time.Second).Format(time.RFC3339Nano)
 		m.Header.Set("Nats-Schedule", fmt.Sprintf("@at %s", futureTime))
 		m.Subject = queueName + ".schedule"
 		m.Header.Set("Nats-Schedule-Target", queueName)
 	}
-
-	pubOpts := []nats.PubOpt{
-		nats.Context(ctx),
-	}
-	ack, err := c.js.PublishMsg(m, pubOpts...)
-	if err != nil {
+	// 发布消息
+	if _, err = c.js.PublishMsg(m, []nats.PubOpt{nats.Context(ctx)}...); err != nil {
+		log.Printf("⚠️  NATS Failed to publish message: %v", err)
 		return fmt.Errorf("NATS Failed to publish message: %w", err)
 	}
-	log.Println(fmt.Sprintf("NATS [%s] message success publish: Stream=%v, StreamSeq=%d", c.Url, ack.Stream, ack.Sequence))
 	return nil
 }
 
@@ -190,52 +149,21 @@ func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable 
 func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	cfg, ok := msg.(*NatsSubMessage)
 	if !ok {
+		log.Printf("⚠️  invalid message type, expected *NatsSubMessage")
 		return fmt.Errorf("invalid message type, expected *NatsSubMessage")
 	}
-	// 创建推送订阅的回调函数
-	msgHandler := func(natsMsg *nats.Msg) {
-		// 调用用户提供的处理函数处理业务逻辑
-		handleErr := cfg.HandleFunc(ctx, natsMsg.Data)
-
-		// 只有在手动确认模式下才需要手动 Ack/Nak
-		// 自动确认模式下，NATS 客户端会自动确认消息
-		if !cfg.AutoAck {
-			// 手动确认模式: 处理成功则 Ack，处理失败则 Nak
-			if handleErr == nil {
-				if err := natsMsg.Ack(); err != nil {
-					log.Printf("⚠️  Ack 失败: %v, Subject=%s", err, natsMsg.Subject)
-				}
-			} else {
-				if err := natsMsg.Nak(); err != nil {
-					log.Printf("⚠️  Nak 失败: %v, Subject=%s", err, natsMsg.Subject)
-				}
-				log.Printf("⚠️  消息处理失败 (Nak，将重试): %v, Subject=%s", handleErr, natsMsg.Subject)
-			}
-		}
+	// 创建 Stream
+	streamName, _, err := c.createStream(ctx, cfg.QueueName, cfg.Durable, cfg.IsDelayMsg, false)
+	if err != nil {
+		return err
 	}
-
-	// 构建流名称和存储类型
-	streamName, storage := getStreamNameAndStorage(cfg.IsDelayMsg, cfg.Durable)
 	// 配置死信队列
-	deadLetterQueue := cfg.QueueName + "_DLQ" // 默认死信队列名称
-	dlqStreamName := streamName + "_DLQ"
-	dlqSubjects := []string{deadLetterQueue}
-	dlqConfig := &StreamConfig{
-		Name:         dlqStreamName,
-		Subjects:     dlqSubjects,
-		Storage:      storage,
-		Discard:      nats.DiscardNew,
-		MaxConsumers: -1,
+	streamNameDlq, _, err := c.createStream(ctx, cfg.QueueName, cfg.Durable, cfg.IsDelayMsg, true)
+	if err != nil {
+		log.Printf("⚠️  死信队列创建失败: %v, Stream=%s", err, streamNameDlq)
+		return fmt.Errorf("死信队列创建失败: %w", err)
 	}
-	if err = jsStreamCreate(c.conn, dlqConfig); err != nil {
-		log.Printf("⚠️  死信队列创建失败: %v, Stream=%s", err, dlqStreamName)
-	} else {
-		log.Printf("✅ 死信队列创建成功: Stream=%s", dlqStreamName)
-	}
-
 	//构建 Durable Consumer 配置
-	maxDeliver := core.MsgRetryDeliver
-	retryDelay := core.MsgRetryDelay
 	consumerConfig := &nats.ConsumerConfig{
 		Durable:        cfg.ConsumerName,
 		AckPolicy:      nats.AckExplicitPolicy,
@@ -243,37 +171,32 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 		MaxAckPending:  cfg.FetchCount,
 		FilterSubject:  cfg.QueueName,
 		DeliverSubject: fmt.Sprintf("DELIVER.%s.%s", streamName, cfg.ConsumerName),
-		MaxDeliver:     maxDeliver,
-		BackOff:        []time.Duration{retryDelay},
+		DeliverPolicy:  nats.DeliverAllPolicy,
+		MaxDeliver:     1,
+		BackOff:        []time.Duration{time.Second},
 	}
-	consumerOpts := []nats.JSOpt{
-		nats.Context(ctx),
-	}
-	_, err = c.js.AddConsumer(streamName, consumerConfig, consumerOpts...)
-	if err != nil {
+	// 创建 Durable Consumer
+	if _, err = c.js.AddConsumer(streamName, consumerConfig, []nats.JSOpt{nats.Context(ctx)}...); err != nil {
 		// 如果 Consumer 已存在，忽略错误
 		if !strings.Contains(err.Error(), "consumer name already in use") {
 			return fmt.Errorf("NATS Failed to add Consumer: %w", err)
 		}
 	}
-
 	// 配置订阅选项 - 绑定到已创建的 Durable Consumer
 	subOpts := []nats.SubOpt{
 		nats.Context(ctx),
-		nats.Durable(cfg.ConsumerName),     // 绑定到 Durable Consumer
-		nats.MaxAckPending(cfg.FetchCount), // 最大待确认消息数
-		nats.BindStream(streamName),        // 绑定到指定 Stream
-		nats.DeliverAll(),                  // 从第一条消息开始投递
 		nats.Bind(streamName, cfg.ConsumerName),
+		nats.ManualAck(), // 手动确认模式
 	}
-
-	// 根据 AutoAck 配置决定是否使用手动确认模式
-	if !cfg.AutoAck {
-		subOpts = append(subOpts, nats.ManualAck()) // 手动确认模式
-	}
-
-	// 使用 Subscribe 创建推送订阅，绑定到已存在的 Consumer
-	sub, err := c.js.Subscribe(cfg.QueueName, msgHandler, subOpts...)
+	// 使用 Subscribe 创建推送订阅
+	sub, err := c.js.Subscribe(cfg.QueueName, func(natsMsg *nats.Msg) {
+		cfg.HandleFunc(ctx, &core.AckMessage{
+			MessageData: natsMsg.Data,
+			AckRequiredAttr: map[string]any{
+				"MessageBody": natsMsg,
+			},
+		})
+	}, subOpts...)
 	if err != nil {
 		log.Printf("⚠️  NATS 订阅失败: %v, Queue=%s, Consumer=%s, Stream=%s", err, cfg.QueueName, cfg.ConsumerName, streamName)
 		return fmt.Errorf("NATS Failed to subscribe: %w", err)
@@ -282,7 +205,7 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	log.Printf("✅ NATS 订阅成功: Queue=%s, Consumer=%s, Stream=%s", cfg.QueueName, cfg.ConsumerName, streamName)
 
 	// ✅ 新增: 启动 DLQ 监听器，处理超过最大投递次数的消息
-	go c.listenForDeliveryExceeded(ctx, streamName, cfg.ConsumerName, deadLetterQueue, dlqStreamName)
+	//go c.listenForDeliveryExceeded(ctx, streamName, cfg.ConsumerName, deadLetterQueue, dlqStreamName)
 
 	// 启动后台 goroutine 监听上下文取消，用于清理订阅
 	go func() {
@@ -292,6 +215,80 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	}()
 
 	return nil
+}
+
+func (c *NatsConn) createStream(_ context.Context, queueName string, durable, isDelayMsg, isDlq bool) (string, nats.StorageType, error) {
+	// 构建流名称和存储类型
+	streamName, storage := "ordinary_msg_memory", nats.MemoryStorage
+	if isDelayMsg {
+		if durable {
+			streamName, storage = "delay_msg_file", nats.FileStorage
+		} else {
+			streamName, storage = "delay_msg_memory", nats.MemoryStorage
+		}
+	} else {
+		if durable {
+			streamName, storage = "ordinary_msg_file", nats.FileStorage
+		}
+	}
+	if isDlq {
+		streamName += "_DLQ"
+		queueName += "_DLQ"
+		isDelayMsg = false
+	}
+	// 构建流配置
+	// 如果是延迟消息，需要包含两个 subjects:
+	// 1. subject.schedule - 用于发送调度消息
+	// 2. subject - 用于实际投递目标
+	subjects := []string{queueName}
+	if isDelayMsg {
+		subjects = []string{queueName, queueName + ".schedule"}
+	}
+	jsConfig := &StreamConfig{
+		Name:              streamName,
+		Subjects:          subjects,
+		AllowMsgSchedules: isDelayMsg, // 延迟消息核心开关
+		Storage:           storage,
+		Discard:           nats.DiscardNew, // 达到上限删除旧消息
+		MaxConsumers:      -1,
+	}
+	// 创建流
+	if err := jsStreamCreate(c.conn, jsConfig); err != nil {
+		log.Printf("⚠️  NATS 流创建失败: %v, Stream=%s", err, streamName)
+		return "", 0, fmt.Errorf("NATS Failed to create Stream: %w", err)
+	}
+	return streamName, storage, nil
+}
+
+// Ack 确认消息
+func (c *NatsConn) Ack(msg *core.AckMessage) error {
+	attr := msg.AckRequiredAttr
+	msgCfg, ok := attr["MessageBody"].(*nats.Msg)
+	if !ok {
+		return fmt.Errorf("invalid message type, expected *nats.Msg")
+	}
+	return msgCfg.Ack()
+}
+
+// Nak 否定确认消息，消息会重新投递（直到达到 MaxDeliver 限制）
+func (c *NatsConn) Nak(msg *core.AckMessage) error {
+	attr := msg.AckRequiredAttr
+	msgCfg, ok := attr["MessageBody"].(*nats.Msg)
+	if !ok {
+		return fmt.Errorf("invalid message type, expected *nats.Msg")
+	}
+	return msgCfg.Nak()
+}
+
+// Term 终止消息，消息会被立即丢弃，不会进入死信队列
+// 注意：如果需要将消息移入死信队列，请使用 Nak 并设置 MaxDeliver 限制
+func (c *NatsConn) Term(msg *core.AckMessage) error {
+	attr := msg.AckRequiredAttr
+	msgCfg, ok := attr["MessageBody"].(*nats.Msg)
+	if !ok {
+		return fmt.Errorf("invalid message type, expected *nats.Msg")
+	}
+	return msgCfg.Term()
 }
 
 // JSConsumerDeliveryExceededAdvisory 消息投递超过最大次数的通知

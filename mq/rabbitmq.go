@@ -17,14 +17,8 @@ type RabbitMQPubMessage struct {
 }
 
 type RabbitMQPubDelayMessage struct {
-	core.PubMessage
-	Durable      bool // 是否持久化
-	DelaySeconds int  // 延迟时间(秒)
-}
-
-// GetDelaySeconds 获取延迟时间
-func (m *RabbitMQPubDelayMessage) GetDelaySeconds() int {
-	return m.DelaySeconds
+	core.PubDelayMessage
+	Durable bool // 是否持久化
 }
 
 // RabbitMQSubMessage RabbitMQ订阅消息结构，支持持久化订阅和延迟消费
@@ -296,7 +290,7 @@ func (c *RabbitMQMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	msgs, err := c.rabbitMQChannel.Consume(
 		cfg.QueueName,    // queue
 		cfg.ConsumerName, // consumer
-		cfg.AutoAck,      // auto-ack (根据配置决定)
+		false,            // auto-ack
 		false,            // exclusive
 		false,            // no-local
 		false,            // no-wait
@@ -306,64 +300,46 @@ func (c *RabbitMQMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 		return fmt.Errorf("consume failed: %w", err)
 	}
 
-	// 获取重试次数配置
-	maxDeliver := core.MsgRetryDeliver
-	retryDelay := core.MsgRetryDelay
-
-	for msg := range msgs {
-		var data map[string]interface{}
-		if err := json.Unmarshal(msg.Body, &data); err != nil {
-			// 如果不是 JSON，直接使用原始内容
-			data = map[string]interface{}{
-				"data": string(msg.Body),
-			}
+	for msgv := range msgs {
+		message := core.AckMessage{
+			MessageData: msgv.Body,
+			AckRequiredAttr: map[string]any{
+				"MessageBody": msgv,
+			},
 		}
-
-		// 从 x-death 消息头中获取当前投递次数
-		currentRetry := 0
-		if xDeath, ok := msg.Headers["x-death"].([]interface{}); ok && len(xDeath) > 0 {
-			if deathInfo, ok := xDeath[0].(amqp.Table); ok {
-				if count, ok := deathInfo["count"].(int64); ok {
-					currentRetry = int(count)
-				}
-			}
-		}
-
-		// 调用用户提供的处理函数处理业务逻辑
-		if err := cfg.HandleFunc(ctx, data); err != nil {
-			// 检查是否超过最大重试次数
-			if currentRetry >= maxDeliver {
-				// 超过最大重试次数，让消息进入死信队列
-				nackErr := msg.Nack(false, false)
-				if nackErr != nil {
-					log.Printf("❌ 拒绝消息失败: %v", nackErr)
-				} else {
-					log.Printf("⚠️ 消息处理失败，已重试%d次，进入死信队列: %v", maxDeliver, err)
-				}
-			} else {
-				// 未超过最大重试次数，等待后重新投递
-				log.Printf("⚠️ 消息处理失败 (第%d次重试，最大%d次): %v", currentRetry+1, maxDeliver, err)
-				time.Sleep(time.Duration(retryDelay) * time.Millisecond)
-				// requeue=true 重新入队
-				nackErr := msg.Nack(false, true)
-				if nackErr != nil {
-					log.Printf("❌ 拒绝消息失败: %v", nackErr)
-				}
-			}
-		} else {
-			if !cfg.AutoAck {
-				// 业务处理完后，手动确认消息
-				err := msg.Ack(false)
-				if err != nil {
-					log.Printf("❌ 确认消息失败: %v", err)
-				} else {
-					log.Printf("✅ 确认消息成功")
-				}
-			}
-		}
+		cfg.HandleFunc(ctx, &message)
 	}
 
 	return
+}
+
+func (c *RabbitMQMsg) Ack(msg *core.AckMessage) error {
+	attr := msg.AckRequiredAttr
+	msgCfg, ok := attr["MessageBody"].(*amqp.Delivery)
+	if !ok {
+		return fmt.Errorf("invalid message type, expected *amqp.Delivery")
+	}
+	return msgCfg.Ack(false)
+}
+
+func (c *RabbitMQMsg) Nak(msg *core.AckMessage) error {
+	attr := msg.AckRequiredAttr
+	msgCfg, ok := attr["MessageBody"].(*amqp.Delivery)
+	if !ok {
+		return fmt.Errorf("invalid message type, expected *amqp.Delivery")
+	}
+	// requeue=true: 消息重新入队，会被重新投递
+	return msgCfg.Nack(false, true)
+}
+
+func (c *RabbitMQMsg) Term(msg *core.AckMessage) error {
+	attr := msg.AckRequiredAttr
+	msgCfg, ok := attr["MessageBody"].(*amqp.Delivery)
+	if !ok {
+		return fmt.Errorf("invalid message type, expected *amqp.Delivery")
+	}
+	// requeue=false: 消息不重新入队，进入死信队列（如果配置了死信交换机）
+	return msgCfg.Nack(false, false)
 }
 
 // GmqGetDeadLetter 从死信队列查询所有消息（不删除，仅读取）

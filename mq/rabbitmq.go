@@ -26,94 +26,84 @@ type RabbitMQSubMessage struct {
 	core.SubMessage[any]
 }
 
-// RabbitMQMsg RabbitMQ消息队列实现
-type RabbitMQMsg struct {
-	RabbitMQUrl             string
-	RabbitMQPort            string
-	RabbitMQUsername        string
-	RabbitMQPassword        string
-	RabbitMQVHost           string
-	rabbitMQConn            *amqp.Connection
-	rabbitMQChannel         *amqp.Channel
-	rabbitMQConnectedAt     time.Time
-	rabbitMQLastPingLatency float64
+// RabbitMQConn RabbitMQ消息队列实现
+type RabbitMQConn struct {
+	Url      string
+	Port     string
+	Username string
+	Password string
+	VHost    string
+	conn     *amqp.Connection
+	channel  *amqp.Channel
 }
 
 // GmqPing 检测RabbitMQ连接状态
-func (c *RabbitMQMsg) GmqPing(_ context.Context) bool {
-	if c.rabbitMQConn == nil || c.rabbitMQChannel == nil {
+func (c *RabbitMQConn) GmqPing(_ context.Context) bool {
+	if c.conn == nil || c.channel == nil {
 		return false
 	}
 
-	if c.rabbitMQConn.IsClosed() || c.rabbitMQChannel.IsClosed() {
+	if c.conn.IsClosed() || c.channel.IsClosed() {
 		return false
 	}
-
-	start := time.Now()
-	c.rabbitMQLastPingLatency = float64(time.Since(start).Milliseconds())
 
 	return true
 }
 
 // GmqConnect 连接RabbitMQ服务器
-func (c *RabbitMQMsg) GmqConnect(ctx context.Context) (err error) {
-	if c.RabbitMQUrl == "" {
+func (c *RabbitMQConn) GmqConnect(ctx context.Context) (err error) {
+	if c.Url == "" {
 		return fmt.Errorf("RabbitMQ connect address is empty")
 	}
-	if c.RabbitMQPort == "" {
+	if c.Port == "" {
 		return fmt.Errorf("RabbitMQ connect port is empty")
 	}
-	if c.RabbitMQUsername == "" {
+	if c.Username == "" {
 		return fmt.Errorf("RabbitMQ connect username is empty")
 	}
-	if c.RabbitMQPassword == "" {
+	if c.Password == "" {
 		return fmt.Errorf("RabbitMQ connect password is empty")
 	}
-
 	// 安全地关闭旧连接（仅针对该数据源）
-	if c.rabbitMQConn != nil && !c.rabbitMQConn.IsClosed() {
-		c.rabbitMQConn.Close()
+	if c.conn != nil && !c.conn.IsClosed() {
+		c.conn.Close()
 	}
-	if c.rabbitMQChannel != nil && !c.rabbitMQChannel.IsClosed() {
-		c.rabbitMQChannel.Close()
+	if c.channel != nil && !c.channel.IsClosed() {
+		c.channel.Close()
 	}
-	// 连接 RabbitMQ
 	// 构建连接 URL
-	url := "amqp://" + c.RabbitMQUsername + ":" + c.RabbitMQPassword + "@" + c.RabbitMQUrl + ":" + c.RabbitMQPort + "/" + c.RabbitMQVHost
-
+	url := "amqp://" + c.Username + ":" + c.Password + "@" + c.Url + ":" + c.Port + "/" + c.VHost
 	// 创建连接
 	newConn, err := amqp.Dial(url)
 	if err != nil {
 		return fmt.Errorf("RabbitMQ connect failed: %w", err)
 	}
-
 	// 创建 Channel
 	newChannel, err := newConn.Channel()
 	if err != nil {
 		newConn.Close()
 		return fmt.Errorf("RabbitMQ JetStream connect failed: %w", err)
 	}
-	c.rabbitMQConn = newConn
-	c.rabbitMQChannel = newChannel
-	c.rabbitMQConnectedAt = time.Now()
+	c.conn = newConn
+	c.channel = newChannel
 	return nil
 }
 
 // GmqClose 关闭RabbitMQ连接
-func (c *RabbitMQMsg) GmqClose(ctx context.Context) (err error) {
-	if c.rabbitMQConn != nil {
-		c.rabbitMQConn.Close()
-		c.rabbitMQConn = nil
+func (c *RabbitMQConn) GmqClose(ctx context.Context) (err error) {
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
 	}
-	if c.rabbitMQChannel != nil {
-		c.rabbitMQChannel.Close()
-		c.rabbitMQChannel = nil
+	if c.channel != nil {
+		c.channel.Close()
+		c.channel = nil
 	}
 	return nil
 }
 
 // GmqPublish 发布消息
-func (c *RabbitMQMsg) GmqPublish(ctx context.Context, msg core.Publish) (err error) {
+func (c *RabbitMQConn) GmqPublish(ctx context.Context, msg core.Publish) (err error) {
 	cfg, ok := msg.(*RabbitMQPubMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RabbitMQPubMessage")
@@ -122,7 +112,7 @@ func (c *RabbitMQMsg) GmqPublish(ctx context.Context, msg core.Publish) (err err
 }
 
 // GmqPublishDelay 发布延迟消息
-func (c *RabbitMQMsg) GmqPublishDelay(ctx context.Context, msg core.PublishDelay) (err error) {
+func (c *RabbitMQConn) GmqPublishDelay(ctx context.Context, msg core.PublishDelay) (err error) {
 	cfg, ok := msg.(*RabbitMQPubDelayMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RabbitMQPubDelayMessage")
@@ -135,9 +125,8 @@ func (c *RabbitMQMsg) GmqPublishDelay(ctx context.Context, msg core.PublishDelay
 // durable: 是否持久化
 // delayTime: 延迟时间（秒），0 表示不延迟
 // data: 消息体
-func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durable bool, delayTime int, data any) error {
+func (c *RabbitMQConn) createPublish(ctx context.Context, queueName string, durable bool, delayTime int, data any) error {
 	delayMsg := delayTime > 0
-
 	// 1. 基础配置
 	exchangeType := "fanout"
 	exchangeName := queueName
@@ -158,7 +147,7 @@ func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durab
 	deadLetterRoutingKey := queueName + ".dlr"
 
 	// 2.1 声明死信交换机（fanout 类型，保证消息广播到死信队列）
-	if err := c.rabbitMQChannel.ExchangeDeclare(
+	if err := c.channel.ExchangeDeclare(
 		deadLetterExchange, // 死信交换机名称
 		"direct",           // 死信交换机类型
 		durable,            // 是否持久化
@@ -171,7 +160,7 @@ func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durab
 	}
 
 	// 2.2 声明死信队列
-	if _, err := c.rabbitMQChannel.QueueDeclare(
+	if _, err := c.channel.QueueDeclare(
 		deadLetterQueue, // 死信队列名称
 		durable,         // 是否持久化
 		false,           // autoDelete
@@ -183,7 +172,7 @@ func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durab
 	}
 
 	// 2.3 绑定死信队列到死信交换机
-	if err := c.rabbitMQChannel.QueueBind(
+	if err := c.channel.QueueBind(
 		deadLetterQueue,      // 死信队列名称
 		deadLetterRoutingKey, // 死信路由键
 		deadLetterExchange,   // 死信交换机名称
@@ -194,7 +183,7 @@ func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durab
 	}
 
 	// 3. 声明业务 Exchange
-	if err := c.rabbitMQChannel.ExchangeDeclare(
+	if err := c.channel.ExchangeDeclare(
 		exchangeName, // 业务交换机名称
 		exchangeType, // 交换机类型（普通/fanout 或 延迟/x-delayed-message）
 		durable,      // 是否持久化
@@ -213,7 +202,7 @@ func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durab
 		// 核心：指定当前队列的死信路由键
 		"x-dead-letter-routing-key": deadLetterRoutingKey,
 	}
-	if _, err := c.rabbitMQChannel.QueueDeclare(
+	if _, err := c.channel.QueueDeclare(
 		queueName, // 业务队列名称
 		durable,   // 是否持久化
 		false,     // autoDelete
@@ -225,7 +214,7 @@ func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durab
 	}
 
 	// 5. 绑定业务队列到业务交换机
-	if err := c.rabbitMQChannel.QueueBind(
+	if err := c.channel.QueueBind(
 		queueName,    // 业务队列名称
 		routingKey,   // 路由键
 		exchangeName, // 业务交换机名称
@@ -261,7 +250,7 @@ func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durab
 	}
 
 	// 8. 发布消息
-	err = c.rabbitMQChannel.PublishWithContext(
+	err = c.channel.PublishWithContext(
 		ctx,
 		exchangeName, // 业务交换机名称
 		routingKey,   // 路由键
@@ -278,16 +267,16 @@ func (c *RabbitMQMsg) createPublish(ctx context.Context, queueName string, durab
 }
 
 // GmqSubscribe 订阅RabbitMQ消息
-func (c *RabbitMQMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
+func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	cfg, ok := msg.(*RabbitMQSubMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RabbitMQSubMessage")
 	}
 
-	if err = c.rabbitMQChannel.Qos(cfg.FetchCount, 0, false); err != nil {
+	if err = c.channel.Qos(cfg.FetchCount, 0, false); err != nil {
 		return fmt.Errorf("set qos failed: %w", err)
 	}
-	msgs, err := c.rabbitMQChannel.Consume(
+	msgs, err := c.channel.Consume(
 		cfg.QueueName,    // queue
 		cfg.ConsumerName, // consumer
 		false,            // auto-ack
@@ -313,7 +302,7 @@ func (c *RabbitMQMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	return
 }
 
-func (c *RabbitMQMsg) Ack(msg *core.AckMessage) error {
+func (c *RabbitMQConn) Ack(msg *core.AckMessage) error {
 	attr := msg.AckRequiredAttr
 	msgCfg, ok := attr["MessageBody"].(*amqp.Delivery)
 	if !ok {
@@ -322,22 +311,13 @@ func (c *RabbitMQMsg) Ack(msg *core.AckMessage) error {
 	return msgCfg.Ack(false)
 }
 
-func (c *RabbitMQMsg) Nak(msg *core.AckMessage) error {
+func (c *RabbitMQConn) Nak(msg *core.AckMessage) error {
 	attr := msg.AckRequiredAttr
 	msgCfg, ok := attr["MessageBody"].(*amqp.Delivery)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *amqp.Delivery")
 	}
 	// requeue=true: 消息重新入队，会被重新投递
-	return msgCfg.Nack(false, true)
-}
-
-func (c *RabbitMQMsg) Term(msg *core.AckMessage) error {
-	attr := msg.AckRequiredAttr
-	msgCfg, ok := attr["MessageBody"].(*amqp.Delivery)
-	if !ok {
-		return fmt.Errorf("invalid message type, expected *amqp.Delivery")
-	}
 	// requeue=false: 消息不重新入队，进入死信队列（如果配置了死信交换机）
 	return msgCfg.Nack(false, false)
 }
@@ -346,8 +326,8 @@ func (c *RabbitMQMsg) Term(msg *core.AckMessage) error {
 // queueName: 队列名称
 // limit: 限制查询数量（0表示查询所有）
 // return: 结构化的死信消息列表 + 错误
-func (c *RabbitMQMsg) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
-	if c.rabbitMQChannel == nil {
+func (c *RabbitMQConn) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
+	if c.channel == nil {
 		return nil, fmt.Errorf("rabbitMQChannel is nil")
 	}
 
@@ -356,7 +336,7 @@ func (c *RabbitMQMsg) GmqGetDeadLetter(ctx context.Context, queueName string, li
 	}
 
 	// 1. 设置QoS，避免一次性拉取过多消息导致内存溢出
-	if err := c.rabbitMQChannel.Qos(100, 0, false); err != nil {
+	if err := c.channel.Qos(100, 0, false); err != nil {
 		return nil, fmt.Errorf("set qos failed: %w", err)
 	}
 
@@ -371,7 +351,7 @@ func (c *RabbitMQMsg) GmqGetDeadLetter(ctx context.Context, queueName string, li
 		}
 
 		// BasicGet 拉取单条消息（noAck=false：不自动确认）
-		msg, ok, err := c.rabbitMQChannel.Get(deadLetterQueue, false)
+		msg, ok, err := c.channel.Get(deadLetterQueue, false)
 		if err != nil {
 			log.Printf("get dead letter msg failed: %v", err)
 			break
@@ -455,24 +435,17 @@ func parseDeadLetterReason(headers amqp.Table) string {
 }
 
 // GetMetrics 获取基础监控指标
-func (c *RabbitMQMsg) GetMetrics(ctx context.Context) *core.Metrics {
+func (c *RabbitMQConn) GetMetrics(ctx context.Context) *core.Metrics {
 	m := &core.Metrics{
-		Name:            "rabbitmq",
-		Type:            "rabbitmq",
-		ServerAddr:      c.RabbitMQUrl,
-		ConnectedAt:     c.rabbitMQConnectedAt.Format("2006-01-02 15:04:05"),
-		LastPingLatency: c.rabbitMQLastPingLatency,
+		Name:       "rabbitmq",
+		Type:       "rabbitmq",
+		ServerAddr: c.Url,
 	}
 
 	if c.GmqPing(ctx) {
 		m.Status = "connected"
 	} else {
 		m.Status = "disconnected"
-	}
-
-	// 计算运行时间
-	if !c.rabbitMQConnectedAt.IsZero() {
-		m.UptimeSeconds = int64(time.Since(c.rabbitMQConnectedAt).Seconds())
 	}
 
 	return m

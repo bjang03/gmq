@@ -32,13 +32,9 @@ type NatsSubMessage struct {
 
 // NatsConn NATS消息队列实现
 type NatsConn struct {
-	Url            string     // NATS连接地址
-	Timeout        int        // 连接超时(秒)
-	ReconnectWait  int        // 重连等待(秒)
-	MaxReconnects  int        // 最大重连次数(-1为无限)
-	MessageTimeout int        // 消息处理超时(秒)
-	conn           *nats.Conn // NATS 连接对象
-	js             nats.JetStreamContext
+	Url  string     // NATS连接地址
+	conn *nats.Conn // NATS 连接对象
+	js   nats.JetStreamContext
 }
 
 // GmqPing 检测NATS连接状态
@@ -53,9 +49,6 @@ func (c *NatsConn) GmqPing(_ context.Context) bool {
 func (c *NatsConn) GmqConnect(_ context.Context) error {
 	// 设置连接选项
 	opts := []nats.Option{
-		nats.Timeout(time.Duration(c.Timeout) * time.Second),
-		nats.ReconnectWait(time.Duration(c.ReconnectWait) * time.Second),
-		nats.MaxReconnects(c.MaxReconnects),
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
 			log.Printf("[NATS] Connection disconnected: %v", err)
 		}),
@@ -74,15 +67,14 @@ func (c *NatsConn) GmqConnect(_ context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}
-
 	// 创建 JetStream（可选）
-	newJS, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("NATS JetStream connect failed: %w", err)
 	}
 	c.conn = conn
-	c.js = newJS
+	c.js = js
 	return nil
 }
 
@@ -201,11 +193,10 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 		log.Printf("⚠️  NATS 订阅失败: %v, Queue=%s, Consumer=%s, Stream=%s", err, cfg.QueueName, cfg.ConsumerName, streamName)
 		return fmt.Errorf("NATS Failed to subscribe: %w", err)
 	}
-
 	log.Printf("✅ NATS 订阅成功: Queue=%s, Consumer=%s, Stream=%s", cfg.QueueName, cfg.ConsumerName, streamName)
 
 	// ✅ 新增: 启动 DLQ 监听器，处理超过最大投递次数的消息
-	//go c.listenForDeliveryExceeded(ctx, streamName, cfg.ConsumerName, deadLetterQueue, dlqStreamName)
+	go c.listenForDeliveryExceeded(ctx, streamName, cfg.ConsumerName, cfg.QueueName+"_DLQ", streamNameDlq)
 
 	// 启动后台 goroutine 监听上下文取消，用于清理订阅
 	go func() {
@@ -280,17 +271,6 @@ func (c *NatsConn) Nak(msg *core.AckMessage) error {
 	return msgCfg.Nak()
 }
 
-// Term 终止消息，消息会被立即丢弃，不会进入死信队列
-// 注意：如果需要将消息移入死信队列，请使用 Nak 并设置 MaxDeliver 限制
-func (c *NatsConn) Term(msg *core.AckMessage) error {
-	attr := msg.AckRequiredAttr
-	msgCfg, ok := attr["MessageBody"].(*nats.Msg)
-	if !ok {
-		return fmt.Errorf("invalid message type, expected *nats.Msg")
-	}
-	return msgCfg.Term()
-}
-
 // JSConsumerDeliveryExceededAdvisory 消息投递超过最大次数的通知
 // 参考: nats-server-main/server/jetstream_events.go
 type JSConsumerDeliveryExceededAdvisory struct {
@@ -322,9 +302,9 @@ func (c *NatsConn) listenForDeliveryExceeded(ctx context.Context, streamName, co
 			advisory.Stream, advisory.Consumer, advisory.StreamSeq, advisory.Deliveries)
 
 		// 获取原始消息并转移到 DLQ
-		if err := c.moveToDLQ(ctx, streamName, advisory.StreamSeq, dlqSubject, dlqStreamName, advisory.Deliveries); err != nil {
-			log.Printf("⚠️  消息转移到 DLQ 失败: %v, Stream=%s, Seq=%d", err, streamName, advisory.StreamSeq)
-		}
+		//if err := c.moveToDLQ(ctx, streamName, advisory.StreamSeq, dlqSubject, dlqStreamName, advisory.Deliveries); err != nil {
+		//	log.Printf("⚠️  消息转移到 DLQ 失败: %v, Stream=%s, Seq=%d", err, streamName, advisory.StreamSeq)
+		//}
 	})
 	if err != nil {
 		log.Printf("⚠️  订阅 DLQ advisory 失败: %v, Subject=%s", err, advisorySubject)

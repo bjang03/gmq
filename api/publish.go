@@ -29,9 +29,9 @@ type PublishDelayReq struct {
 
 // Publish 发布消息
 func Publish(ctx context.Context, req *PublishReq) (res interface{}, err error) {
-	pipeline := core.GetGmq(req.MqName)
-	if pipeline == nil {
-		return nil, fmt.Errorf("[%s] pipeline not found", req.MqName)
+	agent := core.GetGmq(req.MqName)
+	if agent == nil {
+		return nil, fmt.Errorf("[%s] agent not found", req.MqName)
 	}
 
 	baseMsg := core.PubMessage{
@@ -41,11 +41,11 @@ func Publish(ctx context.Context, req *PublishReq) (res interface{}, err error) 
 
 	switch req.MqName {
 	case "nats":
-		err = pipeline.GmqPublish(ctx, &mq.NatsPubMessage{PubMessage: baseMsg, Durable: req.Durable})
+		err = agent.GmqPublish(ctx, &mq.NatsPubMessage{PubMessage: baseMsg, Durable: req.Durable})
 	case "rabbitmq":
-		err = pipeline.GmqPublish(ctx, &mq.RabbitMQPubMessage{PubMessage: baseMsg, Durable: req.Durable})
+		err = agent.GmqPublish(ctx, &mq.RabbitMQPubMessage{PubMessage: baseMsg, Durable: req.Durable})
 	case "redis":
-		err = pipeline.GmqPublish(ctx, &mq.RedisPubMessage{PubMessage: baseMsg})
+		err = agent.GmqPublish(ctx, &mq.RedisPubMessage{PubMessage: baseMsg})
 	default:
 		return nil, fmt.Errorf("unsupported mq type: %s", req.MqName)
 	}
@@ -54,9 +54,9 @@ func Publish(ctx context.Context, req *PublishReq) (res interface{}, err error) 
 
 // PublishDelay 发布延迟消息
 func PublishDelay(ctx context.Context, req *PublishDelayReq) (res interface{}, err error) {
-	pipeline := core.GetGmq(req.MqName)
-	if pipeline == nil {
-		return nil, fmt.Errorf("[%s] pipeline not found", req.MqName)
+	agent := core.GetGmq(req.MqName)
+	if agent == nil {
+		return nil, fmt.Errorf("[%s] agent not found", req.MqName)
 	}
 
 	baseMsg := core.PubDelayMessage{
@@ -69,9 +69,9 @@ func PublishDelay(ctx context.Context, req *PublishDelayReq) (res interface{}, e
 
 	switch req.MqName {
 	case "nats":
-		err = pipeline.GmqPublishDelay(ctx, &mq.NatsPubDelayMessage{PubDelayMessage: baseMsg, Durable: req.Durable})
+		err = agent.GmqPublishDelay(ctx, &mq.NatsPubDelayMessage{PubDelayMessage: baseMsg, Durable: req.Durable})
 	case "rabbitmq":
-		err = pipeline.GmqPublishDelay(ctx, &mq.RabbitMQPubDelayMessage{PubDelayMessage: baseMsg, Durable: req.Durable})
+		err = agent.GmqPublishDelay(ctx, &mq.RabbitMQPubDelayMessage{PubDelayMessage: baseMsg, Durable: req.Durable})
 	case "redis":
 		return nil, fmt.Errorf("redis does not support delay message")
 	default:

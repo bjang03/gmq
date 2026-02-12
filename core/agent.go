@@ -18,13 +18,13 @@ type subscriptionInfo struct {
 	msg any
 }
 
-// GmqPipeline 消息队列管道包装器，用于统一监控指标处理
-type GmqPipeline struct {
-	name        string          // 管道名称
-	plugin      Gmq             // 消息队列插件实例
-	metrics     pipelineMetrics // 管道监控指标
-	connectedAt int64           // 连接时间(Unix时间戳，秒)，原子访问
-	connected   int32           // 连接状态: 0=未连接, 1=已连接，原子访问
+// GmqAgent 消息队列代理包装器，用于统一监控指标处理
+type GmqAgent struct {
+	name        string       // 代理名称
+	plugin      Gmq          // 消息队列插件实例
+	metrics     agentMetrics // 代理监控指标
+	connectedAt int64        // 连接时间(Unix时间戳，秒)，原子访问
+	connected   int32        // 连接状态: 0=未连接, 1=已连接，原子访问
 
 	subscriptions      sync.Map // 订阅管理 - key: subKey, value: subscription object
 	subscriptionParams sync.Map // 订阅参数缓存 - key: subKey, value: *subscriptionInfo
@@ -34,9 +34,9 @@ type GmqPipeline struct {
 	metricsCacheTTL time.Duration           // 指标缓存TTL
 }
 
-// newGmqPipeline 创建新的管道包装器
-func newGmqPipeline(name string, plugin Gmq) *GmqPipeline {
-	p := &GmqPipeline{
+// newGmqAgent 创建新的代理包装器
+func newGmqAgent(name string, plugin Gmq) *GmqAgent {
+	p := &GmqAgent{
 		name:            name,
 		plugin:          plugin,
 		metricsCacheTTL: 5 * time.Second,
@@ -64,7 +64,7 @@ func validatePublishMsg(msg Publish) error {
 }
 
 // GmqPublish 发布消息（带统一监控和重试）
-func (p *GmqPipeline) GmqPublish(ctx context.Context, msg Publish) error {
+func (p *GmqAgent) GmqPublish(ctx context.Context, msg Publish) error {
 	// 统一校验公共参数
 	if err := validatePublishMsg(msg); err != nil {
 		return err
@@ -130,7 +130,7 @@ func validatePublishDelayMsg(msg PublishDelay) error {
 }
 
 // GmqPublishDelay 发布延迟消息（带统一监控和重试）
-func (p *GmqPipeline) GmqPublishDelay(ctx context.Context, msg PublishDelay) error {
+func (p *GmqAgent) GmqPublishDelay(ctx context.Context, msg PublishDelay) error {
 	// 统一校验公共参数
 	if err := validatePublishDelayMsg(msg); err != nil {
 		return err
@@ -198,8 +198,8 @@ func validateSubscribeMsg(msg Subscribe) error {
 	return nil
 }
 
-// wrapHandleFunc 包装用户的 HandleFunc，在管道层统一控制ACK
-func (p *GmqPipeline) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message any) error {
+// wrapHandleFunc 包装用户的 HandleFunc，在代理层统一控制ACK
+func (p *GmqAgent) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message any) error {
 	return func(ctx context.Context, message any) error {
 		ackMessage, ok := message.(*AckMessage)
 		if !ok {
@@ -217,7 +217,7 @@ func (p *GmqPipeline) wrapHandleFunc(originalFunc func(ctx context.Context, mess
 			// 手动确认模式：处理成功则确认，处理失败则终止消息
 			if err == nil {
 				// 处理成功：确认消息
-				err = p.plugin.Ack(ackMessage)
+				err = p.plugin.Nak(ackMessage)
 				if err != nil {
 					return err
 				}
@@ -234,7 +234,7 @@ func (p *GmqPipeline) wrapHandleFunc(originalFunc func(ctx context.Context, mess
 }
 
 // GmqSubscribe 订阅消息（带统一监控和重试）
-func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (err error) {
+func (p *GmqAgent) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	start := time.Now()
 
 	// 统一校验公共参数（先类型断言为 Subscribe 接口）
@@ -254,7 +254,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	// 预留槽位，标记为"订阅中"状态
 	p.subscriptions.Store(subKey, nil)
 
-	// 包装 HandleFunc，在管道层统一控制ACK
+	// 包装 HandleFunc，在代理层统一控制ACK
 	subMsg.SetHandleFunc(p.wrapHandleFunc(subMsg.GetHandleFunc(), subMsg.GetAutoAck()))
 	var subObj interface{}
 	// 带重试的订阅
@@ -299,7 +299,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (err error) {
 		return fmt.Errorf("subscription conflict detected for topic: %s", subMsg.GetQueueName())
 	}
 
-	// 保存订阅对象到管道层
+	// 保存订阅对象到代理层
 	p.subscriptions.Store(subKey, subObj)
 
 	// 保存订阅参数，用于断线重连后恢复订阅
@@ -317,7 +317,7 @@ func (p *GmqPipeline) GmqSubscribe(ctx context.Context, msg any) (err error) {
 }
 
 // GmqUnsubscribe 取消订阅
-func (p *GmqPipeline) GmqUnsubscribe(topic, consumerName string) error {
+func (p *GmqAgent) GmqUnsubscribe(topic, consumerName string) error {
 	subKey := p.getSubKey(topic, consumerName)
 
 	subObj, exists := p.subscriptions.Load(subKey)
@@ -338,7 +338,7 @@ func (p *GmqPipeline) GmqUnsubscribe(topic, consumerName string) error {
 }
 
 // clearSubscriptions 清理所有订阅
-func (p *GmqPipeline) clearSubscriptions() {
+func (p *GmqAgent) clearSubscriptions() {
 	p.subscriptions.Range(func(key, value any) bool {
 		subKey := key.(string)
 		subObj := value
@@ -352,7 +352,7 @@ func (p *GmqPipeline) clearSubscriptions() {
 }
 
 // restoreSubscriptions 断线重连后恢复所有订阅
-func (p *GmqPipeline) restoreSubscriptions() {
+func (p *GmqAgent) restoreSubscriptions() {
 	// 先清理旧的订阅对象
 	p.subscriptions.Range(func(key, value any) bool {
 		subKey := key.(string)
@@ -427,26 +427,8 @@ func (p *GmqPipeline) restoreSubscriptions() {
 	}
 }
 
-// extractSubscriptionInfo 从订阅消息中提取 topic 和 consumerName
-func (p *GmqPipeline) extractSubscriptionInfo(msg any) (queueName, consumerName string, handleFunc func(ctx context.Context, message any)) {
-	// 尝试通过接口方法提取信息（优先使用接口方法）
-	if qn, ok := msg.(interface{ GetQueueName() string }); ok {
-		queueName = qn.GetQueueName()
-	}
-	if cn, ok := msg.(interface{ GetConsumerName() string }); ok {
-		consumerName = cn.GetConsumerName()
-	}
-	if cn, ok := msg.(interface {
-		GetHandleFunc() func(ctx context.Context, message any)
-	}); ok {
-		handleFunc = cn.GetHandleFunc()
-	}
-
-	return queueName, consumerName, handleFunc
-}
-
 // getSubKey 生成订阅的唯一key，使用原子计数器避免相同 topic 不同消费者的冲突
-func (p *GmqPipeline) getSubKey(topic, consumerName string) string {
+func (p *GmqAgent) getSubKey(topic, consumerName string) string {
 	if consumerName != "" {
 		return topic + ":" + consumerName
 	}
@@ -456,13 +438,13 @@ func (p *GmqPipeline) getSubKey(topic, consumerName string) string {
 }
 
 // GmqGetDeadLetter 获取死信消息
-func (p *GmqPipeline) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]DeadLetterMsgDTO, error) {
+func (p *GmqAgent) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]DeadLetterMsgDTO, error) {
 	return p.plugin.GmqGetDeadLetter(ctx, queueName, limit)
 }
 
 // GmqPing 检测连接状态
-func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
-	// 管道层统一校验：检查是否已连接
+func (p *GmqAgent) GmqPing(ctx context.Context) bool {
+	// 代理层统一校验：检查是否已连接
 	if atomic.LoadInt32(&p.connected) == 0 {
 		return false
 	}
@@ -472,7 +454,7 @@ func (p *GmqPipeline) GmqPing(ctx context.Context) bool {
 }
 
 // GmqConnect 连接消息队列
-func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
+func (p *GmqAgent) GmqConnect(ctx context.Context) error {
 
 	err := p.plugin.GmqConnect(ctx)
 	if err == nil {
@@ -482,20 +464,16 @@ func (p *GmqPipeline) GmqConnect(ctx context.Context) error {
 	return err
 }
 
-func (p *GmqPipeline) Ack(msg *AckMessage) error {
+func (p *GmqAgent) Ack(msg *AckMessage) error {
 	return p.plugin.Ack(msg)
 }
 
-func (p *GmqPipeline) Nak(msg *AckMessage) error {
+func (p *GmqAgent) Nak(msg *AckMessage) error {
 	return p.plugin.Nak(msg)
 }
 
-func (p *GmqPipeline) Term(msg *AckMessage) error {
-	return p.plugin.Term(msg)
-}
-
 // GmqClose 关闭连接
-func (p *GmqPipeline) GmqClose(ctx context.Context) error {
+func (p *GmqAgent) GmqClose(ctx context.Context) error {
 	// 关闭前先清理所有订阅
 	p.clearSubscriptions()
 
@@ -505,7 +483,7 @@ func (p *GmqPipeline) GmqClose(ctx context.Context) error {
 }
 
 // GetMetrics 获取统一监控指标（带缓存，使用 atomic 无锁读取）
-func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
+func (p *GmqAgent) GetMetrics(ctx context.Context) *Metrics {
 	now := time.Now().UnixMilli()
 	cacheExp := p.metricsCacheExp.Load()
 
@@ -521,7 +499,7 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 	// 获取插件自身的指标
 	pluginMetrics := p.plugin.GetMetrics(ctx)
 
-	// 获取管道层面的指标
+	// 获取代理层面的指标
 	latencyCount := atomic.LoadInt64(&p.metrics.latencyCount)
 	totalLatency := atomic.LoadInt64(&p.metrics.totalLatency)
 	messageCount := atomic.LoadInt64(&p.metrics.messageCount)
@@ -542,7 +520,7 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		errorRate = float64(publishFailed+subscribeFailed) / float64(totalAttempted) * 100
 	}
 
-	// 使用管道层的连接时间（原子读取）
+	// 使用代理层的连接时间（原子读取）
 	var uptimeSeconds int64
 	var connectedAtStr string
 	connectedAtUnix := atomic.LoadInt64(&p.connectedAt)
@@ -567,7 +545,7 @@ func (p *GmqPipeline) GetMetrics(ctx context.Context) *Metrics {
 		status = "connected"
 	}
 
-	// 合并指标（插件提供基础信息，管道层提供客户端统计和连接信息）
+	// 合并指标（插件提供基础信息，代理层提供客户端统计和连接信息）
 	// 深拷贝 map 字段避免数据竞争
 	m := &Metrics{
 		Name:            p.name,

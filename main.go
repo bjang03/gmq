@@ -17,17 +17,16 @@ import (
 
 func main() {
 	core.GmqRegister("nats", &mq.NatsConn{
-		Url:            "nats://localhost:4222",
-		Timeout:        10,
-		ReconnectWait:  5,
-		MaxReconnects:  -1,
-		MessageTimeout: 30,
+		Url: "nats://localhost:4222",
 	})
 
 	// 设置 Gin 路由
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	api.SetupRouter(router)
+
+	// 打印注册的路由
+	api.PrintRoutes(router)
 
 	// 创建 HTTP 服务器
 	srv := &http.Server{

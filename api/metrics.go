@@ -51,8 +51,8 @@ func getAllMetrics() map[string]*core.Metrics {
 	defer cancel()
 
 	result := make(map[string]*core.Metrics)
-	for name, pipeline := range core.GetAllGmq() {
-		metrics := pipeline.GetMetrics(ctx)
+	for name, agent := range core.GetAllGmq() {
+		metrics := agent.GetMetrics(ctx)
 		result[name] = metrics
 	}
 

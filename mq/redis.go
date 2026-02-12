@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/bjang03/gmq/utils"
 	"log"
-	"reflect"
 	"strings"
 	"time"
 
@@ -22,183 +22,139 @@ type RedisSubMessage struct {
 	core.SubMessage[any]
 }
 
-// RedisMsg Redis消息队列实现
-type RedisMsg struct {
-	redisConnURL         string
-	redisUsername        string
-	redisPassword        string
-	redisDb              int
-	redisPoolSize        int
-	redisMinIdleConns    int
-	redisMaxActiveConns  int
-	redisMaxRetries      int
-	redisDialTimeout     int
-	redisReadTimeout     int
-	redisWriteTimeout    int
-	redisPoolTimeout     int
-	redisConnMaxIdleTime int
-	redisConnMaxLifetime int
-	redisDsName          string
-	redisConn            *redis.Client
-	redisConnectedAt     time.Time
-	redisLastPingLatency float64
+// RedisConn Redis消息队列实现
+type RedisConn struct {
+	Url             string // Redis连接地址
+	Db              int    // Redis数据库
+	Username        string // Redis用户名
+	Password        string // Redis密码
+	PoolSize        int    // 连接池大小
+	MinIdleConns    int    // 最小空闲连接数
+	MaxActiveConns  int    // 最大活跃连接数
+	MaxRetries      int    // 最大重试次数
+	DialTimeout     int    // 拨号超时时间
+	ReadTimeout     int    // 读超时时间
+	WriteTimeout    int    // 写超时时间
+	PoolTimeout     int    // 连接池超时时间
+	ConnMaxIdleTime int    // 连接最大空闲时间
+	ConnMaxLifetime int    // 连接最大存活时间
+	conn            *redis.Client
 }
 
 // GmqPing 检测Redis连接状态
-func (c *RedisMsg) GmqPing(ctx context.Context) bool {
-	if c.redisConn == nil {
+func (c *RedisConn) GmqPing(ctx context.Context) bool {
+	if c.conn == nil {
 		return false
 	}
-
-	pong, err := c.redisConn.Ping(ctx).Result()
+	pong, err := c.conn.Ping(ctx).Result()
 	if err != nil || pong != "PONG" {
 		return false
 	}
-
-	start := time.Now()
-	c.redisLastPingLatency = float64(time.Since(start).Milliseconds())
-
 	return true
 }
 
 // GmqConnect 连接Redis服务器
-func (c *RedisMsg) GmqConnect(ctx context.Context) (err error) {
-	if c.redisConnURL == "" {
+func (c *RedisConn) GmqConnect(ctx context.Context) (err error) {
+	if c.Url == "" {
 		return fmt.Errorf("redis connect address is empty")
 	}
 
-	// 安全地关闭旧连接
-	if c.redisConn != nil {
-		c.redisConn.Close()
+	// 连接池已存在，直接返回（go-redis 会自动管理连接）
+	if c.conn != nil {
+		return nil
 	}
 	options := redis.Options{
-		Addr:            c.redisConnURL,
-		DB:              c.redisDb,
-		PoolSize:        c.redisPoolSize,
-		MinIdleConns:    c.redisMinIdleConns,
-		MaxActiveConns:  c.redisMaxActiveConns,
-		MaxRetries:      c.redisMaxRetries,
-		DialTimeout:     time.Duration(c.redisDialTimeout) * time.Second,
-		ReadTimeout:     time.Duration(c.redisReadTimeout) * time.Second,
-		WriteTimeout:    time.Duration(c.redisWriteTimeout) * time.Second,
-		PoolTimeout:     time.Duration(c.redisPoolTimeout) * time.Second,
-		ConnMaxIdleTime: time.Duration(c.redisConnMaxIdleTime) * time.Second,
-		ConnMaxLifetime: time.Duration(c.redisConnMaxLifetime) * time.Second,
+		Addr: c.Url,
+		DB:   c.Db,
 	}
-	if c.redisUsername != "" && c.redisPassword != "" {
-		options.Username = c.redisUsername
-		options.Password = c.redisPassword
+	if c.Username != "" && c.Password != "" {
+		options.Username = c.Username
+		options.Password = c.Password
+	}
+	if c.PoolSize > 0 {
+		options.PoolSize = c.PoolSize
+	}
+	if c.MinIdleConns > 0 {
+		options.MinIdleConns = c.MinIdleConns
+	}
+	if c.MaxActiveConns > 0 {
+		options.MaxActiveConns = c.MaxActiveConns
+	}
+	if c.MaxRetries > 0 {
+		options.MaxRetries = c.MaxRetries
+	}
+	if c.DialTimeout > 0 {
+		options.DialTimeout = time.Duration(c.DialTimeout) * time.Second
+	}
+	if c.ReadTimeout > 0 {
+		options.ReadTimeout = time.Duration(c.ReadTimeout) * time.Second
+	}
+	if c.WriteTimeout > 0 {
+		options.WriteTimeout = time.Duration(c.WriteTimeout) * time.Second
+	}
+	if c.PoolTimeout > 0 {
+		options.PoolTimeout = time.Duration(c.PoolTimeout) * time.Second
+	}
+	if c.ConnMaxIdleTime > 0 {
+		options.ConnMaxIdleTime = time.Duration(c.ConnMaxIdleTime) * time.Second
+	}
+	if c.ConnMaxLifetime > 0 {
+		options.ConnMaxLifetime = time.Duration(c.ConnMaxLifetime) * time.Second
 	}
 	// 连接 Redis
-	newConn := redis.NewClient(&options)
-
-	// 测试连接
-	pong, err := newConn.Ping(ctx).Result()
-	if err != nil {
-		log.Println(fmt.Sprintf("Redis [%s] connect failed: %s", c.redisDsName, err))
-		return fmt.Errorf("redis [%s] connect failed: %w", c.redisDsName, err)
-	}
-
-	if pong != "PONG" {
-		log.Println(fmt.Sprintf("Redis [%s] ping response invalid", c.redisDsName))
-		return fmt.Errorf("redis [%s] ping response invalid", c.redisDsName)
-	}
-
-	c.redisConn = newConn
-	c.redisConnectedAt = time.Now()
-	log.Println(fmt.Sprintf("Redis [%s] connect success: %s", c.redisDsName, c.redisConnURL))
+	c.conn = redis.NewClient(&options)
+	log.Println(fmt.Sprintf("Redis connect success: %s", c.Url))
 	return nil
 }
 
 // GmqClose 关闭Redis连接
-func (c *RedisMsg) GmqClose(ctx context.Context) (err error) {
-	if c.redisConn != nil {
-		err = c.redisConn.Close()
-		c.redisConn = nil
+func (c *RedisConn) GmqClose(ctx context.Context) (err error) {
+	if c.conn != nil {
+		err = c.conn.Close()
+		c.conn = nil
 	}
 	return err
 }
 
 // GmqPublish 发布消息
-func (c *RedisMsg) GmqPublish(ctx context.Context, msg core.Publish) (err error) {
+func (c *RedisConn) GmqPublish(ctx context.Context, msg core.Publish) (err error) {
 	cfg, ok := msg.(*RedisPubMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RedisPubMessage")
 	}
-	// 将数据转换为 map[string]interface{}
-	values := make(map[string]interface{})
-	switch v := cfg.Data.(type) {
-	case map[string]interface{}:
-		values = v
-	case map[string]string:
-		for k, val := range v {
-			values[k] = val
-		}
-	default:
-		// 使用反射将结构体转换为 map
-		rv := reflect.ValueOf(cfg.Data)
-		if rv.Kind() == reflect.Ptr {
-			rv = rv.Elem()
-		}
-		if rv.Kind() == reflect.Struct {
-			rt := rv.Type()
-			for i := 0; i < rv.NumField(); i++ {
-				field := rt.Field(i)
-				fieldValue := rv.Field(i)
-				// 获取字段名（优先使用 json tag）
-				fieldName := field.Name
-				if tag := field.Tag.Get("json"); tag != "" && tag != "-" {
-					fieldName = strings.Split(tag, ",")[0]
-				}
-				// 只导出可访问的字段
-				if fieldValue.CanInterface() {
-					values[fieldName] = fieldValue.Interface()
-				}
-			}
-		} else if fieldValue, ok := cfg.Data.(interface{ String() string }); ok {
-			// 如果数据实现了 String() 方法，使用字符串
-			values["data"] = fieldValue.String()
-		} else {
-			// 其他情况直接使用 map 转换
-			values = cast.ToStringMap(cfg.Data)
-		}
-	}
-	// 检查转换后的 map 是否为空
-	if len(values) == 0 {
-		return fmt.Errorf("data cannot be empty after conversion")
+	toMap, err := utils.ConvertToMap(cfg.Data)
+	if err != nil {
+		return err
 	}
 	// 1. 构造 XAdd 参数结构体（类型安全，参数含义清晰）
 	addArgs := &redis.XAddArgs{
 		Stream: cfg.QueueName, // 流名称
 		ID:     "*",           // 自动生成 ID
-		Values: values,
-	}
-	if c.redisConn == nil {
-		return fmt.Errorf("redis connection is nil")
+		Values: toMap,
 	}
 	// 2. 调用专用 XAdd 方法
 	// 直接返回消息 ID（string 类型）和错误，无需额外解析
-	msgID, err := c.redisConn.XAdd(ctx, addArgs).Result()
+	msgID, err := c.conn.XAdd(ctx, addArgs).Result()
 	if err != nil {
 		return fmt.Errorf("publish message failed：%v\n", err)
 	}
-	log.Println(fmt.Sprintf("Redis [%s] publish message success: queue=%s, msgID=%s", c.redisDsName, cfg.QueueName, msgID))
+	log.Println(fmt.Sprintf("Redis publish message success: queue=%s, msgID=%s", cfg.QueueName, msgID))
 	return
 }
 
 // GmqPublishDelay 发布延迟消息
-func (c *RedisMsg) GmqPublishDelay(_ context.Context, _ core.PublishDelay) (err error) {
+func (c *RedisConn) GmqPublishDelay(_ context.Context, _ core.PublishDelay) (err error) {
 	return fmt.Errorf("redis not support delay message")
 }
 
 // GmqSubscribe 订阅Redis消息
-func (c *RedisMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
+func (c *RedisConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	cfg, ok := msg.(*RedisSubMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RedisSubMessage")
 	}
 	group := fmt.Sprintf("%s_default_group", cfg.ConsumerName)
-	_, err = c.redisConn.XGroupCreateMkStream(ctx, cfg.QueueName, group, "0").Result()
+	_, err = c.conn.XGroupCreateMkStream(ctx, cfg.QueueName, group, "0").Result()
 	if err != nil {
 		if !strings.Contains(err.Error(), "BUSYGROUP") && !strings.Contains(err.Error(), "already exists") {
 			return fmt.Errorf("subscribe message failed：%v\n", err)
@@ -213,10 +169,10 @@ func (c *RedisMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 		Streams:  []string{cfg.QueueName, ">"}, // 消费的流 + 起始 ID（> 表示消费新消息）
 	}
 	for {
-		if c.redisConn == nil {
+		if c.conn == nil {
 			return fmt.Errorf("redis connection is nil")
 		}
-		streams, err := c.redisConn.XReadGroup(ctx, readArgs).Result()
+		streams, err := c.conn.XReadGroup(ctx, readArgs).Result()
 		if err != nil {
 			return fmt.Errorf("subscribe message failed：%v\n", err)
 		}
@@ -243,7 +199,7 @@ func (c *RedisMsg) GmqSubscribe(ctx context.Context, msg any) (err error) {
 }
 
 // Ack 确认消息
-func (c *RedisMsg) Ack(msg *core.AckMessage) error {
+func (c *RedisConn) Ack(msg *core.AckMessage) error {
 	attr := msg.AckRequiredAttr
 	msgId, ok := attr["MessageId"].(string)
 	if !ok {
@@ -257,20 +213,12 @@ func (c *RedisMsg) Ack(msg *core.AckMessage) error {
 	if !ok {
 		return fmt.Errorf("invalid group name type, expected string")
 	}
-	_, err := c.redisConn.XAck(context.Background(), queueName, group, msgId).Result()
+	_, err := c.conn.XAck(context.Background(), queueName, group, msgId).Result()
 	return err
 }
 
 // Nak 否定确认消息 - Redis 不支持 Nak，需要手动重新投递或进入死信队列
-func (c *RedisMsg) Nak(msg *core.AckMessage) error {
-	// Redis Streams 没有原生的 Nak 操作
-	// 这里选择不确认消息，让它保留在 Pending 列表中，等待下次消费
-	// 或者可以实现为：发送到死信队列 + 确认原消息
-	return fmt.Errorf("Redis does not support Nak operation natively, message remains in pending list")
-}
-
-// Term 终止消息 - 将消息移入死信队列并确认
-func (c *RedisMsg) Term(msg *core.AckMessage) error {
+func (c *RedisConn) Nak(msg *core.AckMessage) error {
 	attr := msg.AckRequiredAttr
 	msgId, ok := attr["MessageId"].(string)
 	if !ok {
@@ -299,14 +247,14 @@ func (c *RedisMsg) Term(msg *core.AckMessage) error {
 	}
 
 	// 确认原消息（从 pending 列表中移除）
-	_, err := c.redisConn.XAck(ctx, queueName, group, msgId).Result()
+	_, err := c.conn.XAck(ctx, queueName, group, msgId).Result()
 	return err
 }
 
 // -------------------------- 核心：死信队列操作 --------------------------
 // sendToDeadLetter 将消息移入死信Stream
-func (c *RedisMsg) sendToDeadLetter(ctx context.Context, queueName, msgID, payload, reason string) error {
-	if c.redisConn == nil {
+func (c *RedisConn) sendToDeadLetter(ctx context.Context, queueName, msgID, payload, reason string) error {
+	if c.conn == nil {
 		return fmt.Errorf("redis connection is nil")
 	}
 
@@ -322,7 +270,7 @@ func (c *RedisMsg) sendToDeadLetter(ctx context.Context, queueName, msgID, paylo
 	}
 
 	// XAdd写入死信Stream
-	_, err := c.redisConn.XAdd(ctx, &redis.XAddArgs{
+	_, err := c.conn.XAdd(ctx, &redis.XAddArgs{
 		Stream: deadLetterQueue,
 		Values: deadMsg,
 		MaxLen: 10000, // 死信Stream最大长度
@@ -339,8 +287,8 @@ func (c *RedisMsg) sendToDeadLetter(ctx context.Context, queueName, msgID, paylo
 }
 
 // GmqGetDeadLetter 从死信队列查询所有消息（不删除，仅读取）
-func (c *RedisMsg) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
-	if c.redisConn == nil {
+func (c *RedisConn) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
+	if c.conn == nil {
 		return nil, fmt.Errorf("redis connection is nil")
 	}
 
@@ -353,7 +301,7 @@ func (c *RedisMsg) GmqGetDeadLetter(ctx context.Context, queueName string, limit
 	}
 
 	// 使用 XRANGE 获取死信队列中的所有消息
-	streamMessages, err := c.redisConn.XRange(context.Background(), deadLetterQueue, "-", "+").Result()
+	streamMessages, err := c.conn.XRange(context.Background(), deadLetterQueue, "-", "+").Result()
 	if err != nil {
 		return nil, fmt.Errorf("get dead letter messages failed: %w", err)
 	}
@@ -401,16 +349,13 @@ func (c *RedisMsg) GmqGetDeadLetter(ctx context.Context, queueName string, limit
 		}
 	}
 
-	log.Printf("Redis [%s] get dead letter messages: queue=%s, count=%d", c.redisDsName, deadLetterQueue, len(msgs))
 	return msgs, nil
 }
-func (c *RedisMsg) GetMetrics(ctx context.Context) *core.Metrics {
+func (c *RedisConn) GetMetrics(ctx context.Context) *core.Metrics {
 	m := &core.Metrics{
-		Name:            "redis",
-		Type:            "redis",
-		ServerAddr:      c.redisConnURL,
-		ConnectedAt:     c.redisConnectedAt.Format("2006-01-02 15:04:05"),
-		LastPingLatency: c.redisLastPingLatency,
+		Name:       "redis",
+		Type:       "redis",
+		ServerAddr: c.Url,
 	}
 
 	if c.GmqPing(ctx) {
@@ -419,14 +364,9 @@ func (c *RedisMsg) GetMetrics(ctx context.Context) *core.Metrics {
 		m.Status = "disconnected"
 	}
 
-	// 计算运行时间
-	if !c.redisConnectedAt.IsZero() {
-		m.UptimeSeconds = int64(time.Since(c.redisConnectedAt).Seconds())
-	}
-
 	// 从 Redis 获取服务端统计信息
-	if c.redisConn != nil && c.GmqPing(ctx) {
-		info, err := c.redisConn.Info(ctx, "server", "clients", "memory", "stats").Result()
+	if c.conn != nil && c.GmqPing(ctx) {
+		info, err := c.conn.Info(ctx, "server", "clients", "memory", "stats").Result()
 		if err == nil {
 			m.ServerMetrics = map[string]interface{}{
 				"info": info,
@@ -434,7 +374,7 @@ func (c *RedisMsg) GetMetrics(ctx context.Context) *core.Metrics {
 		}
 
 		// 获取数据库大小
-		dbSize, err := c.redisConn.DBSize(ctx).Result()
+		dbSize, err := c.conn.DBSize(ctx).Result()
 		if err == nil {
 			if m.ServerMetrics == nil {
 				m.ServerMetrics = map[string]interface{}{}

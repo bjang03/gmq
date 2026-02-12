@@ -721,6 +721,45 @@ header h1 {
     margin: 2px;
 }
 
+/* 文字按钮样式 */
+.dead-letter-table td.actions .btn-text {
+    background: transparent;
+    border: none;
+    padding: 4px 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-decoration: underline;
+}
+
+.dead-letter-table td.actions .btn-retry {
+    color: #16a34a;
+}
+
+.dead-letter-table td.actions .btn-retry:hover {
+    color: #15803d;
+    background: rgba(22, 163, 74, 0.1);
+}
+
+.dead-letter-table td.actions .btn-edit {
+    color: #2563eb;
+}
+
+.dead-letter-table td.actions .btn-edit:hover {
+    color: #1d4ed8;
+    background: rgba(37, 99, 235, 0.1);
+}
+
+.dead-letter-table td.actions .btn-discard {
+    color: #dc2626;
+}
+
+.dead-letter-table td.actions .btn-discard:hover {
+    color: #b91c1c;
+    background: rgba(220, 38, 38, 0.1);
+}
+
 .dead-letter-list::-webkit-scrollbar {
     width: 8px;
 }

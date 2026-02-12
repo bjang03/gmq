@@ -587,14 +587,14 @@ function renderDeadLetterMessages() {
                 <td class="timestamp">${timestamp}</td>
                 <td class="dead-reason">${escapeHtml(msg.dead_reason || 'N/A')}</td>
                 <td class="actions">
-                    <button class="btn btn-primary btn-sm" onclick="retryDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="重新执行">
-                        🔄
+                    <button class="btn btn-text btn-retry" onclick="retryDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="重新执行">
+                        重新执行
                     </button>
-                    <button class="btn btn-warning btn-sm" onclick="editDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="编辑">
-                        ✏️
+                    <button class="btn btn-text btn-edit" onclick="editDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="编辑">
+                        编辑重投
                     </button>
-                    <button class="btn btn-danger btn-sm" onclick="discardDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="丢弃">
-                        🗑️
+                    <button class="btn btn-text btn-discard" onclick="discardDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="丢弃">
+                        丢弃
                     </button>
                 </td>
             </tr>

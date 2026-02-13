@@ -13,7 +13,7 @@ import (
 // TestNatsSubscribe 测试NATS发布/订阅消息
 func TestNatsSubscribe(t *testing.T) {
 	core.GmqRegister("nats", &NatsConn{
-		Url: "nats://localhost:4222",
+		Url: "localhost:4222",
 	})
 	client := core.GetGmq("nats")
 	queueName := "test.queue"

@@ -20,7 +20,7 @@ func main() {
 		Url: "localhost:6379",
 	})
 	core.GmqRegister("nats", &mq.NatsConn{
-		Url: "nats://localhost:4222",
+		Url: "localhost:4222",
 	})
 	core.GmqRegister("rabbit", &mq.RabbitMQConn{
 		Url:      "localhost",

@@ -22,7 +22,7 @@ func TestNatsSubscribe(t *testing.T) {
 	wg.Add(1)
 
 	subMsg := &NatsSubMessage{
-		SubMessage: core.SubMessage[any]{
+		SubMessage: core.SubMessage{
 			QueueName:    queueName,
 			ConsumerName: "test-consumer",
 			AutoAck:      true,

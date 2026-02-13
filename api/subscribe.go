@@ -157,7 +157,7 @@ func createMQSubscription(ctx context.Context, mqName, queueName, consumerName s
 		return fmt.Errorf("[%s] agent not found", mqName)
 	}
 
-	baseMsg := core.SubMessage[any]{
+	baseMsg := core.SubMessage{
 		QueueName:    queueName,
 		ConsumerName: consumerName,
 		AutoAck:      autoAck,

@@ -2,7 +2,6 @@ package mq
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/bjang03/gmq/utils"
 	"log"
@@ -19,7 +18,7 @@ type RedisPubMessage struct {
 }
 
 type RedisSubMessage struct {
-	core.SubMessage[any]
+	core.SubMessage
 }
 
 // RedisConn Redis消息队列实现
@@ -148,9 +147,11 @@ func (c *RedisConn) GmqPublishDelay(_ context.Context, _ core.PublishDelay) (err
 }
 
 // GmqSubscribe 订阅Redis消息
-func (c *RedisConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
-	cfg, ok := msg.(*RedisSubMessage)
+func (c *RedisConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (err error) {
+	// 类型断言获取 NatsSubMessage 特定字段
+	cfg, ok := sub.GetSubMsg().(*RedisSubMessage)
 	if !ok {
+		log.Printf("⚠️  invalid message type, expected *RedisSubMessage")
 		return fmt.Errorf("invalid message type, expected *RedisSubMessage")
 	}
 	group := fmt.Sprintf("%s_default_group", cfg.ConsumerName)
@@ -191,99 +192,39 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 							"Group":     group,
 						},
 					}
-					cfg.HandleFunc(ctx, &message)
+					if err = sub.GetAckHandleFunc()(ctx, &message); err != nil {
+						log.Printf("⚠️ Message processing failed: %v", err)
+						continue
+					}
 				}
 			}
 		}
 	}
 }
 
-// Ack 确认消息
-func (c *RedisConn) Ack(msg *core.AckMessage) error {
+// GmqAck 确认消息
+func (c *RedisConn) GmqAck(ctx context.Context, msg *core.AckMessage) error {
 	attr := msg.AckRequiredAttr
-	msgId, ok := attr["MessageId"].(string)
-	if !ok {
-		return fmt.Errorf("invalid message type, expected *redis.XMessage")
-	}
-	queueName, ok := attr["QueueName"].(string)
-	if !ok {
-		return fmt.Errorf("invalid queue name type, expected string")
-	}
-	group, ok := attr["Group"].(string)
-	if !ok {
-		return fmt.Errorf("invalid group name type, expected string")
-	}
-	_, err := c.conn.XAck(context.Background(), queueName, group, msgId).Result()
-	return err
-}
-
-// Nak 否定确认消息 - Redis 不支持 Nak，需要手动重新投递或进入死信队列
-func (c *RedisConn) Nak(msg *core.AckMessage) error {
-	attr := msg.AckRequiredAttr
-	msgId, ok := attr["MessageId"].(string)
-	if !ok {
-		return fmt.Errorf("invalid message type, expected *redis.XMessage")
-	}
-	queueName, ok := attr["QueueName"].(string)
-	if !ok {
-		return fmt.Errorf("invalid queue name type, expected string")
-	}
-	group, ok := attr["Group"].(string)
-	if !ok {
-		return fmt.Errorf("invalid group name type, expected string")
-	}
-
-	// 获取消息内容
-	msgData, ok := attr["MessageData"].(map[string]interface{})
-	if !ok {
-		msgData = make(map[string]interface{})
-	}
-	payload, _ := json.Marshal(msgData)
-
-	// 发送到死信队列
-	ctx := context.Background()
-	if err := c.sendToDeadLetter(ctx, queueName, msgId, string(payload), "message terminated"); err != nil {
-		return err
-	}
-
-	// 确认原消息（从 pending 列表中移除）
+	msgId := cast.ToString(attr["MessageId"])
+	queueName := cast.ToString(attr["QueueName"])
+	group := cast.ToString(attr["Group"])
 	_, err := c.conn.XAck(ctx, queueName, group, msgId).Result()
 	return err
 }
 
-// -------------------------- 核心：死信队列操作 --------------------------
-// sendToDeadLetter 将消息移入死信Stream
-func (c *RedisConn) sendToDeadLetter(ctx context.Context, queueName, msgID, payload, reason string) error {
-	if c.conn == nil {
-		return fmt.Errorf("redis connection is nil")
-	}
+// GmqNak 否定确认消息 - Redis 不支持 Nak，需要手动重新投递或进入死信队列
+func (c *RedisConn) GmqNak(ctx context.Context, msg *core.AckMessage) error {
+	attr := msg.AckRequiredAttr
+	msgId := cast.ToString(attr["MessageId"])
+	queueName := cast.ToString(attr["QueueName"])
+	group := cast.ToString(attr["Group"])
 
-	// 死信队列名称规则：{queueName}.dlq
-	deadLetterQueue := queueName + ".dlq"
-	// 构建死信消息
-	deadMsg := map[string]interface{}{
-		"origin_msg_id": msgID,
-		"origin_stream": queueName,
-		"payload":       payload,
-		"dead_reason":   reason,
-		"dead_at":       time.Now().UnixMilli(),
-	}
+	//TODO implement me
+	// 发送到死信队列 cast.ToStringMap(attr["MessageData"])
 
-	// XAdd写入死信Stream
-	_, err := c.conn.XAdd(ctx, &redis.XAddArgs{
-		Stream: deadLetterQueue,
-		Values: deadMsg,
-		MaxLen: 10000, // 死信Stream最大长度
-		Approx: true,
-	}).Result()
-
-	if err != nil {
-		log.Printf("❌ send to dead letter failed: %v", err)
-		return err
-	}
-
-	log.Printf("☠️ msg send to dead letter: stream=%s, msgID=%s, reason=%s", queueName, msgID, reason)
-	return nil
+	// 确认原消息（从 pending 列表中移除）
+	_, err := c.conn.XAck(ctx, queueName, group, msgId).Result()
+	return err
 }
 
 // GmqGetDeadLetter 从死信队列查询所有消息（不删除，仅读取）
@@ -351,7 +292,8 @@ func (c *RedisConn) GmqGetDeadLetter(ctx context.Context, queueName string, limi
 
 	return msgs, nil
 }
-func (c *RedisConn) GetMetrics(ctx context.Context) *core.Metrics {
+
+func (c *RedisConn) GmqGetMetrics(ctx context.Context) *core.Metrics {
 	m := &core.Metrics{
 		Name:       "redis",
 		Type:       "redis",

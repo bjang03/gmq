@@ -15,7 +15,20 @@ var anonConsumerCounter atomic.Int64
 
 // subscriptionInfo 订阅信息，用于断线重连后恢复订阅
 type subscriptionInfo struct {
-	msg any
+	msg Subscribe
+}
+
+type subMessage struct {
+	SubMsg     any
+	HandleFunc func(ctx context.Context, message *AckMessage) error // 消息处理函数
+}
+
+func (m *subMessage) GetSubMsg() any {
+	return m.SubMsg
+}
+
+func (m *subMessage) GetAckHandleFunc() func(ctx context.Context, message *AckMessage) error {
+	return m.HandleFunc
 }
 
 // GmqAgent 消息队列代理包装器，用于统一监控指标处理
@@ -182,80 +195,82 @@ func (p *GmqAgent) GmqPublishDelay(ctx context.Context, msg PublishDelay) error 
 }
 
 // validateSubscribeMsg 统一校验订阅消息公共参数
-func validateSubscribeMsg(msg Subscribe) error {
-	if msg.GetQueueName() == "" {
+func validateSubscribeMsg(msg *SubMessage) error {
+	if msg.QueueName == "" {
 		return fmt.Errorf("queue name is required")
 	}
-	if msg.GetConsumerName() == "" {
+	if msg.ConsumerName == "" {
 		return fmt.Errorf("consumer name is required")
 	}
-	if msg.GetFetchCount() <= 0 {
+	if msg.FetchCount <= 0 {
 		return fmt.Errorf("fetch count must be greater than 0")
 	}
-	if msg.GetHandleFunc() == nil {
+	if msg.HandleFunc == nil {
 		return fmt.Errorf("handle func is required")
 	}
 	return nil
 }
 
 // wrapHandleFunc 包装用户的 HandleFunc，在代理层统一控制ACK
-func (p *GmqAgent) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message any) error {
-	return func(ctx context.Context, message any) error {
-		ackMessage, ok := message.(*AckMessage)
-		if !ok {
-			return fmt.Errorf("invalid message type: must be *AckMessage")
-		}
-		// 执行用户处理函数
-		err := originalFunc(ctx, ackMessage.MessageData)
+func (p *GmqAgent) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message *AckMessage) error {
+	return func(ctx context.Context, message *AckMessage) error {
 		if autoAck {
 			// 自动确认模式：无论处理成功或失败，都确认消息
-			err = p.plugin.Ack(ackMessage)
+			err := p.plugin.GmqAck(ctx, message)
 			if err != nil {
 				return err
 			}
-		} else {
+		}
+		// 执行用户处理函数
+		err := originalFunc(ctx, message.MessageData)
+		if !autoAck {
 			// 手动确认模式：处理成功则确认，处理失败则终止消息
 			if err == nil {
 				// 处理成功：确认消息
-				err = p.plugin.Nak(ackMessage)
+				err = p.plugin.GmqAck(ctx, message)
 				if err != nil {
 					return err
 				}
 			} else {
 				// 处理失败：终止消息
-				err = p.plugin.Nak(ackMessage)
+				err = p.plugin.GmqNak(ctx, message)
 				if err != nil {
 					return err
 				}
 			}
 		}
-		return nil
+		return err
 	}
 }
 
 // GmqSubscribe 订阅消息（带统一监控和重试）
-func (p *GmqAgent) GmqSubscribe(ctx context.Context, msg any) (err error) {
+func (p *GmqAgent) GmqSubscribe(ctx context.Context, msg Subscribe) (err error) {
 	start := time.Now()
 
-	// 统一校验公共参数（先类型断言为 Subscribe 接口）
-	subMsg, ok := msg.(Subscribe)
+	message, ok := msg.GetSubMsg().(*SubMessage)
 	if !ok {
-		return fmt.Errorf("invalid message type: must implement Subscribe interface (GetQueueName, GetConsumerName, GetAutoAck, GetFetchCount)")
+		return fmt.Errorf("invalid message type, expected *SubMessage")
 	}
-	if err := validateSubscribeMsg(subMsg); err != nil {
+
+	// 统一校验公共参数
+	if err := validateSubscribeMsg(message); err != nil {
 		return err
 	}
-	subKey := p.getSubKey(subMsg.GetQueueName(), subMsg.GetConsumerName())
+	subKey := p.getSubKey(message.QueueName, message.ConsumerName)
 
 	// 检查是否已订阅
 	if _, alreadySubscribed := p.subscriptions.Load(subKey); alreadySubscribed {
-		return fmt.Errorf("already subscribed to topic: %s", subMsg.GetQueueName())
+		return fmt.Errorf("already subscribed to topic: %s", message.QueueName)
 	}
 	// 预留槽位，标记为"订阅中"状态
 	p.subscriptions.Store(subKey, nil)
 
 	// 包装 HandleFunc，在代理层统一控制ACK
-	subMsg.SetHandleFunc(p.wrapHandleFunc(subMsg.GetHandleFunc(), subMsg.GetAutoAck()))
+	sub := new(subMessage)
+	sub.SubMsg = msg
+	sub.HandleFunc = p.wrapHandleFunc(message.HandleFunc, message.AutoAck)
+	message.HandleFunc = nil
+
 	var subObj interface{}
 	// 带重试的订阅
 	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
@@ -272,7 +287,7 @@ func (p *GmqAgent) GmqSubscribe(ctx context.Context, msg any) (err error) {
 				return ctx.Err()
 			}
 		}
-		err = p.plugin.GmqSubscribe(ctx, subMsg)
+		err = p.plugin.GmqSubscribe(ctx, sub)
 		if err == nil {
 			break
 		}
@@ -296,7 +311,7 @@ func (p *GmqAgent) GmqSubscribe(ctx context.Context, msg any) (err error) {
 				log.Printf("[GMQ] Failed to unsubscribe after conflict: %v", unsubErr)
 			}
 		}
-		return fmt.Errorf("subscription conflict detected for topic: %s", subMsg.GetQueueName())
+		return fmt.Errorf("subscription conflict detected for topic: %s", message.QueueName)
 	}
 
 	// 保存订阅对象到代理层
@@ -304,7 +319,7 @@ func (p *GmqAgent) GmqSubscribe(ctx context.Context, msg any) (err error) {
 
 	// 保存订阅参数，用于断线重连后恢复订阅
 	p.subscriptionParams.Store(subKey, &subscriptionInfo{
-		msg: subMsg,
+		msg: msg,
 	})
 
 	// 记录指标
@@ -464,12 +479,12 @@ func (p *GmqAgent) GmqConnect(ctx context.Context) error {
 	return err
 }
 
-func (p *GmqAgent) Ack(msg *AckMessage) error {
-	return p.plugin.Ack(msg)
+func (p *GmqAgent) GmqAck(ctx context.Context, msg *AckMessage) error {
+	return p.plugin.GmqAck(ctx, msg)
 }
 
-func (p *GmqAgent) Nak(msg *AckMessage) error {
-	return p.plugin.Nak(msg)
+func (p *GmqAgent) GmqNak(ctx context.Context, msg *AckMessage) error {
+	return p.plugin.GmqNak(ctx, msg)
 }
 
 // GmqClose 关闭连接
@@ -482,8 +497,8 @@ func (p *GmqAgent) GmqClose(ctx context.Context) error {
 	return err
 }
 
-// GetMetrics 获取统一监控指标（带缓存，使用 atomic 无锁读取）
-func (p *GmqAgent) GetMetrics(ctx context.Context) *Metrics {
+// GmqGetMetrics 获取统一监控指标（带缓存，使用 atomic 无锁读取）
+func (p *GmqAgent) GmqGetMetrics(ctx context.Context) *Metrics {
 	now := time.Now().UnixMilli()
 	cacheExp := p.metricsCacheExp.Load()
 
@@ -497,7 +512,7 @@ func (p *GmqAgent) GetMetrics(ctx context.Context) *Metrics {
 	}
 
 	// 获取插件自身的指标
-	pluginMetrics := p.plugin.GetMetrics(ctx)
+	pluginMetrics := p.plugin.GmqGetMetrics(ctx)
 
 	// 获取代理层面的指标
 	latencyCount := atomic.LoadInt64(&p.metrics.latencyCount)

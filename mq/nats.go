@@ -1,9 +1,7 @@
 package mq
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -25,7 +23,7 @@ type NatsPubDelayMessage struct {
 }
 
 type NatsSubMessage struct {
-	core.SubMessage[any]
+	core.SubMessage
 	Durable    bool // 是否持久化
 	IsDelayMsg bool // 是延迟消息
 }
@@ -138,31 +136,32 @@ func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable 
 }
 
 // GmqSubscribe 订阅NATS消息
-func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
-	cfg, ok := msg.(*NatsSubMessage)
+func (c *NatsConn) GmqSubscribe(ctx context.Context, msg core.Subscribe) (err error) {
+	// 类型断言获取 NatsSubMessage 特定字段
+	natsMsg, ok := msg.GetSubMsg().(*NatsSubMessage)
 	if !ok {
 		log.Printf("⚠️  invalid message type, expected *NatsSubMessage")
 		return fmt.Errorf("invalid message type, expected *NatsSubMessage")
 	}
+
 	// 创建 Stream
-	streamName, _, err := c.createStream(ctx, cfg.QueueName, cfg.Durable, cfg.IsDelayMsg, false)
+	streamName, _, err := c.createStream(ctx, natsMsg.QueueName, natsMsg.Durable, natsMsg.IsDelayMsg, false)
 	if err != nil {
 		return err
 	}
-	// 配置死信队列
-	streamNameDlq, _, err := c.createStream(ctx, cfg.QueueName, cfg.Durable, cfg.IsDelayMsg, true)
-	if err != nil {
-		log.Printf("⚠️  死信队列创建失败: %v, Stream=%s", err, streamNameDlq)
-		return fmt.Errorf("死信队列创建失败: %w", err)
-	}
+
+	consumerName := natsMsg.ConsumerName
+	queueName := natsMsg.QueueName
+	fetchCount := natsMsg.FetchCount
+
 	//构建 Durable Consumer 配置
 	consumerConfig := &nats.ConsumerConfig{
-		Durable:        cfg.ConsumerName,
+		Durable:        consumerName,
 		AckPolicy:      nats.AckExplicitPolicy,
 		AckWait:        30 * time.Second,
-		MaxAckPending:  cfg.FetchCount,
-		FilterSubject:  cfg.QueueName,
-		DeliverSubject: fmt.Sprintf("DELIVER.%s.%s", streamName, cfg.ConsumerName),
+		MaxAckPending:  fetchCount,
+		FilterSubject:  queueName,
+		DeliverSubject: fmt.Sprintf("DELIVER.%s.%s", streamName, consumerName),
 		DeliverPolicy:  nats.DeliverAllPolicy,
 		MaxDeliver:     1,
 		BackOff:        []time.Duration{time.Second},
@@ -177,32 +176,35 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	// 配置订阅选项 - 绑定到已创建的 Durable Consumer
 	subOpts := []nats.SubOpt{
 		nats.Context(ctx),
-		nats.Bind(streamName, cfg.ConsumerName),
+		nats.Bind(streamName, consumerName),
 		nats.ManualAck(), // 手动确认模式
 	}
+
 	// 使用 Subscribe 创建推送订阅
-	sub, err := c.js.Subscribe(cfg.QueueName, func(natsMsg *nats.Msg) {
-		cfg.HandleFunc(ctx, &core.AckMessage{
+	sub, err := c.js.Subscribe(queueName, func(natsMsg *nats.Msg) {
+		if err = msg.GetAckHandleFunc()(ctx, &core.AckMessage{
 			MessageData: natsMsg.Data,
 			AckRequiredAttr: map[string]any{
 				"MessageBody": natsMsg,
 			},
-		})
+		}); err != nil {
+			log.Printf("⚠️ Message processing failed: %v", err)
+		}
 	}, subOpts...)
 	if err != nil {
-		log.Printf("⚠️  NATS 订阅失败: %v, Queue=%s, Consumer=%s, Stream=%s", err, cfg.QueueName, cfg.ConsumerName, streamName)
+		log.Printf("⚠️  NATS 订阅失败: %v, Queue=%s, Consumer=%s, Stream=%s", err, queueName, consumerName, streamName)
 		return fmt.Errorf("NATS Failed to subscribe: %w", err)
 	}
-	log.Printf("✅ NATS 订阅成功: Queue=%s, Consumer=%s, Stream=%s", cfg.QueueName, cfg.ConsumerName, streamName)
+	log.Printf("✅ NATS 订阅成功: Queue=%s, Consumer=%s, Stream=%s", queueName, consumerName, streamName)
 
 	// ✅ 新增: 启动 DLQ 监听器，处理超过最大投递次数的消息
-	go c.listenForDeliveryExceeded(ctx, streamName, cfg.ConsumerName, cfg.QueueName+"_DLQ", streamNameDlq)
+	go c.listenForDeliveryExceeded(ctx, streamName, consumerName)
 
 	// 启动后台 goroutine 监听上下文取消，用于清理订阅
 	go func() {
 		<-ctx.Done()
 		_ = sub.Unsubscribe()
-		log.Printf("🛑 NATS 订阅已取消: Queue=%s, Consumer=%s", cfg.QueueName, cfg.ConsumerName)
+		log.Printf("🛑 NATS 订阅已取消: Queue=%s, Consumer=%s", queueName, consumerName)
 	}()
 
 	return nil
@@ -235,7 +237,7 @@ func (c *NatsConn) createStream(_ context.Context, queueName string, durable, is
 	if isDelayMsg {
 		subjects = []string{queueName, queueName + ".schedule"}
 	}
-	jsConfig := &StreamConfig{
+	jsConfig := &streamConfig{
 		Name:              streamName,
 		Subjects:          subjects,
 		AllowMsgSchedules: isDelayMsg, // 延迟消息核心开关
@@ -251,8 +253,8 @@ func (c *NatsConn) createStream(_ context.Context, queueName string, durable, is
 	return streamName, storage, nil
 }
 
-// Ack 确认消息
-func (c *NatsConn) Ack(msg *core.AckMessage) error {
+// GmqAck 确认消息
+func (c *NatsConn) GmqAck(_ context.Context, msg *core.AckMessage) error {
 	attr := msg.AckRequiredAttr
 	msgCfg, ok := attr["MessageBody"].(*nats.Msg)
 	if !ok {
@@ -261,202 +263,14 @@ func (c *NatsConn) Ack(msg *core.AckMessage) error {
 	return msgCfg.Ack()
 }
 
-// Nak 否定确认消息，消息会重新投递（直到达到 MaxDeliver 限制）
-func (c *NatsConn) Nak(msg *core.AckMessage) error {
+// GmqNak 否定确认消息，消息会重新投递（直到达到 MaxDeliver 限制）
+func (c *NatsConn) GmqNak(_ context.Context, msg *core.AckMessage) error {
 	attr := msg.AckRequiredAttr
 	msgCfg, ok := attr["MessageBody"].(*nats.Msg)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *nats.Msg")
 	}
 	return msgCfg.Nak()
-}
-
-// JSConsumerDeliveryExceededAdvisory 消息投递超过最大次数的通知
-// 参考: nats-server-main/server/jetstream_events.go
-type JSConsumerDeliveryExceededAdvisory struct {
-	Type       string    `json:"type"`
-	ID         string    `json:"id"`
-	Time       time.Time `json:"time"`
-	Stream     string    `json:"stream"`
-	Consumer   string    `json:"consumer"`
-	StreamSeq  uint64    `json:"stream_seq"`
-	Deliveries uint64    `json:"deliveries"`
-	Domain     string    `json:"domain,omitempty"`
-}
-
-// listenForDeliveryExceeded 监听消息投递超过最大次数的通知，将消息转移到死信队列
-// 参考: nats-server-main/server/jetstream_events.go JSConsumerDeliveryExceededAdvisory
-func (c *NatsConn) listenForDeliveryExceeded(ctx context.Context, streamName, consumerName, dlqSubject, dlqStreamName string) {
-	// 订阅超过最大投递次数的通知
-	// 主题格式: $JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer>
-	advisorySubject := fmt.Sprintf("$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.%s.%s", streamName, consumerName)
-
-	sub, err := c.conn.Subscribe(advisorySubject, func(msg *nats.Msg) {
-		var advisory JSConsumerDeliveryExceededAdvisory
-		if err := json.Unmarshal(msg.Data, &advisory); err != nil {
-			log.Printf("⚠️  解析 DLQ advisory 失败: %v, Subject=%s", err, msg.Subject)
-			return
-		}
-
-		log.Printf("📥 收到 MaxDeliver exceeded 通知: Stream=%s, Consumer=%s, StreamSeq=%d, Deliveries=%d",
-			advisory.Stream, advisory.Consumer, advisory.StreamSeq, advisory.Deliveries)
-
-		// 获取原始消息并转移到 DLQ
-		//if err := c.moveToDLQ(ctx, streamName, advisory.StreamSeq, dlqSubject, dlqStreamName, advisory.Deliveries); err != nil {
-		//	log.Printf("⚠️  消息转移到 DLQ 失败: %v, Stream=%s, Seq=%d", err, streamName, advisory.StreamSeq)
-		//}
-	})
-	if err != nil {
-		log.Printf("⚠️  订阅 DLQ advisory 失败: %v, Subject=%s", err, advisorySubject)
-		return
-	}
-	defer sub.Unsubscribe()
-
-	log.Printf("✅ DLQ 监听器启动成功: Stream=%s, Consumer=%s, AdvisorySubject=%s", streamName, consumerName, advisorySubject)
-
-	// 等待上下文取消
-	<-ctx.Done()
-	log.Printf("🛑 DLQ 监听器已停止: Stream=%s, Consumer=%s", streamName, consumerName)
-}
-
-// moveToDLQ 将指定消息转移到死信队列
-func (c *NatsConn) moveToDLQ(ctx context.Context, streamName string, streamSeq uint64, dlqSubject, dlqStreamName string, deliveries uint64) error {
-	// 使用 JS API 获取原始消息
-	// 参考: nats-server-main/server/jetstream_api.go JSApiMsgGetT
-	getMsgSubject := fmt.Sprintf("$JS.API.STREAM.MSG.GET.%s", streamName)
-	req := map[string]interface{}{
-		"seq": streamSeq,
-	}
-	reqData, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("marshal get msg request failed: %w", err)
-	}
-
-	resp, err := c.conn.Request(getMsgSubject, reqData, 5*time.Second)
-	if err != nil {
-		return fmt.Errorf("get msg request failed: %w", err)
-	}
-
-	// 解析响应 - 参考 nats-server-main/server/stream.go StoredMsg
-	// hdrs 是 base64 编码的字节数组，不是 map
-	var msgResp struct {
-		Type  string `json:"type"`
-		Error *struct {
-			Code        int    `json:"code"`
-			ErrCode     int    `json:"err_code"`
-			Description string `json:"description"`
-		} `json:"error,omitempty"`
-		Message *struct {
-			Subject string    `json:"subject"`
-			Seq     uint64    `json:"seq"`
-			Data    string    `json:"data"`           // base64 encoded
-			Hdrs    string    `json:"hdrs,omitempty"` // base64 encoded headers
-			Time    time.Time `json:"time"`
-		} `json:"message,omitempty"`
-	}
-	if err := json.Unmarshal(resp.Data, &msgResp); err != nil {
-		return fmt.Errorf("unmarshal get msg response failed: %w", err)
-	}
-	if msgResp.Error != nil {
-		return fmt.Errorf("get msg API error: %s", msgResp.Error.Description)
-	}
-	if msgResp.Message == nil {
-		return fmt.Errorf("message not found in stream")
-	}
-
-	// 解码 base64 数据
-	msgData, err := base64.StdEncoding.DecodeString(msgResp.Message.Data)
-	if err != nil {
-		return fmt.Errorf("decode message data failed: %w", err)
-	}
-
-	// 构建 DLQ 消息
-	dlqMsg := &nats.Msg{
-		Subject: dlqSubject,
-		Header:  make(nats.Header),
-		Data:    msgData,
-	}
-
-	// 添加原始消息信息到 header
-	dlqMsg.Header.Set("Nats-DLQ-Original-Stream", streamName)
-	dlqMsg.Header.Set("Nats-DLQ-Original-Subject", msgResp.Message.Subject)
-	dlqMsg.Header.Set("Nats-DLQ-Original-Seq", fmt.Sprintf("%d", streamSeq))
-	dlqMsg.Header.Set("Nats-DLQ-Deliveries", fmt.Sprintf("%d", deliveries))
-	dlqMsg.Header.Set("Nats-DLQ-Dead-Time", time.Now().Format(time.RFC3339))
-	dlqMsg.Header.Set("Nats-DLQ-Reason", "Maximum delivery count exceeded")
-
-	// 解码并复制原始消息的 headers
-	if msgResp.Message.Hdrs != "" {
-		hdrsData, err := base64.StdEncoding.DecodeString(msgResp.Message.Hdrs)
-		if err != nil {
-			log.Printf("⚠️  解码 headers 失败: %v", err)
-		} else {
-			// 解析 NATS headers 格式 (类似 HTTP headers)
-			httpHeader, err := parseNatsHeaders(hdrsData)
-			if err != nil {
-				log.Printf("⚠️  解析 headers 失败: %v", err)
-			} else {
-				// 复制原始 headers
-				for k, v := range httpHeader {
-					for _, val := range v {
-						dlqMsg.Header.Add(k, val)
-					}
-				}
-			}
-		}
-	}
-
-	// 发布到 DLQ Stream
-	pubOpts := []nats.PubOpt{
-		nats.Context(ctx),
-	}
-	ack, err := c.js.PublishMsg(dlqMsg, pubOpts...)
-	if err != nil {
-		return fmt.Errorf("publish to DLQ failed: %w", err)
-	}
-
-	log.Printf("✅ 消息已转移到 DLQ: Stream=%s, Seq=%d -> DLQStream=%s, DLQSeq=%d",
-		streamName, streamSeq, dlqStreamName, ack.Sequence)
-
-	return nil
-}
-
-// parseNatsHeaders 解析 NATS 消息头格式
-// NATS headers 格式: "NATS/1.0\r\nkey1: value1\r\nkey2: value2\r\n\r\n"
-func parseNatsHeaders(data []byte) (map[string][]string, error) {
-	// 查找头部结束位置 (\r\n\r\n)
-	idx := bytes.Index(data, []byte("\r\n\r\n"))
-	if idx == -1 {
-		// 尝试只查找 \r\n
-		idx = bytes.Index(data, []byte("\r\n"))
-		if idx == -1 {
-			return nil, fmt.Errorf("invalid header format")
-		}
-		// 只有一行，可能是版本行
-		headers := make(map[string][]string)
-		return headers, nil
-	}
-
-	headers := make(map[string][]string)
-	// 解析头部行
-	headerLines := bytes.Split(data[:idx], []byte("\r\n"))
-	for i, line := range headerLines {
-		// 跳过第一行 (NATS/1.0)
-		if i == 0 {
-			continue
-		}
-		// 解析 key: value
-		colonIdx := bytes.Index(line, []byte(":"))
-		if colonIdx == -1 {
-			continue
-		}
-		key := string(bytes.TrimSpace(line[:colonIdx]))
-		value := string(bytes.TrimSpace(line[colonIdx+1:]))
-		if key != "" {
-			headers[key] = append(headers[key], value)
-		}
-	}
-	return headers, nil
 }
 
 // findDLQStreamName 查找死信队列的流名称
@@ -550,8 +364,8 @@ func (c *NatsConn) GmqGetDeadLetter(ctx context.Context, queueName string, limit
 	return msgs, nil
 }
 
-// GetMetrics 获取基础监控指标
-func (c *NatsConn) GetMetrics(_ context.Context) *core.Metrics {
+// GmqGetMetrics 获取基础监控指标
+func (c *NatsConn) GmqGetMetrics(_ context.Context) *core.Metrics {
 	m := &core.Metrics{
 		Type:       "nats",
 		ServerAddr: c.Url,
@@ -581,8 +395,8 @@ func (c *NatsConn) GetMetrics(_ context.Context) *core.Metrics {
 	return m
 }
 
-// StreamConfig 流配置（精简版，仅包含实际使用的字段）
-type StreamConfig struct {
+// streamConfig 流配置（精简版，仅包含实际使用的字段）
+type streamConfig struct {
 	Name              string             `json:"name"`
 	Subjects          []string           `json:"subjects,omitempty"`
 	Storage           nats.StorageType   `json:"storage"`
@@ -592,8 +406,9 @@ type StreamConfig struct {
 }
 
 const (
-	JSApiStreamCreateT = "$JS.API.STREAM.CREATE.%s"
-	JSApiStreamUpdateT = "$JS.API.STREAM.UPDATE.%s"
+	JSApiStreamCreateT                      = "$JS.API.STREAM.CREATE.%s"
+	JSApiStreamUpdateT                      = "$JS.API.STREAM.UPDATE.%s"
+	JSApiEventAdvisoryConsumerMaxDeliveries = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.%s.%s"
 )
 
 // 检查 API 响应中的错误
@@ -606,7 +421,7 @@ var resp struct {
 }
 
 // jsStreamRequest 发送 Stream API 请求（创建或更新）
-func jsStreamRequest(nc *nats.Conn, apiTemplate string, cfg *StreamConfig) error {
+func jsStreamRequest(nc *nats.Conn, apiTemplate string, cfg *streamConfig) error {
 	j, err := json.Marshal(cfg)
 	if err != nil {
 		return err
@@ -626,7 +441,7 @@ func jsStreamRequest(nc *nats.Conn, apiTemplate string, cfg *StreamConfig) error
 }
 
 // jsStreamCreate is for sending a stream create for fields that nats.go does not know about yet.
-func jsStreamCreate(nc *nats.Conn, cfg *StreamConfig) (err error) {
+func jsStreamCreate(nc *nats.Conn, cfg *streamConfig) (err error) {
 	if err = jsStreamRequest(nc, JSApiStreamCreateT, cfg); err != nil {
 		if strings.Contains(err.Error(), "10058") {
 			return jsStreamUpdate(nc, cfg)
@@ -636,6 +451,50 @@ func jsStreamCreate(nc *nats.Conn, cfg *StreamConfig) (err error) {
 }
 
 // jsStreamUpdate is for sending a stream create for fields that nats.go does not know about yet.
-func jsStreamUpdate(nc *nats.Conn, cfg *StreamConfig) error {
+func jsStreamUpdate(nc *nats.Conn, cfg *streamConfig) error {
 	return jsStreamRequest(nc, JSApiStreamUpdateT, cfg)
+}
+
+// jSConsumerDelivery 消息投递超过最大次数的通知
+// 参考: nats-server-main/server/jetstream_events.go
+type jSConsumerDelivery struct {
+	Type       string    `json:"type"`
+	ID         string    `json:"id"`
+	Time       time.Time `json:"time"`
+	Stream     string    `json:"stream"`
+	Consumer   string    `json:"consumer"`
+	StreamSeq  uint64    `json:"stream_seq"`
+	Deliveries uint64    `json:"deliveries"`
+	Domain     string    `json:"domain,omitempty"`
+}
+
+// listenForDeliveryExceeded 监听消息投递超过最大次数的通知，将消息转移到死信队列
+// 参考: nats-server-main/server/jetstream_events.go JSConsumerDeliveryExceededAdvisory
+func (c *NatsConn) listenForDeliveryExceeded(ctx context.Context, streamName, consumerName string) {
+	// 订阅超过最大投递次数的通知
+	sub, err := c.conn.Subscribe(fmt.Sprintf(JSApiEventAdvisoryConsumerMaxDeliveries, streamName, consumerName), func(msg *nats.Msg) {
+		var advisory jSConsumerDelivery
+		if err := json.Unmarshal(msg.Data, &advisory); err != nil {
+			log.Printf("⚠️  解析 DLQ advisory 失败: %v, Subject=%s", err, msg.Subject)
+			return
+		}
+
+		log.Printf("📥 收到 MaxDeliver exceeded 通知: Stream=%s, Consumer=%s, StreamSeq=%d, Deliveries=%d",
+			advisory.Stream, advisory.Consumer, advisory.StreamSeq, advisory.Deliveries)
+
+		//TODO implement me
+		// 发送到死信队列
+	})
+	if err != nil {
+		log.Printf("⚠️  订阅 DLQ advisory 失败: %v", err)
+		return
+	}
+	// 启动后台 goroutine 监听上下文取消，用于清理订阅
+	go func() {
+		<-ctx.Done()
+		_ = sub.Unsubscribe()
+		log.Printf("🛑 DLQ 监听器已停止: Stream=%s, Consumer=%s", streamName, consumerName)
+	}()
+
+	log.Printf("✅ DLQ 监听器启动成功: Stream=%s, Consumer=%s", streamName, consumerName)
 }

@@ -771,16 +771,22 @@ async function saveDeadLetterMessage() {
         return;
     }
 
-    // 验证 JSON 格式（如果是 JSON）
-    if (newBody.startsWith('{') || newBody.startsWith('[')) {
-        try {
-            JSON.parse(newBody);
-        } catch (e) {
-            if (!confirm('消息格式不是有效的 JSON，确定要保存吗？')) {
-                return;
-            }
+    showConfirmModal(
+        '操作确认',
+        '确定要修改并重新投递消息吗？',
+        () => {
+            performSave();
         }
+    );
+}
+
+async function performSave() {
+    if (!editingDeadLetterMessage) {
+        showToast('没有正在编辑的消息', 'error');
+        return;
     }
+
+    const newBody = document.getElementById('edit-message-body').value.trim();
 
     try {
         const response = await fetch('/api/deadletter/update', {

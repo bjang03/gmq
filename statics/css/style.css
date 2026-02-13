@@ -174,8 +174,6 @@ header h1 {
 .metric-list-item {
     background: #ffffff;
     border-radius: 12px;
-    display: flex;
-    gap: 20px;
     border: 1px solid #e5e7eb;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
     transition: all 0.2s ease;
@@ -185,57 +183,6 @@ header h1 {
     background: #f8fafc;
     border-color: #3b82f6;
     box-shadow: 0 4px 12px rgba(30, 64, 175, 0.1);
-}
-
-/* 左侧信息区（跨行水平排列） */
-.metric-info {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 16px;
-    min-width: 160px;
-    padding: 16px 20px;
-    border-right: 1px solid rgba(255, 255, 255, 0.1);
-    flex-wrap: wrap;
-    background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
-    border-radius: 12px 0 0 12px;
-}
-
-.type-badge {
-    padding: 6px 14px;
-    border-radius: 20px;
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
-    color: #ffffff !important;
-    background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
-    border: 2px solid #fcd34d;
-}
-
-.metric-name {
-    font-size: 16px;
-    font-weight: 600;
-    color: #1e293b;
-    white-space: nowrap;
-}
-
-.metric-status {
-    padding: 4px 10px;
-    border-radius: 12px;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    width: fit-content;
-}
-
-.metric-status.connected {
-    background: rgba(34, 197, 94, 0.2);
-    color: #22c55e;
-}
-
-.metric-status.disconnected {
-    background: rgba(239, 68, 68, 0.2);
-    color: #ef4444;
 }
 
 /* 基本信息中的状态标签样式 */
@@ -356,13 +303,6 @@ header h1 {
 
     .metric-list-item {
         flex-direction: column;
-    }
-
-    .metric-info {
-        flex-direction: row;
-        border-right: none;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        padding: 12px 16px;
     }
 
     .section-row-metrics {

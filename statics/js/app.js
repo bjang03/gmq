@@ -205,25 +205,13 @@ function updateOverview(metrics) {
     domCache.overview.serverNodes.textContent = formatNumber(nodeCount);
 }
 
-// 创建列表项结构（多行展示，类型跨行合并）
+// 创建列表项结构（多行展示）
 function createListItem(name, metric) {
-    const typeInfo = TYPE_LABELS[metric.type] || {name: metric.type || 'Unknown', color: '#6b7280', icon: '?'};
-
     const item = document.createElement('div');
     item.className = 'metric-list-item';
     item.dataset.itemName = name;
 
-    // 左侧信息区（跨所有行）- 只显示类型
-    const infoDiv = document.createElement('div');
-    infoDiv.className = 'metric-info';
-    infoDiv.innerHTML = `
-        <span class="type-badge" style="background: ${typeInfo.color}20; color: ${typeInfo.color}; border: 1px solid ${typeInfo.color}40;">
-            ${typeInfo.icon} ${typeInfo.name}
-        </span>
-    `;
-    item.appendChild(infoDiv);
-
-    // 右侧指标区（多行展示）
+    // 指标区（多行展示）
     const contentDiv = document.createElement('div');
     contentDiv.className = 'metric-content';
 
@@ -716,35 +704,37 @@ async function retryDeadLetterMessage(messageId) {
         return;
     }
 
-    if (!confirm(`确定要重新执行消息 "${messageId}" 吗？`)) {
-        return;
-    }
+    showConfirmModal(
+        '确认重新执行',
+        `确定要重新执行消息 "${messageId}" 吗？`,
+        async () => {
+            try {
+                const response = await fetch('/api/deadletter/retry', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        mqName: currentMqName,
+                        queueName: currentQueueName,
+                        messageId: messageId
+                    })
+                });
 
-    try {
-        const response = await fetch('/api/deadletter/retry', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                mqName: currentMqName,
-                queueName: currentQueueName,
-                messageId: messageId
-            })
-        });
+                const result = await response.json();
 
-        const result = await response.json();
-
-        if (result.code === 200) {
-            showToast('消息已重新执行', 'success');
-            await refreshDeadLetterMessages();
-        } else {
-            throw new Error(result.msg || '操作失败');
+                if (result.code === 200) {
+                    showToast('消息已重新执行', 'success');
+                    await refreshDeadLetterMessages();
+                } else {
+                    throw new Error(result.msg || '操作失败');
+                }
+            } catch (error) {
+                console.error('重新执行失败:', error);
+                showToast('重新执行失败: ' + error.message, 'error');
+            }
         }
-    } catch (error) {
-        console.error('重新执行失败:', error);
-        showToast('重新执行失败: ' + error.message, 'error');
-    }
+    );
 }
 
 // 编辑死信消息

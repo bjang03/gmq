@@ -1080,3 +1080,88 @@ header h1 {
 .metric-list-item {
     animation: slideIn 0.3s ease;
 }
+
+/* ==================== MQ类型 TabList 组件 ==================== */
+
+/* TabList 容器 */
+.mq-tablist {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 24px;
+    border-bottom: 2px solid #e5e7eb;
+    background: #ffffff;
+    border-radius: 8px 8px 0 0;
+    padding: 0 8px;
+}
+
+/* Tab 选项 */
+.tab-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 24px;
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    color: #64748b;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    position: relative;
+}
+
+.tab-item:hover {
+    color: #334155;
+    background: #f8fafc;
+}
+
+.tab-item.active {
+    color: #1e40af;
+    border-bottom-color: #3b82f6;
+    background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%);
+}
+
+.tab-icon {
+    font-size: 18px;
+}
+
+/* TabPanels 容器 */
+.tab-panels {
+    position: relative;
+}
+
+/* TabPanel */
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: block;
+}
+
+/* Panel 内的控制区 */
+.panel-controls {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding: 16px;
+    background: #f8fafc;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+}
+
+.panel-controls .queue-input {
+    flex: 1;
+    max-width: 300px;
+}
+
+/* 单个metric-list-item的容器 */
+.single-metric {
+    max-width: 100%;
+}
+
+.single-metric .metric-list-item {
+    margin-bottom: 0;
+}

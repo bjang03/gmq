@@ -36,41 +36,21 @@ func (m *PubDelayMessage) GetDelaySeconds() int {
 	return m.DelaySeconds
 }
 
-// SubMessage 订阅消息基础结构
-type SubMessage[T any] struct {
-	QueueName    string                                     // 队列名称
-	ConsumerName string                                     // 消费者名称（用于群组消费）
-	AutoAck      bool                                       // 是否自动确认
-	FetchCount   int                                        // 每次拉取消息数量
-	HandleFunc   func(ctx context.Context, message T) error // 消息处理函数
+// SubMessage 订阅消息基础结构（泛型版本）
+type SubMessage struct {
+	QueueName    string                                       // 队列名称
+	ConsumerName string                                       // 消费者名称（用于群组消费）
+	AutoAck      bool                                         // 是否自动确认
+	FetchCount   int                                          // 每次拉取消息数量
+	HandleFunc   func(ctx context.Context, message any) error // 消息处理函数
 }
 
-// GetQueueName 获取队列名称（实现 QueueNameProvider 接口）
-func (m *SubMessage[T]) GetQueueName() string {
-	return m.QueueName
+func (m *SubMessage) GetSubMsg() any {
+	return m
 }
 
-// GetConsumerName 获取消费者名称（实现 ConsumerNameProvider 接口）
-func (m *SubMessage[T]) GetConsumerName() string {
-	return m.ConsumerName
-}
-
-// GetAutoAck 获取是否自动确认
-func (m *SubMessage[T]) GetAutoAck() bool {
-	return m.AutoAck
-}
-
-// GetFetchCount 获取每次拉取消息数量
-func (m *SubMessage[T]) GetFetchCount() int {
-	return m.FetchCount
-}
-
-func (m *SubMessage[T]) GetHandleFunc() func(ctx context.Context, message T) error {
-	return m.HandleFunc
-}
-
-func (m *SubMessage[T]) SetHandleFunc(handleFunc func(ctx context.Context, message T) error) {
-	m.HandleFunc = handleFunc
+func (m *SubMessage) GetAckHandleFunc() func(ctx context.Context, message *AckMessage) error {
+	return nil
 }
 
 type AckMessage struct {
@@ -93,12 +73,8 @@ type PublishDelay interface {
 
 // Subscribe 订阅消息接口（用于类型约束）
 type Subscribe interface {
-	GetQueueName() string
-	GetConsumerName() string
-	GetAutoAck() bool
-	GetFetchCount() int
-	GetHandleFunc() func(ctx context.Context, message any) error
-	SetHandleFunc(handleFunc func(ctx context.Context, message any) error)
+	GetSubMsg() any
+	GetAckHandleFunc() func(ctx context.Context, message *AckMessage) error
 }
 
 // DeadLetterMsgDTO 死信消息DTO（给前端返回的结构化数据）
@@ -119,11 +95,11 @@ type Gmq interface {
 	GmqConnect(ctx context.Context) error              // 连接消息队列
 	GmqPublish(ctx context.Context, msg Publish) error // 发布消息
 	GmqPublishDelay(ctx context.Context, msg PublishDelay) error
-	GmqSubscribe(ctx context.Context, msg any) error                                               // 订阅消息，返回订阅对象
+	GmqSubscribe(ctx context.Context, msg Subscribe) error                                         // 订阅消息，返回订阅对象
 	GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]DeadLetterMsgDTO, error) // 获取死信队列消息
 	GmqPing(ctx context.Context) bool                                                              // 检测连接状态
 	GmqClose(ctx context.Context) error                                                            // 关闭连接
-	GetMetrics(ctx context.Context) *Metrics                                                       // 获取监控指标
-	Ack(msg *AckMessage) error                                                                     // 确认消息
-	Nak(msg *AckMessage) error                                                                     // 拒绝消息（可重新入队，直到 MaxDeliver）
+	GmqGetMetrics(ctx context.Context) *Metrics                                                    // 获取监控指标
+	GmqAck(ctx context.Context, msg *AckMessage) error                                             // 确认消息
+	GmqNak(ctx context.Context, msg *AckMessage) error                                             // 拒绝消息（可重新入队，直到 MaxDeliver）
 }

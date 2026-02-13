@@ -23,7 +23,7 @@ type RabbitMQPubDelayMessage struct {
 
 // RabbitMQSubMessage RabbitMQ订阅消息结构，支持持久化订阅和延迟消费
 type RabbitMQSubMessage struct {
-	core.SubMessage[any]
+	core.SubMessage
 }
 
 // RabbitMQConn RabbitMQ消息队列实现
@@ -267,9 +267,11 @@ func (c *RabbitMQConn) createPublish(ctx context.Context, queueName string, dura
 }
 
 // GmqSubscribe 订阅RabbitMQ消息
-func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
-	cfg, ok := msg.(*RabbitMQSubMessage)
+func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (err error) {
+	// 类型断言获取 NatsSubMessage 特定字段
+	cfg, ok := sub.GetSubMsg().(*RabbitMQSubMessage)
 	if !ok {
+		log.Printf("⚠️  invalid message type, expected *RabbitMQSubMessage")
 		return fmt.Errorf("invalid message type, expected *RabbitMQSubMessage")
 	}
 
@@ -290,19 +292,21 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, msg any) (err error) {
 	}
 
 	for msgv := range msgs {
-		message := core.AckMessage{
+		if err = sub.GetAckHandleFunc()(ctx, &core.AckMessage{
 			MessageData: msgv.Body,
 			AckRequiredAttr: map[string]any{
 				"MessageBody": msgv,
 			},
+		}); err != nil {
+			log.Printf("⚠️ Message processing failed: %v", err)
+			continue
 		}
-		cfg.HandleFunc(ctx, &message)
 	}
 
 	return
 }
 
-func (c *RabbitMQConn) Ack(msg *core.AckMessage) error {
+func (c *RabbitMQConn) GmqAck(ctx context.Context, msg *core.AckMessage) error {
 	attr := msg.AckRequiredAttr
 	msgCfg, ok := attr["MessageBody"].(*amqp.Delivery)
 	if !ok {
@@ -311,7 +315,7 @@ func (c *RabbitMQConn) Ack(msg *core.AckMessage) error {
 	return msgCfg.Ack(false)
 }
 
-func (c *RabbitMQConn) Nak(msg *core.AckMessage) error {
+func (c *RabbitMQConn) GmqNak(ctx context.Context, msg *core.AckMessage) error {
 	attr := msg.AckRequiredAttr
 	msgCfg, ok := attr["MessageBody"].(*amqp.Delivery)
 	if !ok {
@@ -434,8 +438,8 @@ func parseDeadLetterReason(headers amqp.Table) string {
 	return "未知原因"
 }
 
-// GetMetrics 获取基础监控指标
-func (c *RabbitMQConn) GetMetrics(ctx context.Context) *core.Metrics {
+// GmqGetMetrics 获取基础监控指标
+func (c *RabbitMQConn) GmqGetMetrics(ctx context.Context) *core.Metrics {
 	m := &core.Metrics{
 		Name:       "rabbitmq",
 		Type:       "rabbitmq",

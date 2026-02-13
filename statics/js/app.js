@@ -336,32 +336,59 @@ function updateListItemValues(name, metric) {
     }
 }
 
+// 当前激活的Tab
+let activeMQTab = 'rabbitmq';
+
+// 切换MQ Tab
+function switchMQTab(mqType) {
+    if (!TYPE_LABELS[mqType]) return;
+    
+    activeMQTab = mqType;
+    
+    // 更新Tab样式
+    document.querySelectorAll('.tab-item').forEach(tab => {
+        const isActive = tab.dataset.mq === mqType;
+        tab.classList.toggle('active', isActive);
+        tab.setAttribute('aria-selected', isActive);
+    });
+    
+    // 切换Panel显示
+    document.querySelectorAll('.tab-panel').forEach(panel => {
+        const isActive = panel.dataset.panel === mqType;
+        panel.classList.toggle('active', isActive);
+        panel.hidden = !isActive;
+    });
+}
+
 // 主渲染函数
 function renderMetrics(metrics) {
-    const container = document.getElementById('metrics-container');
-    if (!container) return;
-
-    // 更新或创建列表项
+    // 按MQ类型分组
+    const metricsByType = {};
     for (const [name, metric] of Object.entries(metrics)) {
-        let item = document.querySelector(`.metric-list-item[data-item-name="${name}"]`);
-
-        if (!item) {
-            // 首次渲染创建结构
-            item = createListItem(name, metric);
-            container.appendChild(item);
+        const type = metric.type || 'unknown';
+        if (!metricsByType[type]) {
+            metricsByType[type] = [];
         }
-
-        // 更新值（不重新创建元素）
-        updateListItemValues(name, metric);
+        metricsByType[type].push({ name, ...metric });
     }
 
-    // 删除已经不存在的列表项
-    const existingItems = container.querySelectorAll('.metric-list-item');
-    for (const item of existingItems) {
-        const itemName = item.dataset.itemName;
-        if (!metrics[itemName]) {
-            item.remove();
+    // 为每个MQ类型渲染到对应的Tab Panel中
+    for (const [mqType, typeMetrics] of Object.entries(metricsByType)) {
+        const container = document.getElementById(`container-${mqType}`);
+        if (!container) continue;
+
+        // 只取第一个实例显示
+        const metric = typeMetrics[0];
+        
+        // 查找或创建列表项
+        let item = container.querySelector('.metric-list-item');
+        if (!item) {
+            item = createListItem(metric.name, metric);
+            container.appendChild(item);
         }
+        
+        // 更新值
+        updateListItemValues(metric.name, metric);
     }
 
     // 更新概览

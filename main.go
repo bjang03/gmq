@@ -16,10 +16,19 @@ import (
 )
 
 func main() {
+	core.GmqRegister("redis", &mq.RedisConn{
+		Url: "localhost:6379",
+	})
 	core.GmqRegister("nats", &mq.NatsConn{
 		Url: "nats://localhost:4222",
 	})
-
+	core.GmqRegister("rabbit", &mq.RabbitMQConn{
+		Url:      "localhost",
+		Port:     "5672",
+		Username: "admin",
+		Password: "123456",
+		VHost:    "",
+	})
 	// 设置 Gin 路由
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()

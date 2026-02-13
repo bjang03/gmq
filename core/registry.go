@@ -9,7 +9,7 @@ import (
 
 // globalShutdown 用于优雅关闭信号
 var (
-	GmqPlugins         = make(map[string]*GmqAgent)
+	GmqPlugins         = make(map[string]*GmqProxy)
 	globalShutdown     = make(chan struct{})
 	globalShutdownOnce sync.Once
 	pluginCancelFuncs  = make(map[string]context.CancelFunc)
@@ -27,13 +27,13 @@ func GmqRegister(name string, plugin Gmq) {
 		return
 	}
 
-	agent := newGmqAgent(name, plugin)
-	GmqPlugins[name] = agent
+	proxy := newGmqProxy(name, plugin)
+	GmqPlugins[name] = proxy
 
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())
 	pluginCancelFuncs[name] = mgrCancel
 
-	go func(name string, p *GmqAgent, mgrCtx context.Context) {
+	go func(name string, p *GmqProxy, mgrCtx context.Context) {
 		const (
 			baseReconnectDelay = 5 * time.Second  // 基础重连延迟
 			maxReconnectDelay  = 60 * time.Second // 最大重连延迟
@@ -86,7 +86,7 @@ func GmqRegister(name string, plugin Gmq) {
 				p.restoreSubscriptions()
 			}
 		}
-	}(name, agent, mgrCtx)
+	}(name, proxy, mgrCtx)
 }
 
 // Shutdown 优雅关闭所有消息队列连接
@@ -99,14 +99,14 @@ func Shutdown(ctx context.Context) error {
 		}
 	})
 
-	agents := make([]*GmqAgent, 0, len(GmqPlugins))
-	for _, a := range GmqPlugins {
-		agents = append(agents, a)
+	proxies := make([]*GmqProxy, 0, len(GmqPlugins))
+	for _, p := range GmqPlugins {
+		proxies = append(proxies, p)
 	}
 
 	var lastErr error
-	for _, a := range agents {
-		if err := a.GmqClose(ctx); err != nil {
+	for _, p := range proxies {
+		if err := p.GmqClose(ctx); err != nil {
 			lastErr = err
 		}
 	}
@@ -114,17 +114,17 @@ func Shutdown(ctx context.Context) error {
 }
 
 // GetGmq 获取已注册的消息队列代理
-func GetGmq(name string) *GmqAgent {
-	agent, ok := GmqPlugins[name]
+func GetGmq(name string) *GmqProxy {
+	proxy, ok := GmqPlugins[name]
 	if !ok {
 		return nil
 	}
-	return agent
+	return proxy
 }
 
 // GetAllGmq 获取所有已注册的消息队列代理的副本
-func GetAllGmq() map[string]*GmqAgent {
-	result := make(map[string]*GmqAgent, len(GmqPlugins))
+func GetAllGmq() map[string]*GmqProxy {
+	result := make(map[string]*GmqProxy, len(GmqPlugins))
 	for k, v := range GmqPlugins {
 		result[k] = v
 	}

@@ -31,11 +31,11 @@ func (m *subMessage) GetAckHandleFunc() func(ctx context.Context, message *AckMe
 	return m.HandleFunc
 }
 
-// GmqAgent 消息队列代理包装器，用于统一监控指标处理
-type GmqAgent struct {
+// GmqProxy 消息队列代理包装器，用于统一监控指标处理
+type GmqProxy struct {
 	name        string       // 代理名称
 	plugin      Gmq          // 消息队列插件实例
-	metrics     agentMetrics // 代理监控指标
+	metrics     proxyMetrics // 代理监控指标
 	connectedAt int64        // 连接时间(Unix时间戳，秒)，原子访问
 	connected   int32        // 连接状态: 0=未连接, 1=已连接，原子访问
 
@@ -47,9 +47,9 @@ type GmqAgent struct {
 	metricsCacheTTL time.Duration           // 指标缓存TTL
 }
 
-// newGmqAgent 创建新的代理包装器
-func newGmqAgent(name string, plugin Gmq) *GmqAgent {
-	p := &GmqAgent{
+// newGmqProxy 创建新的代理包装器
+func newGmqProxy(name string, plugin Gmq) *GmqProxy {
+	p := &GmqProxy{
 		name:            name,
 		plugin:          plugin,
 		metricsCacheTTL: 5 * time.Second,
@@ -77,7 +77,7 @@ func validatePublishMsg(msg Publish) error {
 }
 
 // GmqPublish 发布消息（带统一监控和重试）
-func (p *GmqAgent) GmqPublish(ctx context.Context, msg Publish) error {
+func (p *GmqProxy) GmqPublish(ctx context.Context, msg Publish) error {
 	// 统一校验公共参数
 	if err := validatePublishMsg(msg); err != nil {
 		return err
@@ -106,9 +106,10 @@ func (p *GmqAgent) GmqPublish(ctx context.Context, msg Publish) error {
 				break
 			}
 		}
-
-		err = p.plugin.GmqPublish(ctx, msg)
-		if err == nil {
+		if err = p.plugin.GmqPublish(ctx, msg); err != nil {
+			log.Println(fmt.Sprintf("GmqPublish error: %v", err))
+		} else {
+			log.Println(fmt.Sprintf("GmqPublish success: %v", err))
 			break
 		}
 	}
@@ -143,7 +144,7 @@ func validatePublishDelayMsg(msg PublishDelay) error {
 }
 
 // GmqPublishDelay 发布延迟消息（带统一监控和重试）
-func (p *GmqAgent) GmqPublishDelay(ctx context.Context, msg PublishDelay) error {
+func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg PublishDelay) error {
 	// 统一校验公共参数
 	if err := validatePublishDelayMsg(msg); err != nil {
 		return err
@@ -173,8 +174,10 @@ func (p *GmqAgent) GmqPublishDelay(ctx context.Context, msg PublishDelay) error 
 			}
 		}
 
-		err = p.plugin.GmqPublishDelay(ctx, msg)
-		if err == nil {
+		if err = p.plugin.GmqPublishDelay(ctx, msg); err != nil {
+			log.Println(fmt.Sprintf("GmqPublishDelay error: %v", err))
+		} else {
+			log.Println(fmt.Sprintf("GmqPublishDelay success: %v", err))
 			break
 		}
 	}
@@ -212,7 +215,7 @@ func validateSubscribeMsg(msg *SubMessage) error {
 }
 
 // wrapHandleFunc 包装用户的 HandleFunc，在代理层统一控制ACK
-func (p *GmqAgent) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message *AckMessage) error {
+func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message *AckMessage) error {
 	return func(ctx context.Context, message *AckMessage) error {
 		if autoAck {
 			// 自动确认模式：无论处理成功或失败，都确认消息
@@ -232,6 +235,7 @@ func (p *GmqAgent) wrapHandleFunc(originalFunc func(ctx context.Context, message
 					return err
 				}
 			} else {
+				log.Println(fmt.Sprintf("Business processing failed HandleFunc error: %v", err))
 				// 处理失败：终止消息
 				err = p.plugin.GmqNak(ctx, message)
 				if err != nil {
@@ -244,7 +248,7 @@ func (p *GmqAgent) wrapHandleFunc(originalFunc func(ctx context.Context, message
 }
 
 // GmqSubscribe 订阅消息（带统一监控和重试）
-func (p *GmqAgent) GmqSubscribe(ctx context.Context, msg Subscribe) (err error) {
+func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg Subscribe) (err error) {
 	start := time.Now()
 
 	message, ok := msg.GetSubMsg().(*SubMessage)
@@ -319,7 +323,7 @@ func (p *GmqAgent) GmqSubscribe(ctx context.Context, msg Subscribe) (err error) 
 
 	// 保存订阅参数，用于断线重连后恢复订阅
 	p.subscriptionParams.Store(subKey, &subscriptionInfo{
-		msg: msg,
+		msg: sub,
 	})
 
 	// 记录指标
@@ -332,7 +336,7 @@ func (p *GmqAgent) GmqSubscribe(ctx context.Context, msg Subscribe) (err error) 
 }
 
 // GmqUnsubscribe 取消订阅
-func (p *GmqAgent) GmqUnsubscribe(topic, consumerName string) error {
+func (p *GmqProxy) GmqUnsubscribe(topic, consumerName string) error {
 	subKey := p.getSubKey(topic, consumerName)
 
 	subObj, exists := p.subscriptions.Load(subKey)
@@ -353,7 +357,7 @@ func (p *GmqAgent) GmqUnsubscribe(topic, consumerName string) error {
 }
 
 // clearSubscriptions 清理所有订阅
-func (p *GmqAgent) clearSubscriptions() {
+func (p *GmqProxy) clearSubscriptions() {
 	p.subscriptions.Range(func(key, value any) bool {
 		subKey := key.(string)
 		subObj := value
@@ -367,7 +371,7 @@ func (p *GmqAgent) clearSubscriptions() {
 }
 
 // restoreSubscriptions 断线重连后恢复所有订阅
-func (p *GmqAgent) restoreSubscriptions() {
+func (p *GmqProxy) restoreSubscriptions() {
 	// 先清理旧的订阅对象
 	p.subscriptions.Range(func(key, value any) bool {
 		subKey := key.(string)
@@ -443,7 +447,7 @@ func (p *GmqAgent) restoreSubscriptions() {
 }
 
 // getSubKey 生成订阅的唯一key，使用原子计数器避免相同 topic 不同消费者的冲突
-func (p *GmqAgent) getSubKey(topic, consumerName string) string {
+func (p *GmqProxy) getSubKey(topic, consumerName string) string {
 	if consumerName != "" {
 		return topic + ":" + consumerName
 	}
@@ -453,12 +457,12 @@ func (p *GmqAgent) getSubKey(topic, consumerName string) string {
 }
 
 // GmqGetDeadLetter 获取死信消息
-func (p *GmqAgent) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]DeadLetterMsgDTO, error) {
+func (p *GmqProxy) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]DeadLetterMsgDTO, error) {
 	return p.plugin.GmqGetDeadLetter(ctx, queueName, limit)
 }
 
 // GmqPing 检测连接状态
-func (p *GmqAgent) GmqPing(ctx context.Context) bool {
+func (p *GmqProxy) GmqPing(ctx context.Context) bool {
 	// 代理层统一校验：检查是否已连接
 	if atomic.LoadInt32(&p.connected) == 0 {
 		return false
@@ -469,7 +473,7 @@ func (p *GmqAgent) GmqPing(ctx context.Context) bool {
 }
 
 // GmqConnect 连接消息队列
-func (p *GmqAgent) GmqConnect(ctx context.Context) error {
+func (p *GmqProxy) GmqConnect(ctx context.Context) error {
 
 	err := p.plugin.GmqConnect(ctx)
 	if err == nil {
@@ -479,16 +483,16 @@ func (p *GmqAgent) GmqConnect(ctx context.Context) error {
 	return err
 }
 
-func (p *GmqAgent) GmqAck(ctx context.Context, msg *AckMessage) error {
+func (p *GmqProxy) GmqAck(ctx context.Context, msg *AckMessage) error {
 	return p.plugin.GmqAck(ctx, msg)
 }
 
-func (p *GmqAgent) GmqNak(ctx context.Context, msg *AckMessage) error {
+func (p *GmqProxy) GmqNak(ctx context.Context, msg *AckMessage) error {
 	return p.plugin.GmqNak(ctx, msg)
 }
 
 // GmqClose 关闭连接
-func (p *GmqAgent) GmqClose(ctx context.Context) error {
+func (p *GmqProxy) GmqClose(ctx context.Context) error {
 	// 关闭前先清理所有订阅
 	p.clearSubscriptions()
 
@@ -498,7 +502,7 @@ func (p *GmqAgent) GmqClose(ctx context.Context) error {
 }
 
 // GmqGetMetrics 获取统一监控指标（带缓存，使用 atomic 无锁读取）
-func (p *GmqAgent) GmqGetMetrics(ctx context.Context) *Metrics {
+func (p *GmqProxy) GmqGetMetrics(ctx context.Context) *Metrics {
 	now := time.Now().UnixMilli()
 	cacheExp := p.metricsCacheExp.Load()
 

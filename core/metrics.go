@@ -32,8 +32,8 @@ type Metrics struct {
 	Extensions       map[string]interface{} `json:"extensions"`       // 扩展指标
 }
 
-// agentMetrics 代理监控指标
-type agentMetrics struct {
+// proxyMetrics 代理监控指标
+type proxyMetrics struct {
 	messageCount    int64 // 消息总数
 	publishCount    int64 // 发布消息数
 	subscribeCount  int64 // 订阅消息数
@@ -41,4 +41,17 @@ type agentMetrics struct {
 	subscribeFailed int64 // 订阅失败数
 	totalLatency    int64 // 总延迟(毫秒)
 	latencyCount    int64 // 延迟计数
+}
+
+// DeadLetterMsgDTO 死信消息DTO（给前端返回的结构化数据）
+type DeadLetterMsgDTO struct {
+	MessageID   string                 `json:"message_id"`   // 消息ID
+	Body        string                 `json:"body"`         // 消息体
+	Headers     map[string]interface{} `json:"headers"`      // 消息头（包含死信原因等信息）
+	Timestamp   string                 `json:"timestamp"`    // 消息发布时间
+	Exchange    string                 `json:"exchange"`     // 原交换机
+	RoutingKey  string                 `json:"routing_key"`  // 原路由键
+	DeadReason  string                 `json:"dead_reason"`  // 死信原因（解析自headers）
+	QueueName   string                 `json:"queue_name"`   // 死信队列名称
+	DeliveryTag uint64                 `json:"delivery_tag"` // 投递标签（用于手动操作）
 }

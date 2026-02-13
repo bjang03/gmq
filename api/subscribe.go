@@ -152,9 +152,9 @@ func marshalMessage(message any) ([]byte, error) {
 
 // createMQSubscription 创建 MQ 订阅
 func createMQSubscription(ctx context.Context, mqName, queueName, consumerName string, autoAck bool, fetchCount int, durable bool, isDelayMsg bool, handler func(context.Context, []byte) error) error {
-	agent := core.GetGmq(mqName)
-	if agent == nil {
-		return fmt.Errorf("[%s] agent not found", mqName)
+	proxy := core.GetGmq(mqName)
+	if proxy == nil {
+		return fmt.Errorf("[%s] proxy not found", mqName)
 	}
 
 	baseMsg := core.SubMessage{
@@ -173,11 +173,11 @@ func createMQSubscription(ctx context.Context, mqName, queueName, consumerName s
 
 	switch mqName {
 	case "nats":
-		return agent.GmqSubscribe(ctx, &mq.NatsSubMessage{SubMessage: baseMsg, Durable: durable, IsDelayMsg: isDelayMsg})
+		return proxy.GmqSubscribe(ctx, &mq.NatsSubMessage{SubMessage: baseMsg, Durable: durable, IsDelayMsg: isDelayMsg})
 	case "rabbitmq":
-		return agent.GmqSubscribe(ctx, &mq.RabbitMQSubMessage{SubMessage: baseMsg})
+		return proxy.GmqSubscribe(ctx, &mq.RabbitMQSubMessage{SubMessage: baseMsg})
 	case "redis":
-		return agent.GmqSubscribe(ctx, &mq.RedisSubMessage{SubMessage: baseMsg})
+		return proxy.GmqSubscribe(ctx, &mq.RedisSubMessage{SubMessage: baseMsg})
 	default:
 		return fmt.Errorf("unsupported mq type: %s", mqName)
 	}

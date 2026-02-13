@@ -77,19 +77,6 @@ type Subscribe interface {
 	GetAckHandleFunc() func(ctx context.Context, message *AckMessage) error
 }
 
-// DeadLetterMsgDTO 死信消息DTO（给前端返回的结构化数据）
-type DeadLetterMsgDTO struct {
-	MessageID   string                 `json:"message_id"`   // 消息ID
-	Body        string                 `json:"body"`         // 消息体
-	Headers     map[string]interface{} `json:"headers"`      // 消息头（包含死信原因等信息）
-	Timestamp   string                 `json:"timestamp"`    // 消息发布时间
-	Exchange    string                 `json:"exchange"`     // 原交换机
-	RoutingKey  string                 `json:"routing_key"`  // 原路由键
-	DeadReason  string                 `json:"dead_reason"`  // 死信原因（解析自headers）
-	QueueName   string                 `json:"queue_name"`   // 死信队列名称
-	DeliveryTag uint64                 `json:"delivery_tag"` // 投递标签（用于手动操作）
-}
-
 // Gmq 消息队列统一接口定义
 type Gmq interface {
 	GmqConnect(ctx context.Context) error              // 连接消息队列

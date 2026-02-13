@@ -51,8 +51,8 @@ func getAllMetrics() map[string]*core.Metrics {
 	defer cancel()
 
 	result := make(map[string]*core.Metrics)
-	for name, agent := range core.GetAllGmq() {
-		metrics := agent.GmqGetMetrics(ctx)
+	for name, proxy := range core.GetAllGmq() {
+		metrics := proxy.GmqGetMetrics(ctx)
 		result[name] = metrics
 	}
 

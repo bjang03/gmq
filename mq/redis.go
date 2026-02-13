@@ -53,11 +53,10 @@ func (c *RedisConn) GmqPing(ctx context.Context) bool {
 }
 
 // GmqConnect 连接Redis服务器
-func (c *RedisConn) GmqConnect(ctx context.Context) (err error) {
+func (c *RedisConn) GmqConnect(_ context.Context) (err error) {
 	if c.Url == "" {
 		return fmt.Errorf("redis connect address is empty")
 	}
-
 	// 连接池已存在，直接返回（go-redis 会自动管理连接）
 	if c.conn != nil {
 		return nil
@@ -102,12 +101,11 @@ func (c *RedisConn) GmqConnect(ctx context.Context) (err error) {
 	}
 	// 连接 Redis
 	c.conn = redis.NewClient(&options)
-	log.Println(fmt.Sprintf("Redis connect success: %s", c.Url))
-	return nil
+	return
 }
 
 // GmqClose 关闭Redis连接
-func (c *RedisConn) GmqClose(ctx context.Context) (err error) {
+func (c *RedisConn) GmqClose(_ context.Context) (err error) {
 	if c.conn != nil {
 		err = c.conn.Close()
 		c.conn = nil
@@ -132,12 +130,9 @@ func (c *RedisConn) GmqPublish(ctx context.Context, msg core.Publish) (err error
 		Values: toMap,
 	}
 	// 2. 调用专用 XAdd 方法
-	// 直接返回消息 ID（string 类型）和错误，无需额外解析
-	msgID, err := c.conn.XAdd(ctx, addArgs).Result()
-	if err != nil {
+	if _, err = c.conn.XAdd(ctx, addArgs).Result(); err != nil {
 		return fmt.Errorf("publish message failed：%v\n", err)
 	}
-	log.Println(fmt.Sprintf("Redis publish message success: queue=%s, msgID=%s", cfg.QueueName, msgID))
 	return
 }
 
@@ -148,10 +143,8 @@ func (c *RedisConn) GmqPublishDelay(_ context.Context, _ core.PublishDelay) (err
 
 // GmqSubscribe 订阅Redis消息
 func (c *RedisConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (err error) {
-	// 类型断言获取 NatsSubMessage 特定字段
 	cfg, ok := sub.GetSubMsg().(*RedisSubMessage)
 	if !ok {
-		log.Printf("⚠️  invalid message type, expected *RedisSubMessage")
 		return fmt.Errorf("invalid message type, expected *RedisSubMessage")
 	}
 	group := fmt.Sprintf("%s_default_group", cfg.ConsumerName)
@@ -218,79 +211,9 @@ func (c *RedisConn) GmqNak(ctx context.Context, msg *core.AckMessage) error {
 	msgId := cast.ToString(attr["MessageId"])
 	queueName := cast.ToString(attr["QueueName"])
 	group := cast.ToString(attr["Group"])
-
-	//TODO implement me
-	// 发送到死信队列 cast.ToStringMap(attr["MessageData"])
-
 	// 确认原消息（从 pending 列表中移除）
 	_, err := c.conn.XAck(ctx, queueName, group, msgId).Result()
 	return err
-}
-
-// GmqGetDeadLetter 从死信队列查询所有消息（不删除，仅读取）
-func (c *RedisConn) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) (msgs []core.DeadLetterMsgDTO, err error) {
-	if c.conn == nil {
-		return nil, fmt.Errorf("redis connection is nil")
-	}
-
-	// 死信队列名称规则：{queueName}.dlq
-	deadLetterQueue := queueName + ".dlq"
-
-	// 设置默认限制
-	if limit <= 0 {
-		limit = 10
-	}
-
-	// 使用 XRANGE 获取死信队列中的所有消息
-	streamMessages, err := c.conn.XRange(context.Background(), deadLetterQueue, "-", "+").Result()
-	if err != nil {
-		return nil, fmt.Errorf("get dead letter messages failed: %w", err)
-	}
-
-	// 转换为 DeadLetterMsgDTO 格式
-	msgs = make([]core.DeadLetterMsgDTO, 0, len(streamMessages))
-	for _, streamMsg := range streamMessages {
-		// 解析消息字段
-		deadLetterDTO := core.DeadLetterMsgDTO{
-			MessageID: streamMsg.ID,
-			QueueName: deadLetterQueue,
-			Headers:   make(map[string]interface{}),
-		}
-
-		// 提取各个字段
-		for key, value := range streamMsg.Values {
-			switch key {
-			case "origin_msg_id":
-				deadLetterDTO.DeliveryTag, _ = cast.ToUint64E(value)
-			case "origin_stream":
-				deadLetterDTO.Exchange = value.(string)
-			case "payload":
-				deadLetterDTO.Body = value.(string)
-			case "dead_reason":
-				deadLetterDTO.DeadReason = value.(string)
-			case "dead_at":
-				if timestamp, err := cast.ToInt64E(value); err == nil {
-					deadLetterDTO.Timestamp = time.UnixMilli(timestamp).Format("2006-01-02 15:04:05")
-				}
-			default:
-				deadLetterDTO.Headers[key] = value
-			}
-		}
-
-		// 如果没有设置死信原因，使用默认值
-		if deadLetterDTO.DeadReason == "" {
-			deadLetterDTO.DeadReason = "unknown"
-		}
-
-		msgs = append(msgs, deadLetterDTO)
-
-		// 限制返回数量
-		if len(msgs) >= limit {
-			break
-		}
-	}
-
-	return msgs, nil
 }
 
 func (c *RedisConn) GmqGetMetrics(ctx context.Context) *core.Metrics {
@@ -299,13 +222,11 @@ func (c *RedisConn) GmqGetMetrics(ctx context.Context) *core.Metrics {
 		Type:       "redis",
 		ServerAddr: c.Url,
 	}
-
 	if c.GmqPing(ctx) {
 		m.Status = "connected"
 	} else {
 		m.Status = "disconnected"
 	}
-
 	// 从 Redis 获取服务端统计信息
 	if c.conn != nil && c.GmqPing(ctx) {
 		info, err := c.conn.Info(ctx, "server", "clients", "memory", "stats").Result()
@@ -314,7 +235,6 @@ func (c *RedisConn) GmqGetMetrics(ctx context.Context) *core.Metrics {
 				"info": info,
 			}
 		}
-
 		// 获取数据库大小
 		dbSize, err := c.conn.DBSize(ctx).Result()
 		if err == nil {
@@ -324,6 +244,10 @@ func (c *RedisConn) GmqGetMetrics(ctx context.Context) *core.Metrics {
 			m.ServerMetrics["dbSize"] = dbSize
 		}
 	}
-
 	return m
+}
+
+// GmqGetDeadLetter 获取死信消息（Redis 不支持死信队列）
+func (c *RedisConn) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]core.DeadLetterMsgDTO, error) {
+	return nil, fmt.Errorf("redis does not support dead letter queue")
 }

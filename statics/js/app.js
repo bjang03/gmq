@@ -424,13 +424,23 @@ let pageSize = 20;
 function generateMockDeadLetterMessages() {
     const messages = [];
     const queues = ['user-order', 'payment-queue', 'notification-queue', 'email-queue', 'log-queue'];
-    const deadReasons = [
-        '消息消费超时',
-        '重试次数超过阈值',
-        '业务逻辑处理失败',
-        '数据格式错误',
-        '下游服务不可用',
-        '连接中断'
+    // 只使用两种死信原因：异常、超时
+    const deadReasons = ['异常', '超时'];
+    const errorDetails = [
+        '业务逻辑处理失败：NullPointerException at UserService.java:234',
+        '数据格式错误：JSON parse error, unexpected token at position 45',
+        '下游服务不可用：Connection refused to payment-service:8080',
+        '数据库连接超时：Failed to establish connection to MySQL within 30s',
+        '消息验证失败：Missing required field "order_id"',
+        '服务降级：Circuit breaker opened for external API'
+    ];
+    const timeoutDetails = [
+        '消息消费超时：Consumer took 35s to process, exceeded timeout of 30s',
+        '响应超时：Downstream service did not respond within 60s timeout',
+        '数据库查询超时：Query execution took 45s, max allowed 30s',
+        'HTTP请求超时：POST /api/callback timeout after 30s',
+        '缓存读取超时：Redis connection timeout after 5s',
+        '消息确认超时：Ack not received within 15s of delivery'
     ];
     const mqTypes = ['redis', 'rabbitmq', 'nats'];
     const servers = [
@@ -442,6 +452,12 @@ function generateMockDeadLetterMessages() {
     ];
 
     for (let i = 1; i <= 50; i++) {
+        const isTimeout = Math.random() > 0.6; // 40% 概率是超时
+        const deadReason = deadReasons[isTimeout ? 1 : 0];
+        const detail = isTimeout
+            ? timeoutDetails[Math.floor(Math.random() * timeoutDetails.length)]
+            : errorDetails[Math.floor(Math.random() * errorDetails.length)];
+
         messages.push({
             message_id: `msg_${Date.now()}_${i}`,
             queue_name: queues[Math.floor(Math.random() * queues.length)],
@@ -449,7 +465,8 @@ function generateMockDeadLetterMessages() {
             server_addr: servers[Math.floor(Math.random() * servers.length)],
             timestamp: new Date(Date.now() - Math.random() * 86400000).toISOString(),
             delivery_tag: Math.floor(Math.random() * 1000000),
-            dead_reason: deadReasons[Math.floor(Math.random() * deadReasons.length)],
+            dead_reason: deadReason,
+            dead_detail: detail, // 新增：详细异常信息
             body: JSON.stringify({
                 event: `event_${i}`,
                 data: {
@@ -464,7 +481,8 @@ function generateMockDeadLetterMessages() {
                 'Content-Type': 'application/json',
                 'Retry-Count': (Math.floor(Math.random() * 5) + 1).toString(),
                 'Original-Queue': queues[Math.floor(Math.random() * queues.length)],
-                'Error-Code': 'E' + (Math.floor(Math.random() * 900) + 100)
+                'Error-Code': 'E' + (Math.floor(Math.random() * 900) + 100),
+                'Dead-Detail': detail // 在headers中也保存详细信息
             }
         });
     }
@@ -600,7 +618,12 @@ function renderDeadLetterMessages() {
                 <td class="queue-type">${escapeHtml(msg.queue_type || 'N/A')}</td>
                 <td class="server-addr">${escapeHtml(msg.server_addr || 'N/A')}</td>
                 <td class="timestamp">${timestamp}</td>
-                <td class="dead-reason">${escapeHtml(msg.dead_reason || 'N/A')}</td>
+                <td class="dead-reason">
+                    ${msg.dead_reason === '异常'
+                        ? `<a href="#" class="dead-reason-link" onclick="showDeadReasonDetail(event, '${escapeHtml(msg.message_id || '')}')" title="点击查看详情">${escapeHtml(msg.dead_reason || 'N/A')}</a>`
+                        : escapeHtml(msg.dead_reason || 'N/A')
+                    }
+                </td>
                 <td class="actions">
                     <button class="btn btn-text btn-retry" onclick="retryDeadLetterMessage('${escapeHtml(msg.message_id || '')}')" title="重新执行">
                         重新执行
@@ -903,6 +926,31 @@ function showToast(message, type = 'success') {
     }, 3000);
 }
 
+// 显示死信原因详情模态框
+function showDeadReasonDetail(event, messageId) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const message = currentDeadLetterMessages.find(m => m.message_id === messageId);
+    if (!message) {
+        showToast('消息不存在', 'error');
+        return;
+    }
+
+    const detail = message.dead_detail || message.headers?.['Dead-Detail'] || '无详细异常信息';
+    const modal = document.getElementById('dead-reason-detail-modal');
+    const detailContent = document.getElementById('dead-reason-detail-content');
+
+    detailContent.textContent = detail;
+    modal.classList.add('active');
+}
+
+// 关闭死信原因详情模态框
+function closeDeadReasonDetailModal() {
+    const modal = document.getElementById('dead-reason-detail-modal');
+    modal.classList.remove('active');
+}
+
 // HTML 转义
 function escapeHtml(text) {
     if (!text) return '';
@@ -930,12 +978,16 @@ function formatTimestamp(isoString) {
 document.addEventListener('click', (e) => {
     const deadletterModal = document.getElementById('deadletter-modal');
     const editModal = document.getElementById('edit-modal');
+    const detailModal = document.getElementById('dead-reason-detail-modal');
 
     if (e.target === deadletterModal) {
         closeDeadLetterModal();
     }
     if (e.target === editModal) {
         closeEditModal();
+    }
+    if (e.target === detailModal) {
+        closeDeadReasonDetailModal();
     }
 });
 
@@ -944,6 +996,7 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         closeDeadLetterModal();
         closeEditModal();
+        closeDeadReasonDetailModal();
     }
 });
 

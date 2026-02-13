@@ -673,6 +673,18 @@ header h1 {
     font-weight: 600;
 }
 
+.dead-reason-link {
+    color: #dc2626;
+    text-decoration: underline;
+    cursor: pointer;
+    transition: color 0.2s ease;
+}
+
+.dead-reason-link:hover {
+    color: #b91c1c;
+    text-decoration: underline;
+}
+
 .dead-letter-table td.message-body {
     font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
     font-size: 12px;

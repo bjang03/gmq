@@ -61,7 +61,7 @@ func (c *NatsConn) GmqConnect(_ context.Context) error {
 		}),
 	}
 
-	conn, err := nats.Connect(c.Url, opts...)
+	conn, err := nats.Connect(fmt.Sprintf("nats://%s", c.Url), opts...)
 	if err != nil {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}

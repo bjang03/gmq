@@ -407,7 +407,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 初始化生成 mock 数据并更新死信队列数量
     currentDeadLetterMessages = generateMockDeadLetterMessages();
     currentMqName = 'redis';
-    currentQueueName = 'default-queue';
+    currentQueueName = '';
     updateDeadLetterCountFromMock();
 });
 
@@ -530,16 +530,6 @@ async function loadDeadLetterMessages() {
 
     console.log('loadDeadLetterMessages 调用, MQ:', currentMqName, '队列:', currentQueueName);
 
-    if (!currentMqName) {
-        showToast('请选择 MQ', 'error');
-        return;
-    }
-
-    if (!currentQueueName) {
-        showToast('请输入队列名称', 'error');
-        return;
-    }
-
     const container = document.getElementById('dead-letter-list');
     container.innerHTML = `
         <div class="loading-state">
@@ -551,6 +541,12 @@ async function loadDeadLetterMessages() {
     // 直接使用 mock 数据
     console.log('使用 mock 数据');
     currentDeadLetterMessages = generateMockDeadLetterMessages();
+
+    // 根据 mqName 过滤
+    if (currentMqName) {
+        currentDeadLetterMessages = currentDeadLetterMessages.filter(msg => msg.queue_type === currentMqName);
+    }
+
     console.log('生成 mock 数据数量:', currentDeadLetterMessages.length);
     currentPage = 1;
     renderDeadLetterMessages();
@@ -559,12 +555,8 @@ async function loadDeadLetterMessages() {
 
 // 刷新死信消息
 async function refreshDeadLetterMessages() {
-    if (currentMqName && currentQueueName) {
-        await loadDeadLetterMessages();
-        showToast('刷新成功', 'success');
-    } else {
-        showToast('请先选择 MQ 并输入队列名称', 'error');
-    }
+    await loadDeadLetterMessages();
+    showToast('刷新成功', 'success');
 }
 
 // 渲染死信消息列表

@@ -114,11 +114,12 @@
                 <div class="modal-body">
                     <div class="dead-letter-controls">
                         <select id="dlq-mq-select" class="form-select">
-                            <option value="redis" selected>Redis Stream</option>
+                            <option value="" selected>全部</option>
+                            <option value="redis">Redis Stream</option>
                             <option value="rabbitmq">RabbitMQ</option>
                             <option value="nats">NATS</option>
                         </select>
-                        <input type="text" id="dlq-queue-input" class="form-input" value="default-queue" placeholder="输入队列名称">
+                        <input type="text" id="dlq-queue-input" class="form-input" placeholder="输入队列名称">
                         <button class="btn btn-primary" onclick="loadDeadLetterMessages()">查询</button>
                         <button class="btn btn-refresh" onclick="refreshDeadLetterMessages()">刷新</button>
                     </div>

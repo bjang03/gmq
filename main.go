@@ -40,9 +40,9 @@ func main() {
 		return nil
 	})
 
-	// 添加多个服务器(示例:可继续添加更多端口)
+	// 添加服务器
 	manager.AddServer(utils.NewServer(":1688", mux))
-	manager.AddServer(utils.NewServer(":1689", mux))
+
 	// 启动所有服务器并支持优雅关闭
 	manager.StartWithGracefulShutdown(10)
 }

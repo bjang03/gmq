@@ -2,17 +2,11 @@ package main
 
 import (
 	"context"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
 	"github.com/bjang03/gmq/api"
 	"github.com/bjang03/gmq/core"
 	"github.com/bjang03/gmq/mq"
-	"github.com/gin-gonic/gin"
+	"github.com/bjang03/gmq/utils"
 )
 
 func main() {
@@ -29,42 +23,26 @@ func main() {
 		Password: "123456",
 		VHost:    "",
 	})
-	// 设置 Gin 路由
-	gin.SetMode(gin.ReleaseMode)
-	router := gin.Default()
-	api.SetupRouter(router)
+
+	// 设置路由 - 使用封装的ServeMux
+	mux := utils.NewServeMux()
+	api.SetupRouter(mux)
 
 	// 打印注册的路由
-	api.PrintRoutes(router)
+	api.PrintRoutes(mux)
 
-	// 创建 HTTP 服务器
-	srv := &http.Server{
-		Addr:    ":1688",
-		Handler: router,
-	}
-
-	// 启动 HTTP 服务器
-	go func() {
-		log.Println("HTTP server starting on :1688")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
+	// 创建服务器管理器
+	manager := utils.NewServerManager(func(ctx context.Context) error {
+		if err := core.Shutdown(ctx); err != nil {
+			return err
 		}
-	}()
+		api.StopMetricsBroadcast()
+		return nil
+	})
 
-	// 等待中断信号
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Println("Shutting down server...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("Error shutting down HTTP server: %v", err)
-	}
-	if err := core.Shutdown(ctx); err != nil {
-		log.Printf("Error during MQ shutdown: %v", err)
-	}
-	api.StopMetricsBroadcast()
-	log.Println("Server stopped")
+	// 添加多个服务器(示例:可继续添加更多端口)
+	manager.AddServer(utils.NewServer(":1688", mux))
+	manager.AddServer(utils.NewServer(":1689", mux))
+	// 启动所有服务器并支持优雅关闭
+	manager.StartWithGracefulShutdown(10)
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/spf13/cast"
 	"log"
 	"net/http"
 	"sync"
@@ -14,7 +13,6 @@ import (
 	"github.com/bjang03/gmq/core"
 	"github.com/bjang03/gmq/mq"
 	"github.com/bjang03/gmq/utils"
-	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
 
@@ -70,20 +68,29 @@ func Subscribe(ctx context.Context, req *SubscribeReq) (res interface{}, err err
 }
 
 // WSSubscribeHandler WebSocket订阅处理器
-func WSSubscribeHandler(c *gin.Context) {
-	mqName := c.Query("mqName")
-	queueName := c.Query("queueName")
-	consumerName := c.Query("consumerName")
-	autoAck := cast.ToBool(c.Query("autoAck"))
-	fetchCount := cast.ToInt(c.Query("fetchCount"))
-	durable := cast.ToBool(c.Query("durable"))
-	isDelayMsg := cast.ToBool(c.Query("isDelayMsg"))
+func WSSubscribeHandler(ctx *utils.Context) {
+	mqName := ctx.R.URL.Query().Get("mqName")
+	queueName := ctx.R.URL.Query().Get("queueName")
+	consumerName := ctx.R.URL.Query().Get("consumerName")
+	autoAck := utils.ToBool(ctx.R.URL.Query().Get("autoAck"))
+	fetchCount := utils.ToInt(ctx.R.URL.Query().Get("fetchCount"))
+	durable := utils.ToBool(ctx.R.URL.Query().Get("durable"))
+	isDelayMsg := utils.ToBool(ctx.R.URL.Query().Get("isDelayMsg"))
 
 	if mqName == "" || queueName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "mqName and queueName are required"})
+		utils.WriteJSONResponse(ctx.W, http.StatusBadRequest, utils.Response{
+			Code: 400,
+			Msg:  "mqName and queueName are required",
+			Data: nil,
+		})
 		return
 	}
 
+	createMqAndWsSubscription(ctx, mqName, queueName, consumerName, autoAck, fetchCount, durable, isDelayMsg)
+}
+
+// createMqAndWsSubscription 创建MQ订阅和WebSocket连接
+func createMqAndWsSubscription(ctx *utils.Context, mqName, queueName, consumerName string, autoAck bool, fetchCount int, durable bool, isDelayMsg bool) {
 	// 创建消息通道
 	msgChan := make(chan []byte, 100)
 
@@ -111,7 +118,7 @@ func WSSubscribeHandler(c *gin.Context) {
 		return nil
 	}
 
-	conn, err := subscribeWSManager.HandleConnection(c.Writer, c.Request, handler, nil)
+	conn, err := subscribeWSManager.HandleConnection(ctx.W, ctx.R, handler, nil)
 	if err != nil {
 		log.Printf("[WS-Subscribe] WebSocket connection failed: %v", err)
 		return

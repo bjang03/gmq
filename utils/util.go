@@ -3,9 +3,10 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/spf13/cast"
 	"reflect"
 	"time"
+
+	"github.com/spf13/cast"
 )
 
 // ConvertToMap 通用数据转map[string]interface{}方法（修复基础类型兼容问题）
@@ -302,4 +303,18 @@ type iMapStrAny interface {
 type iTime interface {
 	Date() (year int, month time.Month, day int)
 	IsZero() bool
+}
+
+// ToBool 公开的字符串转bool方法
+func ToBool(s string) bool {
+	return s == "true" || s == "1"
+}
+
+// ToInt 公开的字符串转int方法
+func ToInt(s string) int {
+	i := 0
+	if s != "" {
+		fmt.Sscanf(s, "%d", &i)
+	}
+	return i
 }

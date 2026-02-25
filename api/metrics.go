@@ -7,7 +7,6 @@ import (
 
 	"github.com/bjang03/gmq/core"
 	"github.com/bjang03/gmq/utils"
-	"github.com/gin-gonic/gin"
 )
 
 var (
@@ -18,13 +17,13 @@ var (
 )
 
 // WSMetricsHandler WebSocket指标处理器
-func WSMetricsHandler(c *gin.Context) {
+func WSMetricsHandler(ctx *utils.Context) {
 	initialData := &utils.WebSocketMessage{
 		Type:    utils.MessageTypeMetrics,
 		Payload: getAllMetrics(),
 	}
 
-	_, _ = metricsWSManager.HandleConnection(c.Writer, c.Request, nil, initialData)
+	_, _ = metricsWSManager.HandleConnection(ctx.W, ctx.R, nil, initialData)
 }
 
 // StartMetricsBroadcast 启动指标广播协程

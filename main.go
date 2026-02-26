@@ -1,6 +1,10 @@
 package main
 
 import (
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/bjang03/gmq/api"
 	"github.com/bjang03/gmq/core"
 	"github.com/bjang03/gmq/mq"
@@ -21,7 +25,9 @@ func main() {
 		Password: "123456",
 		VHost:    "",
 	})
-
-	// 阻塞等待关闭信号，触发优雅关闭
-	api.StartGmqWithGracefulShutdown(10)
+	// 等待中断信号
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	api.Shutdown()
 }

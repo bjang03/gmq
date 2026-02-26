@@ -46,7 +46,7 @@ type proxyMetrics struct {
 // DeadLetterMsgDTO 死信消息DTO（给前端返回的结构化数据）
 type DeadLetterMsgDTO struct {
 	MessageID   string                 `json:"message_id"`   // 消息ID
-	Body        string                 `json:"body"`         // 消息体
+	Body        any                    `json:"body"`         // 消息体
 	Headers     map[string]interface{} `json:"headers"`      // 消息头（包含死信原因等信息）
 	Timestamp   string                 `json:"timestamp"`    // 消息发布时间
 	Exchange    string                 `json:"exchange"`     // 原交换机

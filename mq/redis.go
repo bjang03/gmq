@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/bjang03/gmq/utils"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,10 @@ type RedisPubMessage struct {
 	core.PubMessage
 }
 
+type RedisPubDelayMessage struct {
+	core.PubDelayMessage
+}
+
 type RedisSubMessage struct {
 	core.SubMessage
 }
@@ -24,6 +29,7 @@ type RedisSubMessage struct {
 // RedisConn Redis消息队列实现
 type RedisConn struct {
 	Url             string // Redis连接地址
+	Port            string
 	Db              int    // Redis数据库
 	Username        string // Redis用户名
 	Password        string // Redis密码
@@ -57,10 +63,14 @@ func (c *RedisConn) GmqConnect(_ context.Context) (err error) {
 	if c.Url == "" {
 		return fmt.Errorf("redis connect address is empty")
 	}
+	if c.Port == "" {
+		return fmt.Errorf("redis connect port is empty")
+	}
 	// 连接池已存在，直接返回（go-redis 会自动管理连接）
 	if c.conn != nil {
 		return nil
 	}
+	c.Url = c.Url + ":" + c.Port
 	options := redis.Options{
 		Addr: c.Url,
 		DB:   c.Db,
@@ -119,6 +129,7 @@ func (c *RedisConn) GmqPublish(ctx context.Context, msg core.Publish) (err error
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RedisPubMessage")
 	}
+	cfg.QueueName = "gmq:stream:" + cfg.QueueName
 	toMap, err := utils.ConvertToMap(cfg.Data)
 	if err != nil {
 		return err
@@ -147,7 +158,8 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (err e
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RedisSubMessage")
 	}
-	group := fmt.Sprintf("%s_default_group", cfg.ConsumerName)
+	cfg.QueueName = "gmq:stream:" + cfg.QueueName
+	group := fmt.Sprintf("%s:default:group", cfg.ConsumerName)
 	_, err = c.conn.XGroupCreateMkStream(ctx, cfg.QueueName, group, "0").Result()
 	if err != nil {
 		if !strings.Contains(err.Error(), "BUSYGROUP") && !strings.Contains(err.Error(), "already exists") {
@@ -197,7 +209,7 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (err e
 
 // GmqAck 确认消息
 func (c *RedisConn) GmqAck(ctx context.Context, msg *core.AckMessage) error {
-	attr := msg.AckRequiredAttr
+	attr := cast.ToStringMap(msg.AckRequiredAttr)
 	msgId := cast.ToString(attr["MessageId"])
 	queueName := cast.ToString(attr["QueueName"])
 	group := cast.ToString(attr["Group"])
@@ -206,14 +218,8 @@ func (c *RedisConn) GmqAck(ctx context.Context, msg *core.AckMessage) error {
 }
 
 // GmqNak 否定确认消息 - Redis 不支持 Nak，需要手动重新投递或进入死信队列
-func (c *RedisConn) GmqNak(ctx context.Context, msg *core.AckMessage) error {
-	attr := msg.AckRequiredAttr
-	msgId := cast.ToString(attr["MessageId"])
-	queueName := cast.ToString(attr["QueueName"])
-	group := cast.ToString(attr["Group"])
-	// 确认原消息（从 pending 列表中移除）
-	_, err := c.conn.XAck(ctx, queueName, group, msgId).Result()
-	return err
+func (c *RedisConn) GmqNak(_ context.Context, _ *core.AckMessage) error {
+	return nil
 }
 
 func (c *RedisConn) GmqGetMetrics(ctx context.Context) *core.Metrics {
@@ -247,7 +253,178 @@ func (c *RedisConn) GmqGetMetrics(ctx context.Context) *core.Metrics {
 	return m
 }
 
-// GmqGetDeadLetter 获取死信消息（Redis 不支持死信队列）
-func (c *RedisConn) GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]core.DeadLetterMsgDTO, error) {
-	return nil, fmt.Errorf("redis does not support dead letter queue")
+func (c *RedisConn) GmqGetDeadLetter(ctx context.Context) ([]core.DeadLetterMsgDTO, error) {
+	var deadLetterList []core.DeadLetterMsgDTO
+
+	// 1. 获取所有StreamKey
+	streamKeys, err := c.getAllStreamKeys(ctx)
+	if err != nil {
+		log.Printf("获取StreamKey失败: %v", err)
+		return nil, fmt.Errorf("获取StreamKey失败: %w", err)
+	}
+	if len(streamKeys) == 0 {
+		return deadLetterList, nil
+	}
+
+	// 2. 遍历每个Stream
+	for _, streamKey := range streamKeys {
+		// 2.1 获取消费组列表
+		groups, err := c.getStreamGroups(ctx, streamKey)
+		if err != nil {
+			log.Printf("Stream [%s] 获取消费组失败: %v", streamKey, err)
+			continue
+		}
+		if len(groups) == 0 {
+			continue
+		}
+
+		// 2.2 遍历消费组
+		for _, groupName := range groups {
+			// 2.3 获取pending消息列表
+			pendingList, err := c.getPendingMsgList(ctx, streamKey, groupName)
+			if err != nil {
+				log.Printf("消费组 [%s] 获取pending失败: %v", groupName, err)
+				continue
+			}
+			if len(pendingList) == 0 {
+				continue
+			}
+
+			// 筛选：仅处理空闲时间超过minIdleTime的消息
+			filterPendingList := make([]redis.XPendingExt, 0)
+			msgIDs := make([]string, 0)
+			for _, p := range pendingList {
+				if p.Idle >= 180*1000 { // Idle单位是毫秒
+					filterPendingList = append(filterPendingList, p)
+					msgIDs = append(msgIDs, p.ID)
+				}
+			}
+			if len(filterPendingList) == 0 {
+				continue
+			}
+			// 批量查询消息
+			msgMap, err := c.batchGetStreamMsgByIDs(ctx, streamKey, msgIDs)
+			if err != nil {
+				log.Printf("批量查询失败: %v", err)
+				continue
+			}
+			// 转换DTO
+			for _, p := range filterPendingList {
+				msgID := p.ID
+				xMsg, ok := msgMap[msgID]
+				if !ok {
+					continue
+				}
+				// 调用修复后的转换函数
+				deadLetter := convertXMsgToDeadLetterDTO(streamKey, msgID, xMsg, p.Idle)
+				deadLetterList = append(deadLetterList, deadLetter)
+			}
+			if len(deadLetterList) > 0 {
+				// TODO : 需要补充deadLetterList写入数据库
+
+				// 死信队列中的消息保存成功后才能进行确认消息
+				if err = c.conn.XAck(ctx, streamKey, groupName, msgIDs...).Err(); err != nil {
+					log.Printf("批量确认消息失败: %v", err)
+				} else {
+					log.Println("批量确认消息成功，已清理pending列表")
+				}
+			}
+		}
+	}
+	return deadLetterList, nil
+}
+
+func convertXMsgToDeadLetterDTO(streamKey, msgID string, xMsg redis.XMessage, idleMs time.Duration) core.DeadLetterMsgDTO {
+	deadReason := fmt.Sprintf("消息处理超时未确认（空闲时间：%d秒）", idleMs/time.Second)
+	timestampFormatted := ""
+	if ts, err := strconv.ParseInt(strings.Split(msgID, "-")[0], 10, 64); err == nil {
+		timestampFormatted = time.UnixMilli(ts).Format("2006-01-02 15:04:05")
+	}
+	return core.DeadLetterMsgDTO{
+		MessageID:  msgID,
+		Body:       xMsg.Values,
+		Timestamp:  timestampFormatted,
+		DeadReason: deadReason,
+		QueueName:  streamKey,
+	}
+}
+
+func (c *RedisConn) getAllStreamKeys(ctx context.Context) ([]string, error) {
+	var streamKeys []string
+	cursor := uint64(0)
+	count := int64(1000)
+	matchPattern := "gmq:stream:*"
+	for {
+		keys, newCursor, err := c.conn.Scan(ctx, cursor, matchPattern, count).Result()
+		if err != nil {
+			return nil, fmt.Errorf("SCAN失败: %w", err)
+		}
+		for _, key := range keys {
+			keyType, err := c.conn.Type(ctx, key).Result()
+			if err != nil || keyType != "stream" {
+				continue
+			}
+			streamKeys = append(streamKeys, key)
+		}
+		cursor = newCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	return streamKeys, nil
+}
+
+func (c *RedisConn) getStreamGroups(ctx context.Context, streamKey string) ([]string, error) {
+	var groups []string
+	xGroups, err := c.conn.XInfoGroups(ctx, streamKey).Result()
+	if err != nil {
+		return nil, fmt.Errorf("XInfoGroups失败: %w", err)
+	}
+	for _, g := range xGroups {
+		groups = append(groups, g.Name)
+	}
+	return groups, nil
+}
+
+func (c *RedisConn) getPendingMsgList(ctx context.Context, streamKey, groupName string) ([]redis.XPendingExt, error) {
+	pendingList, err := c.conn.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: streamKey,
+		Group:  groupName,
+		Start:  "-",
+		End:    "+",
+		Count:  1000,
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("XPendingExt失败: %w", err)
+	}
+	return pendingList, nil
+}
+
+func (c *RedisConn) batchGetStreamMsgByIDs(ctx context.Context, streamKey string, msgIDs []string) (map[string]redis.XMessage, error) {
+	msgMap := make(map[string]redis.XMessage)
+	if len(msgIDs) == 0 {
+		return msgMap, nil
+	}
+
+	minID := msgIDs[0]
+	maxID := msgIDs[0]
+	for _, id := range msgIDs {
+		if id < minID {
+			minID = id
+		}
+		if id > maxID {
+			maxID = id
+		}
+	}
+
+	msgs, err := c.conn.XRange(ctx, streamKey, minID, maxID).Result()
+	if err != nil {
+		return nil, fmt.Errorf("XRANGE失败: %w", err)
+	}
+
+	for _, msg := range msgs {
+		msgMap[msg.ID] = msg
+	}
+
+	return msgMap, nil
 }

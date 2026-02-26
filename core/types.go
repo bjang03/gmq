@@ -55,7 +55,7 @@ func (m *SubMessage) GetAckHandleFunc() func(ctx context.Context, message *AckMe
 
 type AckMessage struct {
 	MessageData     any
-	AckRequiredAttr map[string]any
+	AckRequiredAttr any
 }
 
 // Publish 发布消息接口（用于类型约束）
@@ -82,11 +82,11 @@ type Gmq interface {
 	GmqConnect(ctx context.Context) error              // 连接消息队列
 	GmqPublish(ctx context.Context, msg Publish) error // 发布消息
 	GmqPublishDelay(ctx context.Context, msg PublishDelay) error
-	GmqSubscribe(ctx context.Context, msg Subscribe) error                                         // 订阅消息，返回订阅对象
-	GmqGetDeadLetter(ctx context.Context, queueName string, limit int) ([]DeadLetterMsgDTO, error) // 获取死信队列消息
-	GmqPing(ctx context.Context) bool                                                              // 检测连接状态
-	GmqClose(ctx context.Context) error                                                            // 关闭连接
-	GmqGetMetrics(ctx context.Context) *Metrics                                                    // 获取监控指标
-	GmqAck(ctx context.Context, msg *AckMessage) error                                             // 确认消息
-	GmqNak(ctx context.Context, msg *AckMessage) error                                             // 拒绝消息（可重新入队，直到 MaxDeliver）
+	GmqSubscribe(ctx context.Context, msg Subscribe) error            // 订阅消息，返回订阅对象
+	GmqGetDeadLetter(ctx context.Context) ([]DeadLetterMsgDTO, error) // 获取死信队列消息
+	GmqPing(ctx context.Context) bool                                 // 检测连接状态
+	GmqClose(ctx context.Context) error                               // 关闭连接
+	GmqGetMetrics(ctx context.Context) *Metrics                       // 获取监控指标
+	GmqAck(ctx context.Context, msg *AckMessage) error                // 确认消息
+	GmqNak(ctx context.Context, msg *AckMessage) error                // 拒绝消息（可重新入队，直到 MaxDeliver）
 }

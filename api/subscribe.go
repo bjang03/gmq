@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	// HTTP 订阅者管理 (queueName -> key -> subscription)
+	// HTTP 订阅者管理 (topic -> key -> subscription)
 	httpSubscribers = make(map[string]map[string]interface{})
 	httpSubsMux     sync.RWMutex
 
@@ -31,7 +31,7 @@ var (
 type SubscribeReq struct {
 	ServerName   string `json:"serverName" validate:"required"` // 回调服务名
 	MqName       string `json:"mqName" validate:"required"`     // 消息队列名
-	QueueName    string `json:"queueName" validate:"required"`
+	Topic        string `json:"topic" validate:"required"`
 	ConsumerName string `json:"consumerName" validate:"required"`
 	AutoAck      bool   `json:"autoAck"`
 	FetchCount   int    `json:"fetchCount"`
@@ -45,7 +45,7 @@ type SubscribeReq struct {
 func Subscribe(ctx context.Context, req *SubscribeReq) (res interface{}, err error) {
 	callbackURL := req.ServerName + req.WebHook
 
-	err = createMQSubscription(ctx, req.MqName, req.QueueName, req.ConsumerName, req.AutoAck, req.FetchCount, req.Durable, req.IsDelayMsg, func(ctx context.Context, data []byte) error {
+	err = createMQSubscription(ctx, req.MqName, req.Topic, req.ConsumerName, req.AutoAck, req.FetchCount, req.Durable, req.IsDelayMsg, func(ctx context.Context, data []byte) error {
 		return sendHttpCallback(ctx, callbackURL, data)
 	})
 	if err != nil {
@@ -54,14 +54,14 @@ func Subscribe(ctx context.Context, req *SubscribeReq) (res interface{}, err err
 
 	// 保存订阅
 	httpSubsMux.Lock()
-	if httpSubscribers[req.QueueName] == nil {
-		httpSubscribers[req.QueueName] = make(map[string]interface{})
+	if httpSubscribers[req.Topic] == nil {
+		httpSubscribers[req.Topic] = make(map[string]interface{})
 	}
-	//httpSubscribers[req.QueueName][key] = subObj
+	//httpSubscribers[req.Topic][key] = subObj
 	httpSubsMux.Unlock()
 
-	log.Printf("[HTTP-Subscribe] Success - MqName: %s, Queue: %s, WebHook: %s",
-		req.MqName, req.QueueName, req.WebHook)
+	log.Printf("[HTTP-Subscribe] Success - MqName: %s, Topic: %s, WebHook: %s",
+		req.MqName, req.Topic, req.WebHook)
 
 	return
 }
@@ -69,32 +69,32 @@ func Subscribe(ctx context.Context, req *SubscribeReq) (res interface{}, err err
 // WSSubscribeHandler WebSocket订阅处理器
 func WSSubscribeHandler(ctx *utils.Context) {
 	mqName := ctx.R.URL.Query().Get("mqName")
-	queueName := ctx.R.URL.Query().Get("queueName")
+	topic := ctx.R.URL.Query().Get("topic")
 	consumerName := ctx.R.URL.Query().Get("consumerName")
 	autoAck := utils.ToBool(ctx.R.URL.Query().Get("autoAck"))
 	fetchCount := utils.ToInt(ctx.R.URL.Query().Get("fetchCount"))
 	durable := utils.ToBool(ctx.R.URL.Query().Get("durable"))
 	isDelayMsg := utils.ToBool(ctx.R.URL.Query().Get("isDelayMsg"))
 
-	if mqName == "" || queueName == "" {
+	if mqName == "" || topic == "" {
 		utils.WriteJSONResponse(ctx.W, http.StatusBadRequest, utils.Response{
 			Code: 400,
-			Msg:  "mqName and queueName are required",
+			Msg:  "mqName and Topic are required",
 			Data: nil,
 		})
 		return
 	}
 
-	createMqAndWsSubscription(ctx, mqName, queueName, consumerName, autoAck, fetchCount, durable, isDelayMsg)
+	createMqAndWsSubscription(ctx, mqName, topic, consumerName, autoAck, fetchCount, durable, isDelayMsg)
 }
 
 // createMqAndWsSubscription 创建MQ订阅和WebSocket连接
-func createMqAndWsSubscription(ctx *utils.Context, mqName, queueName, consumerName string, autoAck bool, fetchCount int, durable bool, isDelayMsg bool) {
+func createMqAndWsSubscription(ctx *utils.Context, mqName, topic, consumerName string, autoAck bool, fetchCount int, durable bool, isDelayMsg bool) {
 	// 创建消息通道
 	msgChan := make(chan []byte, 100)
 
 	// 创建MQ订阅
-	err := createMQSubscription(context.Background(), mqName, queueName, consumerName, autoAck, fetchCount, durable, isDelayMsg, func(ctx context.Context, data []byte) error {
+	err := createMQSubscription(context.Background(), mqName, topic, consumerName, autoAck, fetchCount, durable, isDelayMsg, func(ctx context.Context, data []byte) error {
 		select {
 		case msgChan <- data:
 		case <-ctx.Done():
@@ -105,7 +105,7 @@ func createMqAndWsSubscription(ctx *utils.Context, mqName, queueName, consumerNa
 		return
 	}
 
-	log.Printf("[WS-Subscribe] Success - MqName: %s, Queue: %s", mqName, queueName)
+	log.Printf("[WS-Subscribe] Success - MqName: %s, Topic: %s", mqName, topic)
 
 	// 使用WebSocketManager统一管理连接(心跳、停止监听、生命周期)
 	handler := func(conn *websocket.Conn, messageType int, data []byte) error {
@@ -157,14 +157,14 @@ func marshalMessage(message any) ([]byte, error) {
 }
 
 // createMQSubscription 创建 MQ 订阅
-func createMQSubscription(ctx context.Context, mqName, queueName, consumerName string, autoAck bool, fetchCount int, durable bool, isDelayMsg bool, handler func(context.Context, []byte) error) error {
+func createMQSubscription(ctx context.Context, mqName, topic, consumerName string, autoAck bool, fetchCount int, durable bool, isDelayMsg bool, handler func(context.Context, []byte) error) error {
 	proxy := core.GetGmq(mqName)
 	if proxy == nil {
 		return fmt.Errorf("[%s] proxy not found", mqName)
 	}
 
 	baseMsg := core.SubMessage{
-		QueueName:    queueName,
+		Topic:        topic,
 		ConsumerName: consumerName,
 		AutoAck:      autoAck,
 		FetchCount:   fetchCount,

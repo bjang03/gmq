@@ -91,7 +91,7 @@ func TestRedisPublish(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.publish.queue"
+	topic := "test.publish.topic"
 	testData := map[string]interface{}{
 		"message": "Test message for publish",
 		"index":   1,
@@ -99,8 +99,8 @@ func TestRedisPublish(t *testing.T) {
 
 	pubMsg := &RedisPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      testData,
+			Topic: topic,
+			Data:  testData,
 		},
 	}
 
@@ -115,7 +115,7 @@ func TestRedisPublishMultipleMessages(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.multiple.queue"
+	topic := "test.multiple.topic"
 	messageCount := 10
 
 	for i := 0; i < messageCount; i++ {
@@ -126,8 +126,8 @@ func TestRedisPublishMultipleMessages(t *testing.T) {
 
 		pubMsg := &RedisPubMessage{
 			PubMessage: core.PubMessage{
-				QueueName: queueName,
-				Data:      testData,
+				Topic: topic,
+				Data:  testData,
 			},
 		}
 
@@ -143,7 +143,7 @@ func TestRedisConcurrentPublish(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.concurrent.queue"
+	topic := "test.concurrent.topic"
 	concurrentCount := 100
 	var wg sync.WaitGroup
 	wg.Add(concurrentCount)
@@ -158,8 +158,8 @@ func TestRedisConcurrentPublish(t *testing.T) {
 
 			pubMsg := &RedisPubMessage{
 				PubMessage: core.PubMessage{
-					QueueName: queueName,
-					Data:      testData,
+					Topic: topic,
+					Data:  testData,
 				},
 			}
 
@@ -178,7 +178,7 @@ func TestRedisPublishWithDifferentDataTypes(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.datatypes.queue"
+	topic := "test.datatypes.topic"
 
 	testCases := []struct {
 		name string
@@ -196,8 +196,8 @@ func TestRedisPublishWithDifferentDataTypes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pubMsg := &RedisPubMessage{
 				PubMessage: core.PubMessage{
-					QueueName: queueName,
-					Data:      tc.data,
+					Topic: topic,
+					Data:  tc.data,
 				},
 			}
 
@@ -230,14 +230,14 @@ func TestRedisSubscribe(t *testing.T) {
 	})
 	client := core.GetGmq("redis-test")
 
-	queueName := "test.subscribe.queue"
+	topic := "test.subscribe.topic"
 	receivedMessages := make([]string, 0)
 	var wg sync.WaitGroup
 	wg.Add(1)
 
 	subMsg := &RedisSubMessage{
 		SubMessage: core.SubMessage{
-			QueueName:    queueName,
+			Topic:        topic,
 			ConsumerName: "test-consumer",
 			AutoAck:      true,
 			FetchCount:   1,
@@ -265,8 +265,8 @@ func TestRedisSubscribe(t *testing.T) {
 
 	pubMsg := &RedisPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      "Test message for subscribe",
+			Topic: topic,
+			Data:  "Test message for subscribe",
 		},
 	}
 
@@ -298,7 +298,7 @@ func TestRedisAck(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.ack.queue"
+	topic := "test.ack.topic"
 	testData := map[string]interface{}{
 		"message": "Test message for ack",
 	}
@@ -306,8 +306,8 @@ func TestRedisAck(t *testing.T) {
 	// 发布消息
 	pubMsg := &RedisPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      testData,
+			Topic: topic,
+			Data:  testData,
 		},
 	}
 	if err := conn.GmqPublish(ctx, pubMsg); err != nil {
@@ -319,7 +319,7 @@ func TestRedisAck(t *testing.T) {
 		MessageData: testData,
 		AckRequiredAttr: map[string]any{
 			"MessageId": "test-message-id",
-			"QueueName": "gmq:stream:" + queueName,
+			"Topic":     "gmq:stream:" + topic,
 			"Group":     "test-group",
 		},
 	}
@@ -386,8 +386,8 @@ func TestRedisCreateDeadLetter(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.deadletter.demo"
-	streamKey := "gmq:stream:" + queueName
+	topic := "test.deadletter.demo"
+	streamKey := "gmq:stream:" + topic
 
 	// 清理旧数据
 	t.Log("Cleaning old data...")
@@ -405,8 +405,8 @@ func TestRedisCreateDeadLetter(t *testing.T) {
 
 		pubMsg := &RedisPubMessage{
 			PubMessage: core.PubMessage{
-				QueueName: queueName,
-				Data:      testData,
+				Topic: topic,
+				Data:  testData,
 			},
 		}
 
@@ -444,8 +444,8 @@ func TestRedisCheckPending(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.deadletter.demo"
-	streamKey := "gmq:stream:" + queueName
+	topic := "test.deadletter.demo"
+	streamKey := "gmq:stream:" + topic
 
 	// 获取所有消费组
 	groups, err := conn.getStreamGroups(ctx, streamKey)
@@ -454,7 +454,7 @@ func TestRedisCheckPending(t *testing.T) {
 		return
 	}
 
-	t.Logf("Groups for queue '%s': %v", queueName, groups)
+	t.Logf("Groups for topic '%s': %v", topic, groups)
 
 	for _, groupName := range groups {
 		t.Logf("\n=== Group: %s ===", groupName)
@@ -483,7 +483,7 @@ func TestRedisDeadLetterFull(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.deadletter.full"
+	topic := "test.deadletter.full"
 
 	// 步骤1: 发布消息
 	t.Log("Step 1: Publishing messages...")
@@ -495,8 +495,8 @@ func TestRedisDeadLetterFull(t *testing.T) {
 
 		pubMsg := &RedisPubMessage{
 			PubMessage: core.PubMessage{
-				QueueName: queueName,
-				Data:      testData,
+				Topic: topic,
+				Data:  testData,
 			},
 		}
 
@@ -516,7 +516,7 @@ func TestRedisDeadLetterFull(t *testing.T) {
 
 	subMsg := &RedisSubMessage{
 		SubMessage: core.SubMessage{
-			QueueName:    queueName,
+			Topic:        topic,
 			ConsumerName: "dlq-full-consumer",
 			AutoAck:      false, // 不自动确认
 			FetchCount:   3,
@@ -564,7 +564,7 @@ func TestRedisDeadLetterFull(t *testing.T) {
 	for i, msg := range deadLetterMessages {
 		t.Logf("\n=== Dead Letter %d ===", i+1)
 		t.Logf("  MessageID: %s", msg.MessageID)
-		t.Logf("  Queue: %s", msg.QueueName)
+		t.Logf("  Topic: %s", msg.Topic)
 		t.Logf("  Timestamp: %s", msg.Timestamp)
 		t.Logf("  DeadReason: %s", msg.DeadReason)
 		t.Logf("  Body: %v", msg.Body)

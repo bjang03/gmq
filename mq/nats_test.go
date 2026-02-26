@@ -128,7 +128,7 @@ func TestNatsPublish(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test-publish-queue"
+	topic := "test-publish-topic"
 	testData := map[string]interface{}{
 		"message": "Test message for publish",
 		"index":   1,
@@ -136,8 +136,8 @@ func TestNatsPublish(t *testing.T) {
 
 	pubMsg := &NatsPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      testData,
+			Topic: topic,
+			Data:  testData,
 		},
 		Durable: true,
 	}
@@ -153,7 +153,7 @@ func TestNatsPublishMultipleMessages(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.multiple.queue"
+	topic := "test.multiple.topic"
 	messageCount := 10
 
 	for i := 0; i < messageCount; i++ {
@@ -164,8 +164,8 @@ func TestNatsPublishMultipleMessages(t *testing.T) {
 
 		pubMsg := &NatsPubMessage{
 			PubMessage: core.PubMessage{
-				QueueName: queueName,
-				Data:      testData,
+				Topic: topic,
+				Data:  testData,
 			},
 			Durable: true,
 		}
@@ -182,7 +182,7 @@ func TestNatsConcurrentPublish(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.concurrent.queue"
+	topic := "test.concurrent.topic"
 	concurrentCount := 100
 	var wg sync.WaitGroup
 	wg.Add(concurrentCount)
@@ -197,8 +197,8 @@ func TestNatsConcurrentPublish(t *testing.T) {
 
 			pubMsg := &NatsPubMessage{
 				PubMessage: core.PubMessage{
-					QueueName: queueName,
-					Data:      testData,
+					Topic: topic,
+					Data:  testData,
 				},
 				Durable: true,
 			}
@@ -218,7 +218,7 @@ func TestNatsPublishWithDifferentDataTypes(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.datatypes.queue"
+	topic := "test.datatypes.topic"
 
 	testCases := []struct {
 		name string
@@ -236,8 +236,8 @@ func TestNatsPublishWithDifferentDataTypes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pubMsg := &NatsPubMessage{
 				PubMessage: core.PubMessage{
-					QueueName: queueName,
-					Data:      tc.data,
+					Topic: topic,
+					Data:  tc.data,
 				},
 				Durable: true,
 			}
@@ -255,15 +255,15 @@ func TestNatsPublishNonDurable(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test-nondurable-queue"
+	topic := "test-nondurable-topic"
 	testData := map[string]interface{}{
 		"message": "Test non-durable message",
 	}
 
 	pubMsg := &NatsPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      testData,
+			Topic: topic,
+			Data:  testData,
 		},
 		Durable: false,
 	}
@@ -281,7 +281,7 @@ func TestNatsPublishDelay(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test-delay-queue"
+	topic := "test-delay-topic"
 	testData := map[string]interface{}{
 		"message": "Test delay message",
 		"index":   1,
@@ -291,8 +291,8 @@ func TestNatsPublishDelay(t *testing.T) {
 		PubDelayMessage: core.PubDelayMessage{
 			DelaySeconds: 2,
 			PubMessage: core.PubMessage{
-				QueueName: queueName,
-				Data:      testData,
+				Topic: topic,
+				Data:  testData,
 			},
 		},
 		Durable: true,
@@ -309,7 +309,7 @@ func TestNatsPublishDelayMultiple(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.multiple.delay.queue"
+	topic := "test.multiple.delay.topic"
 
 	for i := 1; i <= 5; i++ {
 		testData := map[string]interface{}{
@@ -321,8 +321,8 @@ func TestNatsPublishDelayMultiple(t *testing.T) {
 			PubDelayMessage: core.PubDelayMessage{
 				DelaySeconds: i * 2,
 				PubMessage: core.PubMessage{
-					QueueName: queueName,
-					Data:      testData,
+					Topic: topic,
+					Data:  testData,
 				},
 			},
 			Durable: true,
@@ -344,14 +344,14 @@ func TestNatsSubscribe(t *testing.T) {
 	})
 	client := core.GetGmq("nats-test")
 
-	queueName := "test.subscribe.queue"
+	topic := "test.subscribe.topic"
 	receivedMessages := make([]string, 0)
 	var wg sync.WaitGroup
 	wg.Add(1)
 
 	subMsg := &NatsSubMessage{
 		SubMessage: core.SubMessage{
-			QueueName:    queueName,
+			Topic:        topic,
 			ConsumerName: "test-consumer",
 			AutoAck:      true,
 			FetchCount:   1,
@@ -384,8 +384,8 @@ func TestNatsSubscribe(t *testing.T) {
 
 	pubMsg := &NatsPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      "Test message for subscribe",
+			Topic: topic,
+			Data:  "Test message for subscribe",
 		},
 		Durable: true,
 	}
@@ -422,14 +422,14 @@ func TestNatsSubscribeDelay(t *testing.T) {
 	})
 	client := core.GetGmq("nats-delay-test")
 
-	queueName := "test.subscribe.delay.queue"
+	topic := "test.subscribe.delay.topic"
 	receivedMessages := make([]string, 0)
 	receivedMutex := sync.Mutex{}
 	receivedCount := 0
 
 	subMsg := &NatsSubMessage{
 		SubMessage: core.SubMessage{
-			QueueName:    queueName,
+			Topic:        topic,
 			ConsumerName: "test-delay-consumer",
 			AutoAck:      true,
 			FetchCount:   1,
@@ -466,8 +466,8 @@ func TestNatsSubscribeDelay(t *testing.T) {
 		PubDelayMessage: core.PubDelayMessage{
 			DelaySeconds: 2,
 			PubMessage: core.PubMessage{
-				QueueName: queueName,
-				Data:      "Test delay message for subscribe",
+				Topic: topic,
+				Data:  "Test delay message for subscribe",
 			},
 		},
 		Durable: true,
@@ -594,14 +594,14 @@ func TestNatsCreateDeadLetter(t *testing.T) {
 	})
 	client := core.GetGmq("nats-deadletter-test")
 
-	queueName := "test.deadletter.create.queue"
+	topic := "test.deadletter.create.topic"
 	failCount := 0
 	maxFailCount := 3
 
 	// 创建订阅，消息处理总是失败（模拟业务异常）
 	subMsg := &NatsSubMessage{
 		SubMessage: core.SubMessage{
-			QueueName:    queueName,
+			Topic:        topic,
 			ConsumerName: "test-deadletter-consumer",
 			AutoAck:      false, // 手动确认，让 Nak 触发重投
 			FetchCount:   1,
@@ -632,8 +632,8 @@ func TestNatsCreateDeadLetter(t *testing.T) {
 	// 发布一条消息
 	pubMsg := &NatsPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      "Test message to create dead letter",
+			Topic: topic,
+			Data:  "Test message to create dead letter",
 		},
 		Durable: true,
 	}
@@ -641,7 +641,7 @@ func TestNatsCreateDeadLetter(t *testing.T) {
 	if err := client.GmqPublish(ctx, pubMsg); err != nil {
 		t.Fatalf("Failed to publish message: %v", err)
 	}
-	t.Logf("Published message to queue: %s", queueName)
+	t.Logf("Published message to topic: %s", topic)
 
 	// 等待消息被多次投递（超过 MaxDeliver 后进入死信）
 	// NATS 默认 MaxDeliver=1，需要等待消息处理失败多次
@@ -679,14 +679,14 @@ func TestNatsSubscribeDeadLetter(t *testing.T) {
 	// 等待订阅启动
 	time.Sleep(500 * time.Millisecond)
 
-	// 创建一个队列和订阅，让消息处理失败
-	queueName := "test.deadletter.subscribe.queue"
+	// 创建一个主题和订阅，让消息处理失败
+	topic := "test.deadletter.subscribe.topic"
 
 	// 发布一条消息
 	pubMsg := &NatsPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      "Test message for dead letter subscribe",
+			Topic: topic,
+			Data:  "Test message for dead letter subscribe",
 		},
 		Durable: true,
 	}
@@ -698,7 +698,7 @@ func TestNatsSubscribeDeadLetter(t *testing.T) {
 	// 创建订阅并故意让消息处理失败
 	subMsg := &NatsSubMessage{
 		SubMessage: core.SubMessage{
-			QueueName:    queueName,
+			Topic:        topic,
 			ConsumerName: "test-dl-sub-consumer",
 			AutoAck:      false,
 			FetchCount:   1,
@@ -743,7 +743,7 @@ func TestNatsCreateStream(t *testing.T) {
 		t.Error("Expected memory storage")
 	}
 
-	// 测试创建持久化普通消息的Stream（文件存储）- 使用不同的队列名避免冲突
+	// 测试创建持久化普通消息的Stream（文件存储）- 使用不同的主题名避免冲突
 	streamName, storage, err = conn.createStream(ctx, "test.stream.create.durable", true, false)
 	if err != nil {
 		t.Fatalf("Failed to create durable stream: %v", err)

@@ -13,13 +13,13 @@ const (
 
 // PubMessage 发布消息基础结构
 type PubMessage struct {
-	QueueName string // 队列名称
-	Data      any    // 消息数据
+	Topic string // 主题名称
+	Data  any    // 消息数据
 }
 
-// GetQueueName 获取队列名称
-func (m *PubMessage) GetQueueName() string {
-	return m.QueueName
+// GetTopic 获取主题名称
+func (m *PubMessage) GetTopic() string {
+	return m.Topic
 }
 
 // GetData 获取消息数据
@@ -38,7 +38,7 @@ func (m *PubDelayMessage) GetDelaySeconds() int {
 
 // SubMessage 订阅消息基础结构（泛型版本）
 type SubMessage struct {
-	QueueName    string                                       // 队列名称
+	Topic        string                                       // 主题名称
 	ConsumerName string                                       // 消费者名称（用于群组消费）
 	AutoAck      bool                                         // 是否自动确认
 	FetchCount   int                                          // 每次拉取消息数量
@@ -60,13 +60,13 @@ type AckMessage struct {
 
 // Publish 发布消息接口（用于类型约束）
 type Publish interface {
-	GetQueueName() string
+	GetTopic() string
 	GetData() any
 }
 
 // PublishDelay 发布延迟消息接口（用于类型约束）
 type PublishDelay interface {
-	GetQueueName() string
+	GetTopic() string
 	GetData() any
 	GetDelaySeconds() int
 }

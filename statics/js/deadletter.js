@@ -4,7 +4,7 @@ let currentDeadLetterMessages = [];
 let editingDeadLetterMessage = null;
 let currentMqName = '';
 let currentPipelineName = '';
-let currentQueueName = '';
+let currentTopic = '';
 
 // 页面加载时初始化
 document.addEventListener('DOMContentLoaded', () => {
@@ -91,10 +91,10 @@ function getTypeInfo(mqType) {
 
 // 加载死信消息
 async function loadDeadLetterMessages() {
-    currentQueueName = document.getElementById('dlq-queue-input').value.trim();
+    currentTopic = document.getElementById('dlq-queue-input').value.trim();
 
-    if (!currentQueueName) {
-        showToast('请输入队列名称', 'error');
+    if (!currentTopic) {
+        showToast('请输入主题名称', 'error');
         return;
     }
 
@@ -107,7 +107,7 @@ async function loadDeadLetterMessages() {
     `;
 
     try {
-        const response = await fetch(`/api/deadletter?mqName=${encodeURIComponent(currentMqName)}&queueName=${encodeURIComponent(currentQueueName)}`, {
+        const response = await fetch(`/api/deadletter?mqName=${encodeURIComponent(currentMqName)}&topic=${encodeURIComponent(currentTopic)}`, {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json'
@@ -140,11 +140,11 @@ async function loadDeadLetterMessages() {
 
 // 刷新死信消息
 async function refreshDeadLetterMessages() {
-    if (currentQueueName) {
+    if (currentTopic) {
         await loadDeadLetterMessages();
         showToast('刷新成功', 'success');
     } else {
-        showToast('请先输入队列名称', 'error');
+        showToast('请先输入主题名称', 'error');
     }
 }
 
@@ -222,7 +222,7 @@ async function retryDeadLetterMessage(messageId) {
             },
             body: JSON.stringify({
                 mqName: currentMqName,
-                queueName: currentQueueName,
+                topic: currentTopic,
                 messageId: messageId
             })
         });
@@ -294,7 +294,7 @@ async function saveDeadLetterMessage() {
             },
             body: JSON.stringify({
                 mqName: currentMqName,
-                queueName: currentQueueName,
+                topic: currentTopic,
                 messageId: editingDeadLetterMessage.message_id,
                 newBody: newBody
             })
@@ -335,7 +335,7 @@ async function discardDeadLetterMessage(messageId) {
             },
             body: JSON.stringify({
                 mqName: currentMqName,
-                queueName: currentQueueName,
+                topic: currentTopic,
                 messageId: messageId
             })
         });

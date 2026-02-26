@@ -52,6 +52,6 @@ type DeadLetterMsgDTO struct {
 	Exchange    string                 `json:"exchange"`     // 原交换机
 	RoutingKey  string                 `json:"routing_key"`  // 原路由键
 	DeadReason  string                 `json:"dead_reason"`  // 死信原因（解析自headers）
-	QueueName   string                 `json:"queue_name"`   // 死信队列名称
+	Topic       string                 `json:"topic"`        // 死信主题名称
 	DeliveryTag uint64                 `json:"delivery_tag"` // 投递标签（用于手动操作）
 }

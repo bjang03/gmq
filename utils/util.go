@@ -9,13 +9,50 @@ import (
 	"github.com/spf13/cast"
 )
 
-// ConvertToMap 通用数据转map[string]interface{}方法（修复基础类型兼容问题）
+// ConvertToMap 通用数据转map[string]interface{}（无反射+适配Redis）
+// 核心改进：
+// 1. 完全移除反射，仅用类型断言+cast包
+// 2. 切片/数组直接序列化为JSON字符串（避免[]interface{}）
+// 3. 所有value最终为string/int/float/bool，可直接存入Redis
 func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 	if data == nil {
-		return nil, fmt.Errorf("data is nil")
+		return nil, fmt.Errorf("convert failed: data is nil (input type: nil)")
 	}
 
-	// 1. 优先处理原生map类型（减少序列化开销）
+	// 处理一级指针（无反射，仅支持常见指针类型）
+	switch v := data.(type) {
+	case *map[string]interface{}:
+		if v == nil {
+			return nil, fmt.Errorf("convert failed: nil *map[string]interface{}")
+		}
+		return *v, nil
+	case *map[string]string:
+		if v == nil {
+			return nil, fmt.Errorf("convert failed: nil *map[string]string")
+		}
+		res := make(map[string]interface{}, len(*v))
+		for k, val := range *v {
+			res[k] = val
+		}
+		return res, nil
+	case *string, *int, *int8, *int16, *int32, *int64,
+		*uint, *uint8, *uint16, *uint32, *uint64,
+		*float32, *float64, *bool:
+		// 用cast包安全解引用
+		return ConvertToMap(cast.ToString(v))
+	case *[]string, *[]int, *[]int64:
+		// 切片指针：解引用后序列化为JSON
+		if v == nil {
+			return nil, fmt.Errorf("convert failed: nil slice pointer (type: %T)", data)
+		}
+		jsonBytes, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("convert failed: marshal slice pointer error (%v) (type: %T)", err, data)
+		}
+		return map[string]interface{}{"data": string(jsonBytes)}, nil
+	}
+
+	// 1. 优先处理原生map类型
 	switch v := data.(type) {
 	case map[string]interface{}:
 		return v, nil
@@ -25,40 +62,47 @@ func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 			res[k] = val
 		}
 		return res, nil
+	case map[string]int, map[string]int64, map[string]float64, map[string]bool:
+		res := cast.ToStringMap(v)
+		return res, nil
 	}
 
-	// 2. 处理基础类型（string/int/float/bool等）
+	// 2. 处理基础类型（直接封装）
 	switch v := data.(type) {
 	case string, int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64,
 		float32, float64, bool:
-		// 封装为 map["data"] = 原始值
 		return map[string]interface{}{"data": v}, nil
 	}
 
-	// 3. 通用方案：JSON序列化（处理结构体/切片等复杂类型）
-	jsonBytes, err := json.Marshal(data)
-	if err != nil {
-		// 兜底：如果JSON序列化失败，使用cast包
-		res := cast.ToStringMap(data)
-		if len(res) == 0 {
-			return nil, fmt.Errorf("json marshal failed: %v, cast also return empty", err)
+	// 3. 处理切片/数组类型（核心修复：直接序列化为JSON字符串）
+	switch v := data.(type) {
+	case []string, []int, []int64, []float64, []bool, []interface{}:
+		jsonBytes, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("convert failed: marshal slice error (%v) (type: %T)", err, data)
 		}
-		return res, nil
+		return map[string]interface{}{"data": string(jsonBytes)}, nil
 	}
 
-	// 4. 尝试反序列化为map（结构体/切片等）
+	// 4. 兜底：JSON序列化所有复杂类型（结构体/自定义类型）
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		res := cast.ToStringMap(data)
+		if len(res) > 0 {
+			return res, nil
+		}
+		return nil, fmt.Errorf("convert failed: json marshal error (%v), cast also return empty (type: %T)", err, data)
+	}
+
+	// 尝试反序列化为map（结构体/JSON对象）
 	var res map[string]interface{}
 	if err = json.Unmarshal(jsonBytes, &res); err == nil {
 		return res, nil
 	}
 
-	// 5. 如果反序列化map失败（比如切片/数组），封装为 map["data"] = 原始序列化结果
-	var raw interface{}
-	if err = json.Unmarshal(jsonBytes, &raw); err != nil {
-		return nil, fmt.Errorf("unmarshal to raw failed: %v", err)
-	}
-	return map[string]interface{}{"data": raw}, nil
+	// 最终兜底：序列化为JSON字符串封装
+	return map[string]interface{}{"data": string(jsonBytes)}, nil
 }
 
 func IsEmpty(value any, traceSource ...bool) bool {

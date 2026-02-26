@@ -11,10 +11,12 @@ import (
 
 func main() {
 	core.GmqRegister("redis", &mq.RedisConn{
-		Url: "localhost:6379",
+		Url:  "localhost",
+		Port: "6379",
 	})
 	core.GmqRegister("nats", &mq.NatsConn{
-		Url: "localhost:4222",
+		Url:  "localhost",
+		Port: "4222",
 	})
 	core.GmqRegister("rabbit", &mq.RabbitMQConn{
 		Url:      "localhost",

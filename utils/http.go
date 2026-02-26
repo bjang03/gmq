@@ -317,6 +317,16 @@ func handleRequest(ctx *Context, handler HandlerFunc) {
 			return
 		}
 
+		// 参数校验
+		if err := ValidateStruct(req); err != nil {
+			WriteJSONResponse(ctx.W, http.StatusBadRequest, Response{
+				Code: 400,
+				Msg:  err.Error(),
+				Data: nil,
+			})
+			return
+		}
+
 		// 调用业务函数
 		results := handlerValue.Call([]reflect.Value{
 			reflect.ValueOf(ctx.R.Context()),
@@ -362,5 +372,5 @@ func handleRequest(ctx *Context, handler HandlerFunc) {
 func WriteJSONResponse(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }

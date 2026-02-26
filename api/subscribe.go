@@ -43,7 +43,6 @@ type SubscribeReq struct {
 // Subscribe 订阅消息（HTTP接口）
 // 创建 MQ 订阅，收到消息后通过 WebHook 回调通知
 func Subscribe(ctx context.Context, req *SubscribeReq) (res interface{}, err error) {
-	//key := req.ServerName + ":" + req.WebHook
 	callbackURL := req.ServerName + req.WebHook
 
 	err = createMQSubscription(ctx, req.MqName, req.QueueName, req.ConsumerName, req.AutoAck, req.FetchCount, req.Durable, req.IsDelayMsg, func(ctx context.Context, data []byte) error {

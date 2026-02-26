@@ -12,7 +12,7 @@ import (
 type PublishReq struct {
 	ServerName string `json:"serverName" validate:"required"` // 回调服务名
 	MqName     string `json:"mqName" validate:"required"`     // 消息队列名
-	QueueName  string `json:"queueName" validate:"required"`
+	Topic      string `json:"topic" validate:"required"`
 	Message    string `json:"message" validate:"required,min=1"`
 	Durable    bool   `json:"durable"`
 }
@@ -21,7 +21,7 @@ type PublishReq struct {
 type PublishDelayReq struct {
 	ServerName   string `json:"serverName" validate:"required"` // 回调服务名
 	MqName       string `json:"mqName" validate:"required"`     // 消息队列名
-	QueueName    string `json:"queueName" validate:"required"`
+	Topic        string `json:"topic" validate:"required"`
 	Message      string `json:"message" validate:"required,min=1"`
 	Durable      bool   `json:"durable"`
 	DelaySeconds int    `json:"delaySeconds" validate:"required,min=1"`
@@ -35,8 +35,8 @@ func Publish(ctx context.Context, req *PublishReq) (res interface{}, err error) 
 	}
 
 	baseMsg := core.PubMessage{
-		QueueName: req.QueueName,
-		Data:      req.Message,
+		Topic: req.Topic,
+		Data:  req.Message,
 	}
 
 	switch req.MqName {
@@ -61,8 +61,8 @@ func PublishDelay(ctx context.Context, req *PublishDelayReq) (res interface{}, e
 
 	baseMsg := core.PubDelayMessage{
 		PubMessage: core.PubMessage{
-			QueueName: req.QueueName,
-			Data:      req.Message,
+			Topic: req.Topic,
+			Data:  req.Message,
 		},
 		DelaySeconds: req.DelaySeconds,
 	}

@@ -136,7 +136,7 @@ func TestRabbitMQPublish(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.publish.queue"
+	topic := "test.publish.topic"
 	testData := map[string]interface{}{
 		"message": "Test message for publish",
 		"index":   1,
@@ -144,8 +144,8 @@ func TestRabbitMQPublish(t *testing.T) {
 
 	pubMsg := &RabbitMQPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      testData,
+			Topic: topic,
+			Data:  testData,
 		},
 		Durable: true,
 	}
@@ -161,7 +161,7 @@ func TestRabbitMQPublishMultipleMessages(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.multiple.queue"
+	topic := "test.multiple.topic"
 	messageCount := 10
 
 	for i := 0; i < messageCount; i++ {
@@ -172,8 +172,8 @@ func TestRabbitMQPublishMultipleMessages(t *testing.T) {
 
 		pubMsg := &RabbitMQPubMessage{
 			PubMessage: core.PubMessage{
-				QueueName: queueName,
-				Data:      testData,
+				Topic: topic,
+				Data:  testData,
 			},
 			Durable: true,
 		}
@@ -194,7 +194,7 @@ func TestRabbitMQConcurrentPublish(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.concurrent.queue"
+	topic := "test.concurrent.topic"
 	concurrentCount := 50 // 降低并发数避免 RabbitMQ 通道竞争
 	var wg sync.WaitGroup
 	wg.Add(concurrentCount)
@@ -209,8 +209,8 @@ func TestRabbitMQConcurrentPublish(t *testing.T) {
 
 			pubMsg := &RabbitMQPubMessage{
 				PubMessage: core.PubMessage{
-					QueueName: queueName,
-					Data:      testData,
+					Topic: topic,
+					Data:  testData,
 				},
 				Durable: true,
 			}
@@ -230,7 +230,7 @@ func TestRabbitMQPublishWithDifferentDataTypes(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.datatypes.queue"
+	topic := "test.datatypes.topic"
 
 	testCases := []struct {
 		name string
@@ -248,8 +248,8 @@ func TestRabbitMQPublishWithDifferentDataTypes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pubMsg := &RabbitMQPubMessage{
 				PubMessage: core.PubMessage{
-					QueueName: queueName,
-					Data:      tc.data,
+					Topic: topic,
+					Data:  tc.data,
 				},
 				Durable: true,
 			}
@@ -267,15 +267,15 @@ func TestRabbitMQPublishNonDurable(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.nondurable.queue"
+	topic := "test.nondurable.topic"
 	testData := map[string]interface{}{
 		"message": "Test non-durable message",
 	}
 
 	pubMsg := &RabbitMQPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      testData,
+			Topic: topic,
+			Data:  testData,
 		},
 		Durable: false,
 	}
@@ -293,7 +293,7 @@ func TestRabbitMQPublishDelay(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.delay.queue"
+	topic := "test.delay.topic"
 	testData := map[string]interface{}{
 		"message": "Test delay message",
 		"index":   1,
@@ -303,8 +303,8 @@ func TestRabbitMQPublishDelay(t *testing.T) {
 		PubDelayMessage: core.PubDelayMessage{
 			DelaySeconds: 2,
 			PubMessage: core.PubMessage{
-				QueueName: queueName,
-				Data:      testData,
+				Topic: topic,
+				Data:  testData,
 			},
 		},
 		Durable: true,
@@ -321,7 +321,7 @@ func TestRabbitMQPublishDelayMultiple(t *testing.T) {
 	ctx := context.Background()
 	defer conn.GmqClose(ctx)
 
-	queueName := "test.multiple.delay.queue"
+	topic := "test.multiple.delay.topic"
 
 	for i := 1; i <= 5; i++ {
 		testData := map[string]interface{}{
@@ -333,8 +333,8 @@ func TestRabbitMQPublishDelayMultiple(t *testing.T) {
 			PubDelayMessage: core.PubDelayMessage{
 				DelaySeconds: i * 2,
 				PubMessage: core.PubMessage{
-					QueueName: queueName,
-					Data:      testData,
+					Topic: topic,
+					Data:  testData,
 				},
 			},
 			Durable: true,
@@ -359,14 +359,14 @@ func TestRabbitMQSubscribe(t *testing.T) {
 	})
 	client := core.GetGmq("rabbit-test")
 
-	queueName := "test.subscribe.queue"
+	topic := "test.subscribe.topic"
 	receivedMessages := make([]string, 0)
 	var wg sync.WaitGroup
 	wg.Add(1)
 
 	subMsg := &RabbitMQSubMessage{
 		SubMessage: core.SubMessage{
-			QueueName:    queueName,
+			Topic:        topic,
 			ConsumerName: "test-consumer",
 			AutoAck:      true,
 			FetchCount:   1,
@@ -397,8 +397,8 @@ func TestRabbitMQSubscribe(t *testing.T) {
 
 	pubMsg := &RabbitMQPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      "Test message for subscribe",
+			Topic: topic,
+			Data:  "Test message for subscribe",
 		},
 		Durable: true,
 	}
@@ -438,14 +438,14 @@ func TestRabbitMQSubscribeDelay(t *testing.T) {
 	})
 	client := core.GetGmq("rabbit-delay-test")
 
-	queueName := "test.subscribe.delay.queue"
+	topic := "test.subscribe.delay.topic"
 	receivedMessages := make([]string, 0)
 	receivedMutex := sync.Mutex{}
 	receivedCount := 0
 
 	subMsg := &RabbitMQSubMessage{
 		SubMessage: core.SubMessage{
-			QueueName:    queueName,
+			Topic:        topic,
 			ConsumerName: "test-delay-consumer",
 			AutoAck:      true,
 			FetchCount:   1,
@@ -480,8 +480,8 @@ func TestRabbitMQSubscribeDelay(t *testing.T) {
 		PubDelayMessage: core.PubDelayMessage{
 			DelaySeconds: 2,
 			PubMessage: core.PubMessage{
-				QueueName: queueName,
-				Data:      "Test delay message for subscribe",
+				Topic: topic,
+				Data:  "Test delay message for subscribe",
 			},
 		},
 		Durable: true,
@@ -573,7 +573,7 @@ func TestRabbitMQGetDeadLetter(t *testing.T) {
 	for i, msg := range messages {
 		t.Logf("【死信消息 %d】", i+1)
 		t.Logf("  MessageID: %s", msg.MessageID)
-		t.Logf("  QueueName: %s", msg.QueueName)
+		t.Logf("  Topic: %s", msg.Topic)
 		t.Logf("  Timestamp: %s", msg.Timestamp)
 		t.Logf("  DeadReason: %s", msg.DeadReason)
 		t.Logf("  Body: %s", msg.Body)
@@ -592,11 +592,11 @@ func TestRabbitMQCreateDeadLetter(t *testing.T) {
 	_, _ = conn.GmqGetDeadLetter(ctxWithTimeout)
 
 	// 发布一条消息
-	queueName := "test.deadletter.create.queue"
+	topic := "test.deadletter.create.topic"
 	pubMsg := &RabbitMQPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      "Test message to create dead letter",
+			Topic: topic,
+			Data:  "Test message to create dead letter",
 		},
 		Durable: true,
 	}
@@ -604,14 +604,14 @@ func TestRabbitMQCreateDeadLetter(t *testing.T) {
 	if err := conn.GmqPublish(ctx, pubMsg); err != nil {
 		t.Fatalf("Failed to publish message: %v", err)
 	}
-	t.Logf("Published message to queue: %s", queueName)
+	t.Logf("Published message to topic: %s", topic)
 
 	// 稍微等待消息到达队列
 	time.Sleep(100 * time.Millisecond)
 
 	// 消费并拒绝消息，让它进入死信队列
-	t.Logf("Getting message from queue: %s", queueName)
-	msgs, ok, err := conn.channel.Get(queueName, false)
+	t.Logf("Getting message from topic: %s", topic)
+	msgs, ok, err := conn.channel.Get(topic, false)
 	if err != nil {
 		t.Fatalf("Failed to get message: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestRabbitMQCreateDeadLetter(t *testing.T) {
 		}
 		t.Logf("Message rejected successfully")
 	} else {
-		t.Logf("No message found in queue")
+		t.Logf("No message found in topic")
 	}
 
 	// 等待消息进入死信队列
@@ -648,7 +648,7 @@ func TestRabbitMQCreateDeadLetter(t *testing.T) {
 	for i, msg := range messages {
 		t.Logf("【死信消息 %d】", i+1)
 		t.Logf("  MessageID: %s", msg.MessageID)
-		t.Logf("  QueueName: %s", msg.QueueName)
+		t.Logf("  Topic: %s", msg.Topic)
 		t.Logf("  Timestamp: %s", msg.Timestamp)
 		t.Logf("  DeadReason: %s", msg.DeadReason)
 		t.Logf("  Body: %s", msg.Body)
@@ -684,11 +684,11 @@ func TestRabbitMQSubscribeDeadLetter(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// 发布一条消息
-	queueName := "test.deadletter.subscribe.queue"
+	topic := "test.deadletter.subscribe.topic"
 	pubMsg := &RabbitMQPubMessage{
 		PubMessage: core.PubMessage{
-			QueueName: queueName,
-			Data:      "Test message for dead letter subscribe",
+			Topic: topic,
+			Data:  "Test message for dead letter subscribe",
 		},
 		Durable: true,
 	}
@@ -699,7 +699,7 @@ func TestRabbitMQSubscribeDeadLetter(t *testing.T) {
 
 	// 消费并拒绝消息，让它进入死信队列
 	time.Sleep(100 * time.Millisecond)
-	msgs, ok, err := conn.channel.Get(queueName, false)
+	msgs, ok, err := conn.channel.Get(topic, false)
 	if err != nil {
 		t.Fatalf("Failed to get message: %v", err)
 	}

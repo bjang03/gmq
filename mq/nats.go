@@ -96,7 +96,7 @@ func (c *NatsConn) GmqPublish(ctx context.Context, msg core.Publish) (err error)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *NatsPubMessage")
 	}
-	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, 0, cfg.Data)
+	return c.createPublish(ctx, cfg.Topic, cfg.Durable, 0, cfg.Data)
 }
 
 // GmqPublishDelay 发布延迟消息
@@ -105,17 +105,17 @@ func (c *NatsConn) GmqPublishDelay(ctx context.Context, msg core.PublishDelay) (
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *NatsPubDelayMessage")
 	}
-	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, cfg.DelaySeconds, cfg.Data)
+	return c.createPublish(ctx, cfg.Topic, cfg.Durable, cfg.DelaySeconds, cfg.Data)
 }
 
 // Publish 发布消息
-func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable bool, delayTime int, data any) (err error) {
+func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool, delayTime int, data any) (err error) {
 	// 创建 Stream
-	if _, _, err := c.createStream(ctx, queueName, durable, delayTime > 0); err != nil {
+	if _, _, err := c.createStream(ctx, topic, durable, delayTime > 0); err != nil {
 		return err
 	}
 	// 构建消息
-	m := nats.NewMsg(queueName)
+	m := nats.NewMsg(topic)
 	payload, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("json marshal failed: %w", err)
@@ -126,8 +126,8 @@ func (c *NatsConn) createPublish(ctx context.Context, queueName string, durable 
 		// 使用 @at 指定具体延迟时间，而不是 @every 重复执行
 		futureTime := time.Now().Add(time.Duration(delayTime) * time.Second).Format(time.RFC3339Nano)
 		m.Header.Set("Nats-Schedule", fmt.Sprintf("@at %s", futureTime))
-		m.Subject = queueName + ".schedule"
-		m.Header.Set("Nats-Schedule-Target", queueName)
+		m.Subject = topic + ".schedule"
+		m.Header.Set("Nats-Schedule-Target", topic)
 	}
 	// 发布消息
 	if _, err = c.js.PublishMsg(m, []nats.PubOpt{nats.Context(ctx)}...); err != nil {
@@ -143,7 +143,7 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg core.Subscribe) (err er
 		return fmt.Errorf("invalid message type, expected *NatsSubMessage")
 	}
 	// 创建 Stream
-	streamName, _, err := c.createStream(ctx, cfg.QueueName, cfg.Durable, cfg.IsDelayMsg)
+	streamName, _, err := c.createStream(ctx, cfg.Topic, cfg.Durable, cfg.IsDelayMsg)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg core.Subscribe) (err er
 		AckPolicy:      nats.AckExplicitPolicy,
 		AckWait:        30 * time.Second,
 		MaxAckPending:  cfg.FetchCount,
-		FilterSubject:  cfg.QueueName,
+		FilterSubject:  cfg.Topic,
 		DeliverSubject: fmt.Sprintf("DELIVER.%s.%s", streamName, cfg.ConsumerName),
 		DeliverPolicy:  nats.DeliverAllPolicy,
 		MaxDeliver:     1,
@@ -173,7 +173,7 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg core.Subscribe) (err er
 		nats.ManualAck(), // 手动确认模式
 	}
 	// 使用 Subscribe 创建推送订阅
-	sub, err := c.js.Subscribe(cfg.QueueName, func(natsMsg *nats.Msg) {
+	sub, err := c.js.Subscribe(cfg.Topic, func(natsMsg *nats.Msg) {
 		if err = msg.GetAckHandleFunc()(ctx, &core.AckMessage{
 			MessageData:     natsMsg.Data,
 			AckRequiredAttr: natsMsg,
@@ -194,16 +194,16 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg core.Subscribe) (err er
 	return
 }
 
-func (c *NatsConn) createStream(_ context.Context, queueName string, durable, isDelayMsg bool) (string, nats.StorageType, error) {
+func (c *NatsConn) createStream(_ context.Context, topic string, durable, isDelayMsg bool) (string, nats.StorageType, error) {
 	// 构建流名称和存储类型
-	// 使用队列名称作为唯一标识，避免冲突
-	// 将队列名称中的特殊字符替换为下划线
-	safeQueueName := strings.Map(func(r rune) rune {
+	// 使用主题名称作为唯一标识，避免冲突
+	// 将主题名称中的特殊字符替换为下划线
+	safeTopicName := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
 			return r
 		}
 		return '_'
-	}, queueName)
+	}, topic)
 
 	var streamName string
 	var storage nats.StorageType
@@ -211,15 +211,15 @@ func (c *NatsConn) createStream(_ context.Context, queueName string, durable, is
 	// 根据 durable 和 isDelayMsg 确定存储类型
 	if isDelayMsg {
 		if durable {
-			streamName, storage = fmt.Sprintf("delay_file_%s", safeQueueName), nats.FileStorage
+			streamName, storage = fmt.Sprintf("delay_file_%s", safeTopicName), nats.FileStorage
 		} else {
-			streamName, storage = fmt.Sprintf("delay_memory_%s", safeQueueName), nats.MemoryStorage
+			streamName, storage = fmt.Sprintf("delay_memory_%s", safeTopicName), nats.MemoryStorage
 		}
 	} else {
 		if durable {
-			streamName, storage = fmt.Sprintf("ordinary_file_%s", safeQueueName), nats.FileStorage
+			streamName, storage = fmt.Sprintf("ordinary_file_%s", safeTopicName), nats.FileStorage
 		} else {
-			streamName, storage = fmt.Sprintf("ordinary_memory_%s", safeQueueName), nats.MemoryStorage
+			streamName, storage = fmt.Sprintf("ordinary_memory_%s", safeTopicName), nats.MemoryStorage
 		}
 	}
 
@@ -228,9 +228,9 @@ func (c *NatsConn) createStream(_ context.Context, queueName string, durable, is
 	// 如果是延迟消息，需要包含两个 subjects:
 	// 1. subject.schedule - 用于发送调度消息
 	// 2. subject - 用于实际投递目标
-	subjects := []string{queueName}
+	subjects := []string{topic}
 	if isDelayMsg {
-		subjects = []string{queueName, queueName + ".schedule"}
+		subjects = []string{topic, topic + ".schedule"}
 	}
 	jsConfig := &streamConfig{
 		Name:              streamName,

@@ -407,7 +407,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 初始化生成 mock 数据并更新死信队列数量
     currentDeadLetterMessages = generateMockDeadLetterMessages();
     currentMqName = 'redis';
-    currentQueueName = '';
+    currentTopic = '';
     updateDeadLetterCountFromMock();
 });
 
@@ -416,7 +416,7 @@ document.addEventListener('DOMContentLoaded', () => {
 let currentDeadLetterMessages = [];
 let editingDeadLetterMessage = null;
 let currentMqName = '';
-let currentQueueName = '';
+let currentTopic = '';
 let currentPage = 1;
 let pageSize = 20;
 
@@ -511,7 +511,7 @@ function showDeadLetterModal() {
 
     // 设置默认值
     document.getElementById('dlq-mq-select').value = currentMqName;
-    document.getElementById('dlq-queue-input').value = currentQueueName;
+    document.getElementById('dlq-queue-input').value = currentTopic;
 
     // 渲染数据
     currentPage = 1;
@@ -526,9 +526,9 @@ function closeDeadLetterModal() {
 // 加载死信消息
 async function loadDeadLetterMessages() {
     currentMqName = document.getElementById('dlq-mq-select').value;
-    currentQueueName = document.getElementById('dlq-queue-input').value.trim();
+    currentTopic = document.getElementById('dlq-queue-input').value.trim();
 
-    console.log('loadDeadLetterMessages 调用, MQ:', currentMqName, '队列:', currentQueueName);
+    console.log('loadDeadLetterMessages 调用, MQ:', currentMqName, '主题:', currentTopic);
 
     const container = document.getElementById('dead-letter-list');
     container.innerHTML = `
@@ -731,7 +731,7 @@ async function retryDeadLetterMessage(messageId) {
                     },
                     body: JSON.stringify({
                         mqName: currentMqName,
-                        queueName: currentQueueName,
+                        topic: currentTopic,
                         messageId: messageId
                     })
                 });
@@ -811,7 +811,7 @@ async function performSave() {
             },
             body: JSON.stringify({
                 mqName: currentMqName,
-                queueName: currentQueueName,
+                topic: currentTopic,
                 messageId: editingDeadLetterMessage.message_id,
                 newBody: newBody
             })
@@ -881,7 +881,7 @@ async function discardDeadLetterMessage(messageId) {
                     },
                     body: JSON.stringify({
                         mqName: currentMqName,
-                        queueName: currentQueueName,
+                        topic: currentTopic,
                         messageId: messageId
                     })
                 });

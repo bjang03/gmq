@@ -129,15 +129,15 @@ func (c *RedisConn) GmqPublish(ctx context.Context, msg core.Publish) (err error
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RedisPubMessage")
 	}
-	cfg.QueueName = "gmq:stream:" + cfg.QueueName
+	cfg.Topic = "gmq:stream:" + cfg.Topic
 	toMap, err := utils.ConvertToMap(cfg.Data)
 	if err != nil {
 		return err
 	}
 	// 1. 构造 XAdd 参数结构体（类型安全，参数含义清晰）
 	addArgs := &redis.XAddArgs{
-		Stream: cfg.QueueName, // 流名称
-		ID:     "*",           // 自动生成 ID
+		Stream: cfg.Topic, // 流名称
+		ID:     "*",       // 自动生成 ID
 		Values: toMap,
 	}
 	// 2. 调用专用 XAdd 方法
@@ -158,9 +158,9 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (err e
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RedisSubMessage")
 	}
-	cfg.QueueName = "gmq:stream:" + cfg.QueueName
+	cfg.Topic = "gmq:stream:" + cfg.Topic
 	group := fmt.Sprintf("%s:default:group", cfg.ConsumerName)
-	_, err = c.conn.XGroupCreateMkStream(ctx, cfg.QueueName, group, "0").Result()
+	_, err = c.conn.XGroupCreateMkStream(ctx, cfg.Topic, group, "0").Result()
 	if err != nil {
 		if !strings.Contains(err.Error(), "BUSYGROUP") && !strings.Contains(err.Error(), "already exists") {
 			return fmt.Errorf("subscribe message failed：%v\n", err)
@@ -172,7 +172,7 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (err e
 		Consumer: cfg.ConsumerName,             // 消费者名称
 		Count:    cast.ToInt64(cfg.FetchCount), // 每次拉取的消息数
 		Block:    0,                            // 阻塞时间（0 = 永久阻塞，time.Millisecond 单位）
-		Streams:  []string{cfg.QueueName, ">"}, // 消费的流 + 起始 ID（> 表示消费新消息）
+		Streams:  []string{cfg.Topic, ">"},     // 消费的流 + 起始 ID（> 表示消费新消息）
 	}
 	for {
 		if c.conn == nil {
@@ -193,7 +193,7 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (err e
 						MessageData: msg.Values,
 						AckRequiredAttr: map[string]any{
 							"MessageId": msg.ID,
-							"QueueName": cfg.QueueName,
+							"Topic":     cfg.Topic,
 							"Group":     group,
 						},
 					}
@@ -211,9 +211,9 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (err e
 func (c *RedisConn) GmqAck(ctx context.Context, msg *core.AckMessage) error {
 	attr := cast.ToStringMap(msg.AckRequiredAttr)
 	msgId := cast.ToString(attr["MessageId"])
-	queueName := cast.ToString(attr["QueueName"])
+	topic := cast.ToString(attr["Topic"])
 	group := cast.ToString(attr["Group"])
-	_, err := c.conn.XAck(ctx, queueName, group, msgId).Result()
+	_, err := c.conn.XAck(ctx, topic, group, msgId).Result()
 	return err
 }
 
@@ -345,7 +345,7 @@ func convertXMsgToDeadLetterDTO(streamKey, msgID string, xMsg redis.XMessage, id
 		Body:       xMsg.Values,
 		Timestamp:  timestampFormatted,
 		DeadReason: deadReason,
-		QueueName:  streamKey,
+		Topic:      streamKey,
 	}
 }
 

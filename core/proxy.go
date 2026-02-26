@@ -67,8 +67,8 @@ func safeCloneMap(m map[string]interface{}) map[string]interface{} {
 
 // validatePublishMsg 统一校验发布消息公共参数
 func validatePublishMsg(msg Publish) error {
-	if msg.GetQueueName() == "" {
-		return fmt.Errorf("queue name is required")
+	if msg.GetTopic() == "" {
+		return fmt.Errorf("topic is required")
 	}
 	if msg.GetData() == nil {
 		return fmt.Errorf("data is required")
@@ -78,52 +78,49 @@ func validatePublishMsg(msg Publish) error {
 
 // GmqPublish 发布消息（带统一监控和重试）
 func (p *GmqProxy) GmqPublish(ctx context.Context, msg Publish) error {
-	go func(ctx context.Context, msg Publish) error {
-		var err error
-		if err = validatePublishMsg(msg); err != nil {
-			log.Printf("validate error: %v", err)
-			return err
-		}
-		for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
-			if attempt > 0 || !p.plugin.GmqPing(ctx) {
-				// 第一次 ping 失败 或 重试时，执行等待逻辑
-				if attempt > 0 && p.plugin.GmqPing(ctx) {
-					break
-				}
-				// 第一次延迟用基础值，后续用指数退避
-				delay := MsgRetryDelay
-				if attempt > 0 {
-					delay = MsgRetryDelay * time.Duration(1<<uint(attempt-1))
-				}
-				log.Printf("attempt %d: ping failed, wait %v", attempt, delay)
-				select {
-				case <-time.After(delay):
-				case <-ctx.Done():
-					err = ctx.Err()
-					log.Printf("attempt %d: context canceled: %v", attempt, err)
-					return err
-				}
-			}
-			// 执行发布
-			if err = p.plugin.GmqPublish(ctx, msg); err != nil {
-				log.Printf("attempt %d: publish error: %v", attempt, err)
-				if attempt == MsgRetryDeliver-1 {
-					log.Printf("all attempts failed: %v", err)
-				}
-			} else {
-				log.Printf("attempt %d: publish success", attempt)
-				return nil
-			}
-		}
+	var err error
+	if err = validatePublishMsg(msg); err != nil {
+		log.Printf("validate error: %v", err)
 		return err
-	}(ctx, msg)
-	return nil
+	}
+	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
+		if attempt > 0 || !p.plugin.GmqPing(ctx) {
+			// 第一次 ping 失败 或 重试时，执行等待逻辑
+			if attempt > 0 && p.plugin.GmqPing(ctx) {
+				break
+			}
+			// 第一次延迟用基础值，后续用指数退避
+			delay := MsgRetryDelay
+			if attempt > 0 {
+				delay = MsgRetryDelay * time.Duration(1<<uint(attempt-1))
+			}
+			log.Printf("attempt %d: ping failed, wait %v", attempt, delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				err = ctx.Err()
+				log.Printf("attempt %d: context canceled: %v", attempt, err)
+				return err
+			}
+		}
+		// 执行发布
+		if err = p.plugin.GmqPublish(ctx, msg); err != nil {
+			log.Printf("attempt %d: publish error: %v", attempt, err)
+			if attempt == MsgRetryDeliver-1 {
+				log.Printf("all attempts failed: %v", err)
+			}
+		} else {
+			log.Printf("attempt %d: publish success", attempt)
+			return nil
+		}
+	}
+	return err
 }
 
 // validatePublishDelayMsg 统一校验延迟发布消息公共参数
 func validatePublishDelayMsg(msg PublishDelay) error {
-	if msg.GetQueueName() == "" {
-		return fmt.Errorf("queue name is required")
+	if msg.GetTopic() == "" {
+		return fmt.Errorf("topic is required")
 	}
 	if msg.GetData() == nil {
 		return fmt.Errorf("data is required")
@@ -136,52 +133,49 @@ func validatePublishDelayMsg(msg PublishDelay) error {
 
 // GmqPublishDelay 发布延迟消息（带统一监控和重试）
 func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg PublishDelay) error {
-	go func(ctx context.Context, msg PublishDelay) error {
-		var err error
-		if err = validatePublishDelayMsg(msg); err != nil {
-			log.Printf("validate error: %v", err)
-			return err
-		}
-		for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
-			if attempt > 0 || !p.plugin.GmqPing(ctx) {
-				// 第一次 ping 失败 或 重试时，执行等待逻辑
-				if attempt > 0 && p.plugin.GmqPing(ctx) {
-					break
-				}
-				// 第一次延迟用基础值，后续用指数退避
-				delay := MsgRetryDelay
-				if attempt > 0 {
-					delay = MsgRetryDelay * time.Duration(1<<uint(attempt-1))
-				}
-				log.Printf("attempt %d: ping failed, wait %v", attempt, delay)
-				select {
-				case <-time.After(delay):
-				case <-ctx.Done():
-					err = ctx.Err()
-					log.Printf("attempt %d: context canceled: %v", attempt, err)
-					return err
-				}
-			}
-			// 执行发布
-			if err = p.plugin.GmqPublishDelay(ctx, msg); err != nil {
-				log.Printf("attempt %d: publish error: %v", attempt, err)
-				if attempt == MsgRetryDeliver-1 {
-					log.Printf("all attempts failed: %v", err)
-				}
-			} else {
-				log.Printf("attempt %d: publish success", attempt)
-				return nil
-			}
-		}
+	var err error
+	if err = validatePublishDelayMsg(msg); err != nil {
+		log.Printf("validate error: %v", err)
 		return err
-	}(ctx, msg)
-	return nil
+	}
+	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
+		if attempt > 0 || !p.plugin.GmqPing(ctx) {
+			// 第一次 ping 失败 或 重试时，执行等待逻辑
+			if attempt > 0 && p.plugin.GmqPing(ctx) {
+				break
+			}
+			// 第一次延迟用基础值，后续用指数退避
+			delay := MsgRetryDelay
+			if attempt > 0 {
+				delay = MsgRetryDelay * time.Duration(1<<uint(attempt-1))
+			}
+			log.Printf("attempt %d: ping failed, wait %v", attempt, delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				err = ctx.Err()
+				log.Printf("attempt %d: context canceled: %v", attempt, err)
+				return err
+			}
+		}
+		// 执行发布
+		if err = p.plugin.GmqPublishDelay(ctx, msg); err != nil {
+			log.Printf("attempt %d: publish error: %v", attempt, err)
+			if attempt == MsgRetryDeliver-1 {
+				log.Printf("all attempts failed: %v", err)
+			}
+		} else {
+			log.Printf("attempt %d: publish success", attempt)
+			return nil
+		}
+	}
+	return err
 }
 
 // validateSubscribeMsg 统一校验订阅消息公共参数
 func validateSubscribeMsg(msg *SubMessage) error {
-	if msg.QueueName == "" {
-		return fmt.Errorf("queue name is required")
+	if msg.Topic == "" {
+		return fmt.Errorf("topic is required")
 	}
 	if msg.ConsumerName == "" {
 		return fmt.Errorf("consumer name is required")
@@ -229,82 +223,79 @@ func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message
 
 // GmqSubscribe 订阅消息（带统一监控和重试）
 func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg Subscribe) error {
-	go func(ctx context.Context, msg Subscribe) error {
-		var err error
-		message, ok := msg.GetSubMsg().(*SubMessage)
-		if !ok {
-			return fmt.Errorf("invalid message type, expected *SubMessage")
-		}
-		// 统一校验公共参数
-		if err = validateSubscribeMsg(message); err != nil {
-			return err
-		}
-		// 包装 HandleFunc，在代理层统一控制ACK
-		sub := new(subMessage)
-		sub.SubMsg = msg
-		sub.HandleFunc = p.wrapHandleFunc(message.HandleFunc, message.AutoAck)
-		message.HandleFunc = nil
-		// 步骤2：生成subKey，检查是否已订阅
-		subKey := p.getSubKey(message.QueueName, message.ConsumerName)
-		// 原子操作：LoadOrStore → 不存在则存入struct{}{}，存在则返回已有值
-		_, loaded := p.subscriptions.LoadOrStore(subKey, struct{}{})
-		if loaded {
-			// 已存在订阅，直接返回
-			log.Printf("[GMQ] already subscribed to topic: %s", message.QueueName)
-			return err
-		}
-		// 最终清理：订阅失败则删除槽位
-		defer func() {
-			if err != nil {
-				p.subscriptions.Delete(subKey)
-				p.subscriptionParams.Delete(subKey)
-				log.Printf("[GMQ] subscribe failed, clean slot for subKey: %s, err: %v", subKey, err)
-			}
-		}()
-		// 步骤5：带重试的订阅逻辑
-		for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
-			// 5.1：Ping检查 + 指数退避等待
-			if attempt > 0 || !p.plugin.GmqPing(ctx) {
-				if attempt > 0 && p.plugin.GmqPing(ctx) {
-					break // ping通，跳过等待
-				}
-				delay := MsgRetryDelay
-				if attempt > 0 {
-					delay = MsgRetryDelay * time.Duration(1<<uint(attempt-1))
-				}
-				log.Printf("[GMQ] subscribe attempt %d: ping failed, wait %v", attempt, delay)
-				// 监听上下文取消
-				select {
-				case <-time.After(delay):
-				case <-ctx.Done():
-					err = ctx.Err()
-					log.Printf("[GMQ] subscribe attempt %d: context canceled: %v", attempt, err)
-					return err
-				}
-			}
-			// 5.2：执行订阅（无返回对象，仅判断错误）
-			err = p.plugin.GmqSubscribe(ctx, sub)
-			if err != nil {
-				log.Printf("[GMQ] subscribe attempt %d: error: %v", attempt, err)
-				if attempt == MsgRetryDeliver-1 {
-					log.Printf("[GMQ] subscribe all %d attempts failed: %v", MsgRetryDeliver, err)
-				}
-				continue // 失败则重试
-			}
-			// 5.3：订阅成功，跳出循环
-			log.Printf("[GMQ] subscribe attempt %d: success", attempt)
-			break
-		}
-		// 步骤6：检查最终订阅结果（所有重试都失败则返回）
-		if err != nil {
-			return err
-		}
-		// 步骤7：保存订阅参数（用于断线重连）
-		p.subscriptionParams.Store(subKey, &sub)
-		log.Printf("[GMQ] subscribe success, save subKey: %s", subKey)
+	var err error
+	message, ok := msg.GetSubMsg().(*SubMessage)
+	if !ok {
+		return fmt.Errorf("invalid message type, expected *SubMessage")
+	}
+	// 统一校验公共参数
+	if err = validateSubscribeMsg(message); err != nil {
 		return err
-	}(ctx, msg)
-	return nil
+	}
+	// 包装 HandleFunc，在代理层统一控制ACK
+	sub := new(subMessage)
+	sub.SubMsg = msg
+	sub.HandleFunc = p.wrapHandleFunc(message.HandleFunc, message.AutoAck)
+	message.HandleFunc = nil
+	// 步骤2：生成subKey，检查是否已订阅
+	subKey := p.getSubKey(message.Topic, message.ConsumerName)
+	// 原子操作：LoadOrStore → 不存在则存入struct{}{}，存在则返回已有值
+	_, loaded := p.subscriptions.LoadOrStore(subKey, struct{}{})
+	if loaded {
+		// 已存在订阅，直接返回
+		log.Printf("[GMQ] already subscribed to topic: %s", message.Topic)
+		return err
+	}
+	// 最终清理：订阅失败则删除槽位
+	defer func() {
+		if err != nil {
+			p.subscriptions.Delete(subKey)
+			p.subscriptionParams.Delete(subKey)
+			log.Printf("[GMQ] subscribe failed, clean slot for subKey: %s, err: %v", subKey, err)
+		}
+	}()
+	// 步骤5：带重试的订阅逻辑
+	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
+		// 5.1：Ping检查 + 指数退避等待
+		if attempt > 0 || !p.plugin.GmqPing(ctx) {
+			if attempt > 0 && p.plugin.GmqPing(ctx) {
+				break // ping通，跳过等待
+			}
+			delay := MsgRetryDelay
+			if attempt > 0 {
+				delay = MsgRetryDelay * time.Duration(1<<uint(attempt-1))
+			}
+			log.Printf("[GMQ] subscribe attempt %d: ping failed, wait %v", attempt, delay)
+			// 监听上下文取消
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				err = ctx.Err()
+				log.Printf("[GMQ] subscribe attempt %d: context canceled: %v", attempt, err)
+				return err
+			}
+		}
+		// 5.2：执行订阅（无返回对象，仅判断错误）
+		err = p.plugin.GmqSubscribe(ctx, sub)
+		if err != nil {
+			log.Printf("[GMQ] subscribe attempt %d: error: %v", attempt, err)
+			if attempt == MsgRetryDeliver-1 {
+				log.Printf("[GMQ] subscribe all %d attempts failed: %v", MsgRetryDeliver, err)
+			}
+			continue // 失败则重试
+		}
+		// 5.3：订阅成功，跳出循环
+		log.Printf("[GMQ] subscribe attempt %d: success", attempt)
+		break
+	}
+	// 步骤6：检查最终订阅结果（所有重试都失败则返回）
+	if err != nil {
+		return err
+	}
+	// 步骤7：保存订阅参数（用于断线重连）
+	p.subscriptionParams.Store(subKey, &sub)
+	log.Printf("[GMQ] subscribe success, save subKey: %s", subKey)
+	return err
 }
 
 // GmqUnsubscribe 取消订阅

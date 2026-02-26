@@ -158,7 +158,7 @@ func (c *RabbitMQConn) GmqPublish(ctx context.Context, msg core.Publish) (err er
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RabbitMQPubMessage")
 	}
-	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, 0, cfg.Data)
+	return c.createPublish(ctx, cfg.Topic, cfg.Durable, 0, cfg.Data)
 }
 
 // GmqPublishDelay 发布延迟消息
@@ -167,15 +167,15 @@ func (c *RabbitMQConn) GmqPublishDelay(ctx context.Context, msg core.PublishDela
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RabbitMQPubDelayMessage")
 	}
-	return c.createPublish(ctx, cfg.QueueName, cfg.Durable, cfg.DelaySeconds, cfg.Data)
+	return c.createPublish(ctx, cfg.Topic, cfg.Durable, cfg.DelaySeconds, cfg.Data)
 }
 
 // createPublish 发布消息
-// queueName: 业务队列名称
+// topic: 业务主题名称
 // durable: 是否持久化
 // delayTime: 延迟时间（秒），0 表示不延迟
 // data: 消息体
-func (c *RabbitMQConn) createPublish(ctx context.Context, queueName string, durable bool, delayTime int, data any) error {
+func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, durable bool, delayTime int, data any) error {
 	// 0. 确保统一死信交换机和队列已创建（幂等操作）
 	if err := c.setupUnifiedDeadLetter(); err != nil {
 		return err
@@ -184,12 +184,12 @@ func (c *RabbitMQConn) createPublish(ctx context.Context, queueName string, dura
 	delayMsg := delayTime > 0
 	// 1. 基础配置
 	exchangeType := "fanout"
-	exchangeName := queueName
-	routingKey := queueName
+	exchangeName := topic
+	routingKey := topic
 	args := amqp.Table{}
 	if delayMsg {
 		exchangeType = "x-delayed-message"
-		exchangeName = queueName + ".delayed"
+		exchangeName = topic + ".delayed"
 		args["x-delayed-type"] = "fanout"
 	}
 	// 2. 声明业务队列（关联死信配置）
@@ -216,7 +216,7 @@ func (c *RabbitMQConn) createPublish(ctx context.Context, queueName string, dura
 
 	// 4. 声明业务队列
 	if _, err := c.channel.QueueDeclare(
-		queueName, // 业务队列名称
+		topic,     // 业务队列名称
 		durable,   // 是否持久化
 		false,     // autoDelete
 		false,     // exclusive
@@ -228,7 +228,7 @@ func (c *RabbitMQConn) createPublish(ctx context.Context, queueName string, dura
 
 	// 5. 绑定业务队列到业务交换机
 	if err := c.channel.QueueBind(
-		queueName,    // 业务队列名称
+		topic,        // 业务队列名称
 		routingKey,   // 路由键
 		exchangeName, // 业务交换机名称
 		false,        // noWait
@@ -282,7 +282,7 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (er
 		return fmt.Errorf("set qos failed: %w", err)
 	}
 	msgs, err := c.channel.Consume(
-		cfg.QueueName,    // queue
+		cfg.Topic,        // queue
 		cfg.ConsumerName, // consumer
 		false,            // auto-ack
 		false,            // exclusive
@@ -374,7 +374,7 @@ func (c *RabbitMQConn) GmqGetDeadLetter(ctx context.Context) (msgs []core.DeadLe
 				Timestamp:   msg.Timestamp.Format("2006-01-02 15:04:05"),
 				Exchange:    msg.Exchange,
 				RoutingKey:  msg.RoutingKey,
-				QueueName:   c.unifiedDLQueue,
+				Topic:       c.unifiedDLQueue,
 				DeliveryTag: msg.DeliveryTag,
 			}
 			// 解析死信原因（从headers中提取）
@@ -429,7 +429,7 @@ func (c *RabbitMQConn) subscribeDeadLetter(ctx context.Context) (err error) {
 				Timestamp:   msg.Timestamp.Format("2006-01-02 15:04:05"),
 				Exchange:    msg.Exchange,
 				RoutingKey:  msg.RoutingKey,
-				QueueName:   c.unifiedDLQueue,
+				Topic:       c.unifiedDLQueue,
 				DeliveryTag: msg.DeliveryTag,
 				DeadReason:  parseDeadLetterReason(msg.Headers),
 			}

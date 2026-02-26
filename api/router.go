@@ -36,10 +36,10 @@ func InitGmq() {
 	serverManager.StartAll()
 }
 
-// StartGmqWithGracefulShutdown 启动服务器并等待优雅关闭（阻塞）
-func StartGmqWithGracefulShutdown(shutdownTimeout int) {
+// Shutdown 启动服务器并等待优雅关闭（阻塞）
+func Shutdown() {
 	if serverManager != nil {
-		serverManager.WaitForShutdown(10)
+		serverManager.WaitForShutdown()
 	}
 }
 

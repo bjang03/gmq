@@ -151,14 +151,10 @@ func (sm *ServerManager) StartAll() {
 }
 
 // WaitForShutdown 等待关闭信号并优雅关闭所有服务器
-func (sm *ServerManager) WaitForShutdown(shutdownTimeout time.Duration) {
-	// 等待中断信号
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+func (sm *ServerManager) WaitForShutdown() {
 
 	log.Println("Shutting down all servers...")
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// 执行全局关闭钩子
@@ -183,12 +179,6 @@ func (sm *ServerManager) WaitForShutdown(shutdownTimeout time.Duration) {
 	}
 
 	log.Println("All servers stopped")
-}
-
-// StartWithGracefulShutdown 启动所有服务器并支持优雅关闭(阻塞)
-func (sm *ServerManager) StartWithGracefulShutdown(shutdownTimeout time.Duration) {
-	sm.StartAll()
-	sm.WaitForShutdown(shutdownTimeout)
 }
 
 // HandleFunc 包装mux.HandleFunc，支持方法限定

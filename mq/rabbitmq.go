@@ -7,32 +7,28 @@ import (
 	"log"
 	"time"
 
-	"github.com/bjang03/gmq/core"
+	"github.com/bjang03/gmq/types"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type RabbitMQPubMessage struct {
-	core.PubMessage
+	types.PubMessage
 	Durable bool // 是否持久化
 }
 
 type RabbitMQPubDelayMessage struct {
-	core.PubDelayMessage
+	types.PubDelayMessage
 	Durable bool // 是否持久化
 }
 
 // RabbitMQSubMessage RabbitMQ订阅消息结构，支持持久化订阅和延迟消费
 type RabbitMQSubMessage struct {
-	core.SubMessage
+	types.SubMessage
 }
 
 // RabbitMQConn RabbitMQ消息队列实现
 type RabbitMQConn struct {
-	Url               string
-	Port              string
-	Username          string
-	Password          string
-	VHost             string
+	types.RabbitMQConfig
 	conn              *amqp.Connection
 	channel           *amqp.Channel
 	unifiedDLExchange string // 统一死信交换机名称
@@ -53,17 +49,9 @@ func (c *RabbitMQConn) GmqPing(_ context.Context) bool {
 
 // GmqConnect 连接RabbitMQ服务器
 func (c *RabbitMQConn) GmqConnect(_ context.Context) (err error) {
-	if c.Url == "" {
-		return fmt.Errorf("RabbitMQ connect address is empty")
-	}
-	if c.Port == "" {
-		return fmt.Errorf("RabbitMQ connect port is empty")
-	}
-	if c.Username == "" {
-		return fmt.Errorf("RabbitMQ connect username is empty")
-	}
-	if c.Password == "" {
-		return fmt.Errorf("RabbitMQ connect password is empty")
+	// 验证连接配置（不包含 Name 验证）
+	if err := c.RabbitMQConfig.ValidateConn(); err != nil {
+		return err
 	}
 	// 安全地关闭旧连接（仅针对该数据源）
 	if c.conn != nil && !c.conn.IsClosed() {
@@ -153,7 +141,7 @@ func (c *RabbitMQConn) setupUnifiedDeadLetter() error {
 }
 
 // GmqPublish 发布消息
-func (c *RabbitMQConn) GmqPublish(ctx context.Context, msg core.Publish) (err error) {
+func (c *RabbitMQConn) GmqPublish(ctx context.Context, msg types.Publish) (err error) {
 	cfg, ok := msg.(*RabbitMQPubMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RabbitMQPubMessage")
@@ -162,7 +150,7 @@ func (c *RabbitMQConn) GmqPublish(ctx context.Context, msg core.Publish) (err er
 }
 
 // GmqPublishDelay 发布延迟消息
-func (c *RabbitMQConn) GmqPublishDelay(ctx context.Context, msg core.PublishDelay) (err error) {
+func (c *RabbitMQConn) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) (err error) {
 	cfg, ok := msg.(*RabbitMQPubDelayMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RabbitMQPubDelayMessage")
@@ -273,7 +261,7 @@ func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, durable 
 }
 
 // GmqSubscribe 订阅RabbitMQ消息
-func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (err error) {
+func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err error) {
 	cfg, ok := sub.GetSubMsg().(*RabbitMQSubMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RabbitMQSubMessage")
@@ -293,9 +281,8 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (er
 	if err != nil {
 		return fmt.Errorf("consume failed: %w", err)
 	}
-	go c.subscribeDeadLetter(ctx)
 	for msgv := range msgs {
-		if err = sub.GetAckHandleFunc()(ctx, &core.AckMessage{
+		if err = sub.GetAckHandleFunc()(ctx, &types.AckMessage{
 			MessageData:     msgv.Body,
 			AckRequiredAttr: msgv,
 		}); err != nil {
@@ -306,7 +293,7 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub core.Subscribe) (er
 	return
 }
 
-func (c *RabbitMQConn) GmqAck(_ context.Context, msg *core.AckMessage) error {
+func (c *RabbitMQConn) GmqAck(_ context.Context, msg *types.AckMessage) error {
 	msgCfg, ok := msg.AckRequiredAttr.(amqp.Delivery)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *amqp.Delivery")
@@ -314,7 +301,7 @@ func (c *RabbitMQConn) GmqAck(_ context.Context, msg *core.AckMessage) error {
 	return msgCfg.Ack(false)
 }
 
-func (c *RabbitMQConn) GmqNak(_ context.Context, msg *core.AckMessage) error {
+func (c *RabbitMQConn) GmqNak(_ context.Context, msg *types.AckMessage) error {
 	msgCfg, ok := msg.AckRequiredAttr.(amqp.Delivery)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *amqp.Delivery")
@@ -322,165 +309,4 @@ func (c *RabbitMQConn) GmqNak(_ context.Context, msg *core.AckMessage) error {
 	// requeue=true: 消息重新入队，会被重新投递
 	// requeue=false: 消息不重新入队，进入死信队列（如果配置了死信交换机）
 	return msgCfg.Nack(false, false)
-}
-
-// GmqGetMetrics 获取基础监控指标
-func (c *RabbitMQConn) GmqGetMetrics(ctx context.Context) *core.Metrics {
-	m := &core.Metrics{
-		Name:       "rabbitmq",
-		Type:       "rabbitmq",
-		ServerAddr: c.Url,
-	}
-	if c.GmqPing(ctx) {
-		m.Status = "connected"
-	} else {
-		m.Status = "disconnected"
-	}
-	return m
-}
-
-// GmqGetDeadLetter 从统一死信队列查询所有消息
-func (c *RabbitMQConn) GmqGetDeadLetter(ctx context.Context) (msgs []core.DeadLetterMsgDTO, err error) {
-	// 0. 确保统一死信交换机和队列已创建（幂等操作）
-	if err := c.setupUnifiedDeadLetter(); err != nil {
-		return nil, err
-	}
-
-	// 1. 设置QoS，避免一次性拉取过多消息导致内存溢出
-	if err = c.channel.Qos(100, 0, false); err != nil {
-		return nil, fmt.Errorf("set qos failed: %w", err)
-	}
-	// 2. 从统一死信队列拉取消息
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			// BasicGet 拉取单条消息（noAck=false：不自动确认）
-			msg, ok, err := c.channel.Get(c.unifiedDLQueue, false)
-			if err != nil {
-				log.Printf("get dead letter msg failed (queue=%s): %v", c.unifiedDLQueue, err)
-				break
-			}
-			// 队列为空，退出循环
-			if !ok {
-				break
-			}
-			// 3. 解析死信消息（转为前端易读格式）
-			dto := core.DeadLetterMsgDTO{
-				MessageID:   msg.MessageId,
-				Body:        string(msg.Body),
-				Headers:     convertHeaders(msg.Headers),
-				Timestamp:   msg.Timestamp.Format("2006-01-02 15:04:05"),
-				Exchange:    msg.Exchange,
-				RoutingKey:  msg.RoutingKey,
-				Topic:       c.unifiedDLQueue,
-				DeliveryTag: msg.DeliveryTag,
-			}
-			// 解析死信原因（从headers中提取）
-			dto.DeadReason = parseDeadLetterReason(msg.Headers)
-			msgs = append(msgs, dto)
-			// TODO : 需要补充写入数据库
-			log.Printf("✅ fetch dead letter msg success: %v", dto)
-			// 死信队列中的消息保存成功后才能进行确认消息
-			if err := msg.Ack(false); err != nil {
-				log.Printf("nack msg failed (deliveryTag=%d): %v", msg.DeliveryTag, err)
-			}
-		}
-	}
-}
-
-// subscribeDeadLetter 订阅统一死信队列的消息
-func (c *RabbitMQConn) subscribeDeadLetter(ctx context.Context) (err error) {
-	// 1. 设置QoS
-	if err = c.channel.Qos(1, 0, false); err != nil {
-		return fmt.Errorf("set qos failed: %w", err)
-	}
-	// 2. 订阅统一死信队列
-	messages, err := c.channel.Consume(
-		c.unifiedDLQueue, // 统一死信队列
-		c.unifiedDLQueue, // 消费者名称
-		false,            // auto-ack (手动确认)
-		false,            // exclusive
-		false,            // no-local
-		false,            // no-wait
-		nil,              // args
-	)
-	if err != nil {
-		return fmt.Errorf("consume unified dead letter queue failed: %w", err)
-	}
-	log.Printf("✅ Subscribed to unified dead letter queue: %s", c.unifiedDLQueue)
-	// 3. 处理死信消息
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("🛑 Stopping consumption of unified dead letter queue")
-			return nil
-		case msg, ok := <-messages:
-			if !ok {
-				log.Printf("⚠️ Unified dead letter queue consumer closed")
-				return nil
-			}
-			// 构建死信消息DTO
-			dto := core.DeadLetterMsgDTO{
-				MessageID:   msg.MessageId,
-				Body:        string(msg.Body),
-				Headers:     convertHeaders(msg.Headers),
-				Timestamp:   msg.Timestamp.Format("2006-01-02 15:04:05"),
-				Exchange:    msg.Exchange,
-				RoutingKey:  msg.RoutingKey,
-				Topic:       c.unifiedDLQueue,
-				DeliveryTag: msg.DeliveryTag,
-				DeadReason:  parseDeadLetterReason(msg.Headers),
-			}
-			log.Printf("✅ Received dead letter message: %v", dto)
-			// TODO : 需要补充写入数据库
-			// 死信队列中的消息保存成功后才能进行确认消息
-			if err := msg.Ack(false); err != nil {
-				log.Printf("nack msg failed (deliveryTag=%d): %v", msg.DeliveryTag, err)
-			}
-		}
-	}
-}
-
-// convertHeaders 转换AMQP Headers格式（处理[]uint8等特殊类型，适配JSON序列化）
-func convertHeaders(headers amqp.Table) map[string]interface{} {
-	result := make(map[string]interface{})
-	for k, v := range headers {
-		switch val := v.(type) {
-		case []uint8:
-			// 处理二进制数据转为字符串
-			result[k] = string(val)
-		case time.Time:
-			// 时间类型转为字符串
-			result[k] = val.Format("2006-01-02 15:04:05")
-		default:
-			result[k] = val
-		}
-	}
-	return result
-}
-
-// parseDeadLetterReason 解析死信原因
-func parseDeadLetterReason(headers amqp.Table) string {
-	// 死信原因常见key（RabbitMQ自动添加）
-	if reason, ok := headers["x-death"].([]interface{}); ok && len(reason) > 0 {
-		if deathInfo, ok := reason[0].(amqp.Table); ok {
-			if reasonVal, ok := deathInfo["reason"].(string); ok {
-				switch reasonVal {
-				case "expired":
-					return "消息过期"
-				case "rejected":
-					return "消息被拒绝"
-				case "maxlen":
-					return "队列达到最大长度"
-				case "deleted":
-					return "队列被删除"
-				default:
-					return reasonVal
-				}
-			}
-		}
-	}
-	return "未知原因"
 }

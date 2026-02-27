@@ -8,51 +8,41 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bjang03/gmq/types"
 )
 
 // anonConsumerCounter 匿名消费者计数器，用于生成唯一订阅key
 var anonConsumerCounter atomic.Int64
 
-// subscriptionInfo 订阅信息，用于断线重连后恢复订阅
-type subscriptionInfo struct {
-	msg Subscribe
-}
-
 type subMessage struct {
 	SubMsg     any
-	HandleFunc func(ctx context.Context, message *AckMessage) error // 消息处理函数
+	HandleFunc func(ctx context.Context, message *types.AckMessage) error // 消息处理函数
 }
 
 func (m *subMessage) GetSubMsg() any {
 	return m.SubMsg
 }
 
-func (m *subMessage) GetAckHandleFunc() func(ctx context.Context, message *AckMessage) error {
+func (m *subMessage) GetAckHandleFunc() func(ctx context.Context, message *types.AckMessage) error {
 	return m.HandleFunc
 }
 
 // GmqProxy 消息队列代理包装器，用于统一监控指标处理
 type GmqProxy struct {
-	name        string       // 代理名称
-	plugin      Gmq          // 消息队列插件实例
-	metrics     proxyMetrics // 代理监控指标
-	connectedAt int64        // 连接时间(Unix时间戳，秒)，原子访问
-	connected   int32        // 连接状态: 0=未连接, 1=已连接，原子访问
+	name      string // 代理名称
+	plugin    Gmq    // 消息队列插件实例
+	connected int32  // 连接状态: 0=未连接, 1=已连接，原子访问
 
 	subscriptions      sync.Map // 订阅管理 - key: subKey, value: subscription object
 	subscriptionParams sync.Map // 订阅参数缓存 - key: subKey, value: *subscriptionInfo
-
-	cachedMetrics   atomic.Pointer[Metrics] // 指标缓存 - 原子指针，无锁读取
-	metricsCacheExp atomic.Int64            // 指标缓存过期时间戳 - 原子操作
-	metricsCacheTTL time.Duration           // 指标缓存TTL
 }
 
 // newGmqProxy 创建新的代理包装器
 func newGmqProxy(name string, plugin Gmq) *GmqProxy {
 	p := &GmqProxy{
-		name:            name,
-		plugin:          plugin,
-		metricsCacheTTL: 5 * time.Second,
+		name:   name,
+		plugin: plugin,
 	}
 	return p
 }
@@ -66,7 +56,7 @@ func safeCloneMap(m map[string]interface{}) map[string]interface{} {
 }
 
 // validatePublishMsg 统一校验发布消息公共参数
-func validatePublishMsg(msg Publish) error {
+func validatePublishMsg(msg types.Publish) error {
 	if msg.GetTopic() == "" {
 		return fmt.Errorf("topic is required")
 	}
@@ -77,22 +67,22 @@ func validatePublishMsg(msg Publish) error {
 }
 
 // GmqPublish 发布消息（带统一监控和重试）
-func (p *GmqProxy) GmqPublish(ctx context.Context, msg Publish) error {
+func (p *GmqProxy) GmqPublish(ctx context.Context, msg types.Publish) error {
 	var err error
 	if err = validatePublishMsg(msg); err != nil {
 		log.Printf("validate error: %v", err)
 		return err
 	}
-	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
+	for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
 		if attempt > 0 || !p.plugin.GmqPing(ctx) {
 			// 第一次 ping 失败 或 重试时，执行等待逻辑
 			if attempt > 0 && p.plugin.GmqPing(ctx) {
 				break
 			}
 			// 第一次延迟用基础值，后续用指数退避
-			delay := MsgRetryDelay
+			delay := types.MsgRetryDelay
 			if attempt > 0 {
-				delay = MsgRetryDelay * time.Duration(1<<uint(attempt-1))
+				delay = types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			}
 			log.Printf("attempt %d: ping failed, wait %v", attempt, delay)
 			select {
@@ -106,7 +96,7 @@ func (p *GmqProxy) GmqPublish(ctx context.Context, msg Publish) error {
 		// 执行发布
 		if err = p.plugin.GmqPublish(ctx, msg); err != nil {
 			log.Printf("attempt %d: publish error: %v", attempt, err)
-			if attempt == MsgRetryDeliver-1 {
+			if attempt == types.MsgRetryDeliver-1 {
 				log.Printf("all attempts failed: %v", err)
 			}
 		} else {
@@ -118,7 +108,7 @@ func (p *GmqProxy) GmqPublish(ctx context.Context, msg Publish) error {
 }
 
 // validatePublishDelayMsg 统一校验延迟发布消息公共参数
-func validatePublishDelayMsg(msg PublishDelay) error {
+func validatePublishDelayMsg(msg types.PublishDelay) error {
 	if msg.GetTopic() == "" {
 		return fmt.Errorf("topic is required")
 	}
@@ -132,22 +122,22 @@ func validatePublishDelayMsg(msg PublishDelay) error {
 }
 
 // GmqPublishDelay 发布延迟消息（带统一监控和重试）
-func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg PublishDelay) error {
+func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) error {
 	var err error
 	if err = validatePublishDelayMsg(msg); err != nil {
 		log.Printf("validate error: %v", err)
 		return err
 	}
-	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
+	for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
 		if attempt > 0 || !p.plugin.GmqPing(ctx) {
 			// 第一次 ping 失败 或 重试时，执行等待逻辑
 			if attempt > 0 && p.plugin.GmqPing(ctx) {
 				break
 			}
 			// 第一次延迟用基础值，后续用指数退避
-			delay := MsgRetryDelay
+			delay := types.MsgRetryDelay
 			if attempt > 0 {
-				delay = MsgRetryDelay * time.Duration(1<<uint(attempt-1))
+				delay = types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			}
 			log.Printf("attempt %d: ping failed, wait %v", attempt, delay)
 			select {
@@ -161,7 +151,7 @@ func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg PublishDelay) error 
 		// 执行发布
 		if err = p.plugin.GmqPublishDelay(ctx, msg); err != nil {
 			log.Printf("attempt %d: publish error: %v", attempt, err)
-			if attempt == MsgRetryDeliver-1 {
+			if attempt == types.MsgRetryDeliver-1 {
 				log.Printf("all attempts failed: %v", err)
 			}
 		} else {
@@ -173,7 +163,7 @@ func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg PublishDelay) error 
 }
 
 // validateSubscribeMsg 统一校验订阅消息公共参数
-func validateSubscribeMsg(msg *SubMessage) error {
+func validateSubscribeMsg(msg *types.SubMessage) error {
 	if msg.Topic == "" {
 		return fmt.Errorf("topic is required")
 	}
@@ -190,8 +180,8 @@ func validateSubscribeMsg(msg *SubMessage) error {
 }
 
 // wrapHandleFunc 包装用户的 HandleFunc，在代理层统一控制ACK
-func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message *AckMessage) error {
-	return func(ctx context.Context, message *AckMessage) error {
+func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message *types.AckMessage) error {
+	return func(ctx context.Context, message *types.AckMessage) error {
 		if autoAck {
 			// 自动确认模式：无论处理成功或失败，都确认消息
 			err := p.plugin.GmqAck(ctx, message)
@@ -222,11 +212,11 @@ func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message
 }
 
 // GmqSubscribe 订阅消息（带统一监控和重试）
-func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg Subscribe) error {
+func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) error {
 	var err error
-	message, ok := msg.GetSubMsg().(*SubMessage)
+	message, ok := msg.GetSubMsg().(*types.SubMessage)
 	if !ok {
-		return fmt.Errorf("invalid message type, expected *SubMessage")
+		return fmt.Errorf("invalid message type, expected *types.SubMessage")
 	}
 	// 统一校验公共参数
 	if err = validateSubscribeMsg(message); err != nil {
@@ -255,15 +245,15 @@ func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg Subscribe) error {
 		}
 	}()
 	// 步骤5：带重试的订阅逻辑
-	for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
+	for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
 		// 5.1：Ping检查 + 指数退避等待
 		if attempt > 0 || !p.plugin.GmqPing(ctx) {
 			if attempt > 0 && p.plugin.GmqPing(ctx) {
 				break // ping通，跳过等待
 			}
-			delay := MsgRetryDelay
+			delay := types.MsgRetryDelay
 			if attempt > 0 {
-				delay = MsgRetryDelay * time.Duration(1<<uint(attempt-1))
+				delay = types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			}
 			log.Printf("[GMQ] subscribe attempt %d: ping failed, wait %v", attempt, delay)
 			// 监听上下文取消
@@ -279,8 +269,8 @@ func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg Subscribe) error {
 		err = p.plugin.GmqSubscribe(ctx, sub)
 		if err != nil {
 			log.Printf("[GMQ] subscribe attempt %d: error: %v", attempt, err)
-			if attempt == MsgRetryDeliver-1 {
-				log.Printf("[GMQ] subscribe all %d attempts failed: %v", MsgRetryDeliver, err)
+			if attempt == types.MsgRetryDeliver-1 {
+				log.Printf("[GMQ] subscribe all %d attempts failed: %v", types.MsgRetryDeliver, err)
 			}
 			continue // 失败则重试
 		}
@@ -361,7 +351,7 @@ func (p *GmqProxy) restoreSubscriptions() {
 		}
 		var err error
 		// 带重试+ping检查的订阅
-		for attempt := 0; attempt < MsgRetryDeliver; attempt++ {
+		for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
 			// 检查上下文是否取消/超时
 			if restoreCtx.Err() != nil {
 				log.Printf("[GMQ] Restore subscription canceled: key=%s, err=%v", subKey, restoreCtx.Err())
@@ -373,7 +363,7 @@ func (p *GmqProxy) restoreSubscriptions() {
 					break // ping通，跳过等待
 				}
 				// 指数退避等待
-				delay := MsgRetryDelay * time.Duration(1<<uint(attempt-1))
+				delay := types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 				log.Printf("[GMQ] Restore subscription attempt %d: ping failed, wait %v (key=%s)", attempt, delay, subKey)
 				select {
 				case <-time.After(delay):
@@ -389,7 +379,7 @@ func (p *GmqProxy) restoreSubscriptions() {
 			}
 			// 记录重试失败日志
 			log.Printf("[GMQ] Restore subscription attempt %d failed: key=%s, err=%v", attempt, subKey, err)
-			if attempt == MsgRetryDeliver-1 {
+			if attempt == types.MsgRetryDeliver-1 {
 				log.Printf("[GMQ] Restore subscription all attempts failed: key=%s", subKey)
 			}
 		}
@@ -411,11 +401,6 @@ func (p *GmqProxy) getSubKey(topic, consumerName string) string {
 	return fmt.Sprintf("%s:anon-%d", topic, counter)
 }
 
-// GmqGetDeadLetter 获取死信消息
-func (p *GmqProxy) GmqGetDeadLetter(ctx context.Context) ([]DeadLetterMsgDTO, error) {
-	return p.plugin.GmqGetDeadLetter(ctx)
-}
-
 // GmqPing 检测连接状态
 func (p *GmqProxy) GmqPing(ctx context.Context) bool {
 	// 代理层统一校验：检查是否已连接
@@ -431,16 +416,15 @@ func (p *GmqProxy) GmqConnect(ctx context.Context) error {
 	err := p.plugin.GmqConnect(ctx)
 	if err == nil {
 		atomic.StoreInt32(&p.connected, 1)
-		atomic.StoreInt64(&p.connectedAt, time.Now().Unix())
 	}
 	return err
 }
 
-func (p *GmqProxy) GmqAck(ctx context.Context, msg *AckMessage) error {
+func (p *GmqProxy) GmqAck(ctx context.Context, msg *types.AckMessage) error {
 	return p.plugin.GmqAck(ctx, msg)
 }
 
-func (p *GmqProxy) GmqNak(ctx context.Context, msg *AckMessage) error {
+func (p *GmqProxy) GmqNak(ctx context.Context, msg *types.AckMessage) error {
 	return p.plugin.GmqNak(ctx, msg)
 }
 
@@ -452,108 +436,4 @@ func (p *GmqProxy) GmqClose(ctx context.Context) error {
 	err := p.plugin.GmqClose(ctx)
 	atomic.StoreInt32(&p.connected, 0)
 	return err
-}
-
-// GmqGetMetrics 获取统一监控指标（带缓存，使用 atomic 无锁读取）
-func (p *GmqProxy) GmqGetMetrics(ctx context.Context) *Metrics {
-	now := time.Now().UnixMilli()
-	cacheExp := p.metricsCacheExp.Load()
-
-	// 缓存过期判断：缓存过期时间戳 = 缓存创建时间 + TTL
-	if cm := p.cachedMetrics.Load(); cm != nil {
-		if now < cacheExp {
-			// 缓存未过期，返回副本
-			m := *cm
-			return &m
-		}
-	}
-
-	// 获取插件自身的指标
-	pluginMetrics := p.plugin.GmqGetMetrics(ctx)
-
-	// 获取代理层面的指标
-	latencyCount := atomic.LoadInt64(&p.metrics.latencyCount)
-	totalLatency := atomic.LoadInt64(&p.metrics.totalLatency)
-	messageCount := atomic.LoadInt64(&p.metrics.messageCount)
-	publishCount := atomic.LoadInt64(&p.metrics.publishCount)
-	subscribeCount := atomic.LoadInt64(&p.metrics.subscribeCount)
-	publishFailed := atomic.LoadInt64(&p.metrics.publishFailed)
-	subscribeFailed := atomic.LoadInt64(&p.metrics.subscribeFailed)
-
-	var avgLatency float64
-	if latencyCount > 0 {
-		avgLatency = float64(totalLatency) / float64(latencyCount)
-	}
-
-	// 计算错误率
-	var errorRate float64
-	totalAttempted := publishCount + subscribeCount + publishFailed + subscribeFailed
-	if totalAttempted > 0 {
-		errorRate = float64(publishFailed+subscribeFailed) / float64(totalAttempted) * 100
-	}
-
-	// 使用代理层的连接时间（原子读取）
-	var uptimeSeconds int64
-	var connectedAtStr string
-	connectedAtUnix := atomic.LoadInt64(&p.connectedAt)
-	if connectedAtUnix > 0 {
-		connectedAt := time.Unix(connectedAtUnix, 0)
-		uptimeSeconds = int64(time.Since(connectedAt).Seconds())
-		connectedAtStr = connectedAt.Format("2006-01-02 15:04:05")
-	}
-
-	// 计算吞吐量（每秒）
-	var throughputPerSec, publishPerSec, subscribePerSec float64
-	if uptimeSeconds > 0 {
-		duration := float64(uptimeSeconds)
-		throughputPerSec = float64(messageCount) / duration
-		publishPerSec = float64(publishCount) / duration
-		subscribePerSec = float64(subscribeCount) / duration
-	}
-
-	// 确定连接状态
-	status := "disconnected"
-	if atomic.LoadInt32(&p.connected) == 1 {
-		status = "connected"
-	}
-
-	// 合并指标（插件提供基础信息，代理层提供客户端统计和连接信息）
-	// 深拷贝 map 字段避免数据竞争
-	m := &Metrics{
-		Name:            p.name,
-		Type:            pluginMetrics.Type,
-		Status:          status,
-		ServerAddr:      pluginMetrics.ServerAddr,
-		ConnectedAt:     connectedAtStr,
-		UptimeSeconds:   uptimeSeconds,
-		MessageCount:    messageCount,
-		PublishCount:    publishCount,
-		SubscribeCount:  subscribeCount,
-		PendingMessages: pluginMetrics.PendingMessages,
-		PendingAckCount: pluginMetrics.PendingAckCount,
-		PublishFailed:   publishFailed,
-		SubscribeFailed: subscribeFailed,
-		MsgsIn:          pluginMetrics.MsgsIn,
-		MsgsOut:         pluginMetrics.MsgsOut,
-		BytesIn:         pluginMetrics.BytesIn,
-		BytesOut:        pluginMetrics.BytesOut,
-		AverageLatency:  avgLatency,
-
-		MaxLatency:       pluginMetrics.MaxLatency,
-		MinLatency:       pluginMetrics.MinLatency,
-		ThroughputPerSec: throughputPerSec,
-		PublishPerSec:    publishPerSec,
-		SubscribePerSec:  subscribePerSec,
-		ErrorRate:        errorRate,
-		ReconnectCount:   pluginMetrics.ReconnectCount,
-		ServerMetrics:    safeCloneMap(pluginMetrics.ServerMetrics),
-		Extensions:       safeCloneMap(pluginMetrics.Extensions),
-	}
-
-	// 更新缓存时计算正确的过期时间
-	cacheExpiration := now + p.metricsCacheTTL.Milliseconds()
-	p.cachedMetrics.Store(m)
-	p.metricsCacheExp.Store(cacheExpiration)
-
-	return m
 }

@@ -2,7 +2,11 @@ package core
 
 import (
 	"context"
+	"github.com/bjang03/gmq/mq"
+	"github.com/bjang03/gmq/types"
+	"gopkg.in/yaml.v3"
 	"log"
+	"os"
 	"sync"
 	"time"
 )
@@ -14,6 +18,64 @@ var (
 	globalShutdownOnce sync.Once
 	pluginCancelFuncs  = make(map[string]context.CancelFunc)
 )
+
+// Init 初始化并注册所有消息队列插件
+func Init() {
+	cfg := loadConfig()
+
+	// 注册所有 Redis 实例
+	for _, r := range cfg.Gmq.Redis {
+		if err := r.Validate(); err != nil {
+			log.Printf("[GMQ] Skip invalid redis config: %v", err)
+			continue
+		}
+		GmqRegister(r.Name, &mq.RedisConn{
+			RedisConfig: r,
+		})
+	}
+
+	// 注册所有 NATS 实例
+	for _, n := range cfg.Gmq.Nats {
+		if err := n.Validate(); err != nil {
+			log.Printf("[GMQ] Skip invalid nats config: %v", err)
+			continue
+		}
+		GmqRegister(n.Name, &mq.NatsConn{
+			NatsConfig: n,
+		})
+	}
+
+	// 注册所有 RabbitMQ 实例
+	for _, r := range cfg.Gmq.RabbitMQ {
+		if err := r.Validate(); err != nil {
+			log.Printf("[GMQ] Skip invalid rabbitmq config: %v", err)
+			continue
+		}
+		GmqRegister(r.Name, &mq.RabbitMQConn{
+			RabbitMQConfig: r,
+		})
+	}
+}
+
+// loadConfig 加载配置文件
+func loadConfig() *types.Config {
+	cfg := &types.Config{}
+
+	// 读取配置文件
+	data, err := os.ReadFile("config.yaml")
+	if err != nil {
+		log.Printf("[GMQ] Config file not found: %v", err)
+		return cfg
+	}
+
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		log.Printf("[GMQ] Failed to parse config file: %v", err)
+		return cfg
+	}
+
+	log.Println("[GMQ] Config loaded successfully")
+	return cfg
+}
 
 // GmqRegister 注册消息队列插件
 // 启动后台协程自动维护连接状态，断线自动重连

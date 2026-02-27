@@ -43,6 +43,10 @@ func (c *RedisConn) GmqPing(ctx context.Context) bool {
 	return true
 }
 
+func (c *RedisConn) GmqGetConn(_ context.Context) any {
+	return c.conn
+}
+
 // GmqConnect 连接Redis服务器
 func (c *RedisConn) GmqConnect(_ context.Context) (err error) {
 	// 验证连接配置（不包含 Name 验证）

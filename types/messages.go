@@ -1,4 +1,4 @@
-package core
+package types
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 // 默认重试配置
 const (
 	MsgRetryDeliver = 3               // 消息的最大重试次数，达到此值后进入死信队列(默认3次)
-	MsgRetryDelay   = 3 * time.Second // 消息的重试延迟时间(秒，默认3m)
+	MsgRetryDelay   = 3 * time.Second // 消息的重试延迟时间(秒，默认3s)
 )
 
 // PubMessage 发布消息基础结构
@@ -27,16 +27,17 @@ func (m *PubMessage) GetData() any {
 	return m.Data
 }
 
+// PubDelayMessage 延迟发布消息基础结构
 type PubDelayMessage struct {
 	PubMessage
-	DelaySeconds int
+	DelaySeconds int // 延迟秒数
 }
 
 func (m *PubDelayMessage) GetDelaySeconds() int {
 	return m.DelaySeconds
 }
 
-// SubMessage 订阅消息基础结构（泛型版本）
+// SubMessage 订阅消息基础结构
 type SubMessage struct {
 	Topic        string                                       // 主题名称
 	ConsumerName string                                       // 消费者名称（用于群组消费）
@@ -53,9 +54,10 @@ func (m *SubMessage) GetAckHandleFunc() func(ctx context.Context, message *AckMe
 	return nil
 }
 
+// AckMessage 确认消息结构
 type AckMessage struct {
-	MessageData     any
-	AckRequiredAttr any
+	MessageData     any // 消息数据
+	AckRequiredAttr any // 确认所需属性（如 nats.Msg、amqp.Delivery 等）
 }
 
 // Publish 发布消息接口（用于类型约束）
@@ -75,18 +77,4 @@ type PublishDelay interface {
 type Subscribe interface {
 	GetSubMsg() any
 	GetAckHandleFunc() func(ctx context.Context, message *AckMessage) error
-}
-
-// Gmq 消息队列统一接口定义
-type Gmq interface {
-	GmqConnect(ctx context.Context) error              // 连接消息队列
-	GmqPublish(ctx context.Context, msg Publish) error // 发布消息
-	GmqPublishDelay(ctx context.Context, msg PublishDelay) error
-	GmqSubscribe(ctx context.Context, msg Subscribe) error            // 订阅消息，返回订阅对象
-	GmqGetDeadLetter(ctx context.Context) ([]DeadLetterMsgDTO, error) // 获取死信队列消息
-	GmqPing(ctx context.Context) bool                                 // 检测连接状态
-	GmqClose(ctx context.Context) error                               // 关闭连接
-	GmqGetMetrics(ctx context.Context) *Metrics                       // 获取监控指标
-	GmqAck(ctx context.Context, msg *AckMessage) error                // 确认消息
-	GmqNak(ctx context.Context, msg *AckMessage) error                // 拒绝消息（可重新入队，直到 MaxDeliver）
 }

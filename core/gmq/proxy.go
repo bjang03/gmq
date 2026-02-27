@@ -411,6 +411,11 @@ func (p *GmqProxy) GmqPing(ctx context.Context) bool {
 	return p.plugin.GmqPing(ctx)
 }
 
+// GmqGetConn 获取连接
+func (p *GmqProxy) GmqGetConn(ctx context.Context) any {
+	return p.plugin.GmqGetConn(ctx)
+}
+
 // GmqConnect 连接消息队列
 func (p *GmqProxy) GmqConnect(ctx context.Context) error {
 	err := p.plugin.GmqConnect(ctx)

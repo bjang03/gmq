@@ -43,6 +43,14 @@ func (c *NatsConn) GmqPing(_ context.Context) bool {
 	return c.conn != nil && c.conn.IsConnected()
 }
 
+func (c *NatsConn) GmqGetConn(_ context.Context) any {
+	m := map[string]any{
+		"conn": c.conn,
+		"js":   c.js,
+	}
+	return m
+}
+
 // GmqConnect 连接NATS服务器
 func (c *NatsConn) GmqConnect(_ context.Context) (err error) {
 	// 验证连接配置（不包含 Name 验证）

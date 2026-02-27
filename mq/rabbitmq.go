@@ -47,6 +47,14 @@ func (c *RabbitMQConn) GmqPing(_ context.Context) bool {
 	return true
 }
 
+func (c *RabbitMQConn) GmqGetConn(_ context.Context) any {
+	m := map[string]any{
+		"conn":    c.conn,
+		"channel": c.channel,
+	}
+	return m
+}
+
 // GmqConnect 连接RabbitMQ服务器
 func (c *RabbitMQConn) GmqConnect(_ context.Context) (err error) {
 	// 验证连接配置（不包含 Name 验证）

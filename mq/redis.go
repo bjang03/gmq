@@ -3,14 +3,12 @@ package mq
 import (
 	"context"
 	"fmt"
-	"log"
-	"strings"
-	"time"
-
 	"github.com/bjang03/gmq/types"
 	"github.com/bjang03/gmq/utils"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cast"
+	"log"
+	"strings"
 )
 
 type RedisPubMessage struct {
@@ -27,8 +25,19 @@ type RedisSubMessage struct {
 
 // RedisConn Redis消息队列实现
 type RedisConn struct {
-	types.RedisConfig
 	conn *redis.Client
+}
+
+type redisConfig struct {
+	Addr           string
+	Port           string
+	Db             int
+	Username       string
+	Password       string
+	PoolSize       int
+	MinIdleConns   int
+	MaxActiveConns int
+	MaxRetries     int
 }
 
 // GmqPing 检测Redis连接状态
@@ -48,53 +57,41 @@ func (c *RedisConn) GmqGetConn(_ context.Context) any {
 }
 
 // GmqConnect 连接Redis服务器
-func (c *RedisConn) GmqConnect(_ context.Context) (err error) {
-	// 验证连接配置（不包含 Name 验证）
-	if err := c.RedisConfig.ValidateConn(); err != nil {
+func (c *RedisConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
+	config := new(redisConfig)
+	err = utils.MapToStruct(config, cfg)
+	if err != nil {
 		return err
+	}
+	if config.Addr == "" {
+		return fmt.Errorf("nats config addr is empty")
+	}
+	if config.Port == "" {
+		return fmt.Errorf("nats config port is empty")
 	}
 	// 连接池已存在，直接返回（go-redis 会自动管理连接）
 	if c.conn != nil {
 		return nil
 	}
-	c.Url = c.Url + ":" + c.Port
 	options := redis.Options{
-		Addr: c.Url,
-		DB:   c.Db,
+		Addr: config.Addr + ":" + config.Port,
+		DB:   config.Db,
 	}
-	if c.Username != "" && c.Password != "" {
-		options.Username = c.Username
-		options.Password = c.Password
+	if config.Username != "" && config.Password != "" {
+		options.Username = config.Username
+		options.Password = config.Password
 	}
-	if c.PoolSize > 0 {
-		options.PoolSize = c.PoolSize
+	if config.PoolSize > 0 {
+		options.PoolSize = config.PoolSize
 	}
-	if c.MinIdleConns > 0 {
-		options.MinIdleConns = c.MinIdleConns
+	if config.MinIdleConns > 0 {
+		options.MinIdleConns = config.MinIdleConns
 	}
-	if c.MaxActiveConns > 0 {
-		options.MaxActiveConns = c.MaxActiveConns
+	if config.MaxActiveConns > 0 {
+		options.MaxActiveConns = config.MaxActiveConns
 	}
-	if c.MaxRetries > 0 {
-		options.MaxRetries = c.MaxRetries
-	}
-	if c.DialTimeout > 0 {
-		options.DialTimeout = time.Duration(c.DialTimeout) * time.Second
-	}
-	if c.ReadTimeout > 0 {
-		options.ReadTimeout = time.Duration(c.ReadTimeout) * time.Second
-	}
-	if c.WriteTimeout > 0 {
-		options.WriteTimeout = time.Duration(c.WriteTimeout) * time.Second
-	}
-	if c.PoolTimeout > 0 {
-		options.PoolTimeout = time.Duration(c.PoolTimeout) * time.Second
-	}
-	if c.ConnMaxIdleTime > 0 {
-		options.ConnMaxIdleTime = time.Duration(c.ConnMaxIdleTime) * time.Second
-	}
-	if c.ConnMaxLifetime > 0 {
-		options.ConnMaxLifetime = time.Duration(c.ConnMaxLifetime) * time.Second
+	if config.MaxRetries > 0 {
+		options.MaxRetries = config.MaxRetries
 	}
 	// 连接 Redis
 	c.conn = redis.NewClient(&options)
@@ -144,6 +141,9 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 	cfg, ok := sub.GetSubMsg().(*RedisSubMessage)
 	if !ok {
 		return fmt.Errorf("invalid message type, expected *RedisSubMessage")
+	}
+	if c.conn == nil {
+		return fmt.Errorf("redis connection is nil")
 	}
 	cfg.Topic = "gmq:stream:" + cfg.Topic
 	group := fmt.Sprintf("%s:default:group", cfg.ConsumerName)

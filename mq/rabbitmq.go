@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/bjang03/gmq/utils"
 	"log"
 	"time"
 
@@ -28,12 +29,20 @@ type RabbitMQSubMessage struct {
 
 // RabbitMQConn RabbitMQ消息队列实现
 type RabbitMQConn struct {
-	types.RabbitMQConfig
 	conn              *amqp.Connection
 	channel           *amqp.Channel
 	unifiedDLExchange string // 统一死信交换机名称
 	unifiedDLQueue    string // 统一死信队列名称
 	unifiedDLConsumer string // 统一死信消费者名称
+}
+
+// RabbitMQConfig RabbitMQ 配置项
+type rabbitMQConfig struct {
+	Addr     string
+	Port     string
+	Username string
+	Password string
+	VHost    string
 }
 
 // GmqPing 检测RabbitMQ连接状态
@@ -56,10 +65,23 @@ func (c *RabbitMQConn) GmqGetConn(_ context.Context) any {
 }
 
 // GmqConnect 连接RabbitMQ服务器
-func (c *RabbitMQConn) GmqConnect(_ context.Context) (err error) {
-	// 验证连接配置（不包含 Name 验证）
-	if err := c.RabbitMQConfig.ValidateConn(); err != nil {
+func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
+	config := new(rabbitMQConfig)
+	err = utils.MapToStruct(config, cfg)
+	if err != nil {
 		return err
+	}
+	if config.Addr == "" {
+		return fmt.Errorf("nats config addr is empty")
+	}
+	if config.Port == "" {
+		return fmt.Errorf("nats config port is empty")
+	}
+	if config.Username == "" {
+		return fmt.Errorf("nats config username is empty")
+	}
+	if config.Password == "" {
+		return fmt.Errorf("nats config password is empty")
 	}
 	// 安全地关闭旧连接（仅针对该数据源）
 	if c.conn != nil && !c.conn.IsClosed() {
@@ -69,7 +91,7 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context) (err error) {
 		c.channel.Close()
 	}
 	// 构建连接 URL
-	url := fmt.Sprintf("amqp://%s:%s@%s:%s/%s", c.Username, c.Password, c.Url, c.Port, c.VHost)
+	url := fmt.Sprintf("amqp://%s:%s@%s:%s/%s", config.Username, config.Password, config.Addr, config.Port, config.VHost)
 	// 创建连接
 	newConn, err := amqp.Dial(url)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/bjang03/gmq/utils"
 	"log"
 	"strings"
 	"time"
@@ -30,9 +31,16 @@ type NatsSubMessage struct {
 
 // NatsConn NATS消息队列实现
 type NatsConn struct {
-	types.NatsConfig
 	conn *nats.Conn // NATS 连接对象
 	js   nats.JetStreamContext
+}
+
+// NatsConfig NATS 配置项
+type natsConfig struct {
+	Addr     string
+	Port     string
+	Username string
+	Password string
 }
 
 // GmqPing 检测NATS连接状态
@@ -52,10 +60,17 @@ func (c *NatsConn) GmqGetConn(_ context.Context) any {
 }
 
 // GmqConnect 连接NATS服务器
-func (c *NatsConn) GmqConnect(_ context.Context) (err error) {
-	// 验证连接配置（不包含 Name 验证）
-	if err := c.NatsConfig.ValidateConn(); err != nil {
+func (c *NatsConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
+	config := new(natsConfig)
+	err = utils.MapToStruct(config, cfg)
+	if err != nil {
 		return err
+	}
+	if config.Addr == "" {
+		return fmt.Errorf("nats config addr is empty")
+	}
+	if config.Port == "" {
+		return fmt.Errorf("nats config port is empty")
 	}
 	// 设置连接选项
 	opts := []nats.Option{
@@ -72,10 +87,10 @@ func (c *NatsConn) GmqConnect(_ context.Context) (err error) {
 			log.Printf("[NATS] Connection closed")
 		}),
 	}
-	if c.NatsConfig.Username != "" && c.NatsConfig.Password != "" {
-		opts = append(opts, nats.UserInfo(c.NatsConfig.Username, c.NatsConfig.Password))
+	if config.Username != "" && config.Password != "" {
+		opts = append(opts, nats.UserInfo(config.Username, config.Password))
 	}
-	conn, err := nats.Connect(fmt.Sprintf("nats://%s:%s", c.Url, c.Port), opts...)
+	conn, err := nats.Connect(fmt.Sprintf("nats://%s:%s", config.Addr, config.Port), opts...)
 	if err != nil {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}

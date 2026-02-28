@@ -12,26 +12,8 @@ var redisRegisterName = "redis-test"
 
 // Redis 注册
 func redisRegister(ctx context.Context) {
-	conn := &RedisConn{
-		RedisConfig: types.RedisConfig{
-			Url:             "localhost",
-			Port:            "6379",
-			Db:              0,
-			Username:        "",
-			Password:        "",
-			PoolSize:        10,
-			MinIdleConns:    5,
-			MaxActiveConns:  100,
-			MaxRetries:      3,
-			DialTimeout:     10,
-			ReadTimeout:     30,
-			WriteTimeout:    30,
-			PoolTimeout:     30,
-			ConnMaxIdleTime: 300,
-			ConnMaxLifetime: 3600,
-		},
-	}
-	gmq.GmqRegister(redisRegisterName, conn)
+	gmq.GmqRegisterPlugins(redisRegisterName, &RedisConn{})
+	gmq.GmqStartPlugins()
 	defer gmq.Shutdown(ctx)
 }
 

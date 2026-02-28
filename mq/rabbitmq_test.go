@@ -11,16 +11,8 @@ var rabbitMQRegisterName = "rabbitmq-test"
 
 // RabbitMQ 注册
 func rabbitMQRegister(ctx context.Context) {
-	conn := &RabbitMQConn{
-		RabbitMQConfig: types.RabbitMQConfig{
-			Url:      "localhost",
-			Port:     "5672",
-			Username: "admin",
-			Password: "123456",
-			VHost:    "",
-		},
-	}
-	gmq.GmqRegister(rabbitMQRegisterName, conn)
+	gmq.GmqRegisterPlugins(rabbitMQRegisterName, &RabbitMQConn{})
+	gmq.GmqStartPlugins()
 	defer gmq.Shutdown(ctx)
 }
 

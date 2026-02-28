@@ -164,8 +164,8 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 		FilterSubject:  cfg.Topic,
 		DeliverSubject: fmt.Sprintf("DELIVER.%s.%s", streamName, cfg.ConsumerName),
 		DeliverPolicy:  nats.DeliverAllPolicy,
-		MaxDeliver:     1,
-		BackOff:        []time.Duration{time.Second},
+		MaxDeliver:     3,
+		BackOff:        []time.Duration{time.Second, 3 * time.Second, 6 * time.Second},
 	}
 	// 创建 Durable Consumer
 	if _, err = c.js.AddConsumer(streamName, consumerConfig, []nats.JSOpt{nats.Context(ctx)}...); err != nil {
@@ -245,7 +245,7 @@ func (c *NatsConn) createStream(_ context.Context, topic string, durable, isDela
 		Discard:           nats.DiscardOld,    // 达到上限删除旧消息
 		MaxMsgs:           100000,             // 最多保留10万条消息
 		MaxAge:            7 * 24 * time.Hour, // 消息保留7天
-		Retention:         nats.LimitsPolicy,
+		Retention:         nats.InterestPolicy,
 		MaxConsumers:      -1,
 	}
 	// 创建流

@@ -96,12 +96,8 @@ func GmqRegister(name string, plugin Gmq) {
 	pluginCancelFuncs[name] = mgrCancel
 
 	go func(name string, p *GmqProxy, mgrCtx context.Context) {
-		const (
-			baseReconnectDelay = 5 * time.Second  // 基础重连延迟
-			maxReconnectDelay  = 60 * time.Second // 最大重连延迟
-			connectTimeout     = 30 * time.Second // 连接超时
-		)
-		reconnectDelay := baseReconnectDelay
+
+		reconnectDelay := types.BaseReconnectDelay
 
 		for {
 			select {
@@ -117,7 +113,7 @@ func GmqRegister(name string, plugin Gmq) {
 				pingCancel()
 
 				if isConnected {
-					reconnectDelay = baseReconnectDelay
+					reconnectDelay = types.BaseReconnectDelay
 					select {
 					case <-time.After(10 * time.Second):
 					case <-mgrCtx.Done():
@@ -126,7 +122,7 @@ func GmqRegister(name string, plugin Gmq) {
 					continue
 				}
 
-				connCtx, connCancel := context.WithTimeout(mgrCtx, connectTimeout)
+				connCtx, connCancel := context.WithTimeout(mgrCtx, types.ConnectTimeout)
 				err := p.GmqConnect(connCtx)
 				connCancel()
 
@@ -137,14 +133,14 @@ func GmqRegister(name string, plugin Gmq) {
 						return
 					}
 					reconnectDelay *= 2
-					if reconnectDelay > maxReconnectDelay {
-						reconnectDelay = maxReconnectDelay
+					if reconnectDelay > types.MaxReconnectDelay {
+						reconnectDelay = types.MaxReconnectDelay
 					}
 					continue
 				}
 
 				log.Printf("[GMQ] %s reconnected successfully", name)
-				reconnectDelay = baseReconnectDelay
+				reconnectDelay = types.BaseReconnectDelay
 				p.restoreSubscriptions()
 			}
 		}

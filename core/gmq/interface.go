@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-
 	"github.com/bjang03/gmq/types"
 )
 

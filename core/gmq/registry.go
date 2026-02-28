@@ -4,9 +4,8 @@ import (
 	"context"
 	"github.com/bjang03/gmq/mq"
 	"github.com/bjang03/gmq/types"
-	"gopkg.in/yaml.v3"
+	"github.com/bjang03/gmq/utils"
 	"log"
-	"os"
 	"sync"
 	"time"
 )
@@ -19,67 +18,8 @@ var (
 	pluginCancelFuncs  = make(map[string]context.CancelFunc)
 )
 
-// Init 初始化并注册所有消息队列插件
-func Init() {
-	cfg := loadConfig()
-
-	// 注册所有 Redis 实例
-	for _, r := range cfg.Gmq.Redis {
-		if err := r.Validate(); err != nil {
-			log.Printf("[GMQ] Skip invalid redis config: %v", err)
-			continue
-		}
-		GmqRegister(r.Name, &mq.RedisConn{
-			RedisConfig: r,
-		})
-	}
-
-	// 注册所有 NATS 实例
-	for _, n := range cfg.Gmq.Nats {
-		if err := n.Validate(); err != nil {
-			log.Printf("[GMQ] Skip invalid nats config: %v", err)
-			continue
-		}
-		GmqRegister(n.Name, &mq.NatsConn{
-			NatsConfig: n,
-		})
-	}
-
-	// 注册所有 RabbitMQ 实例
-	for _, r := range cfg.Gmq.RabbitMQ {
-		if err := r.Validate(); err != nil {
-			log.Printf("[GMQ] Skip invalid rabbitmq config: %v", err)
-			continue
-		}
-		GmqRegister(r.Name, &mq.RabbitMQConn{
-			RabbitMQConfig: r,
-		})
-	}
-}
-
-// loadConfig 加载配置文件
-func loadConfig() *types.Config {
-	cfg := &types.Config{}
-
-	// 读取配置文件
-	data, err := os.ReadFile("config.yaml")
-	if err != nil {
-		log.Printf("[GMQ] Config file not found: %v", err)
-		return cfg
-	}
-
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		log.Printf("[GMQ] Failed to parse config file: %v", err)
-		return cfg
-	}
-
-	log.Println("[GMQ] Config loaded successfully")
-	return cfg
-}
-
-// GmqRegister 注册消息队列插件
-// 启动后台协程自动维护连接状态，断线自动重连
-func GmqRegister(name string, plugin Gmq) {
+// GmqRegisterPlugins 注册消息队列插件
+func GmqRegisterPlugins(name string, plugin Gmq) {
 	log.Printf("[GMQ] Registering plugin: %s\n", name)
 	if name == "" {
 		log.Printf("[GMQ] Plugin name cannot be empty\n")
@@ -88,14 +28,54 @@ func GmqRegister(name string, plugin Gmq) {
 	if _, exists := GmqPlugins[name]; exists {
 		return
 	}
-
 	proxy := newGmqProxy(name, plugin)
 	GmqPlugins[name] = proxy
+}
 
+// GmqStartPlugins 启动所有消息队列插件
+func GmqStartPlugins() {
+	config, configMap, err := utils.LoadGMQConfig("config.yml")
+	if err != nil {
+		log.Fatalf("[GMQ]加载配置失败: %v", err)
+	}
+	for k, v := range config.GMQ {
+		for _, item := range v {
+			var mqItem types.MQItem
+			if k == "nats" {
+				ok := false
+				if mqItem, ok = configMap[item.Name]; ok {
+					GmqRegisterPlugins(item.Name, &mq.NatsConn{})
+				}
+			}
+			if k == "redis" {
+				ok := false
+				if mqItem, ok = configMap[item.Name]; ok {
+					GmqRegisterPlugins(item.Name, &mq.RedisConn{})
+				}
+			}
+			if k == "rabbitmq" {
+				ok := false
+				if mqItem, ok = configMap[item.Name]; ok {
+					GmqRegisterPlugins(item.Name, &mq.RabbitMQConn{})
+				}
+			}
+			connectPlugins(item.Name, mqItem.Meta)
+		}
+	}
+}
+
+// connectPlugins 启动后台协程自动维护连接状态，断线自动重连
+func connectPlugins(name string, cfg map[string]any) {
+	// 先获取已注册的proxy
+	proxy, exists := GmqPlugins[name]
+	if !exists {
+		log.Printf("[GMQ] Plugin %s not registered, skip connection create", name)
+		return
+	}
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())
 	pluginCancelFuncs[name] = mgrCancel
 
-	go func(name string, p *GmqProxy, mgrCtx context.Context) {
+	go func(name string, cfg map[string]any, p *GmqProxy, mgrCtx context.Context) {
 
 		reconnectDelay := types.BaseReconnectDelay
 
@@ -123,7 +103,7 @@ func GmqRegister(name string, plugin Gmq) {
 				}
 
 				connCtx, connCancel := context.WithTimeout(mgrCtx, types.ConnectTimeout)
-				err := p.GmqConnect(connCtx)
+				err := p.GmqConnect(connCtx, cfg)
 				connCancel()
 
 				if err != nil {
@@ -144,7 +124,7 @@ func GmqRegister(name string, plugin Gmq) {
 				p.restoreSubscriptions()
 			}
 		}
-	}(name, proxy, mgrCtx)
+	}(name, cfg, proxy, mgrCtx)
 }
 
 // Shutdown 优雅关闭所有消息队列连接

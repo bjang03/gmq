@@ -11,15 +11,8 @@ var natsRegisterName = "nats-test"
 
 // NATS 注册
 func natsRegister(ctx context.Context) {
-	conn := &NatsConn{
-		NatsConfig: types.NatsConfig{
-			Url:  "localhost",
-			Port: "4222",
-			//Username: "nats",// 选填
-			//Password: "<PASSWORD>",// 选填
-		},
-	}
-	gmq.GmqRegister(natsRegisterName, conn)
+	gmq.GmqRegisterPlugins(natsRegisterName, &NatsConn{})
+	gmq.GmqStartPlugins()
 	defer gmq.Shutdown(ctx)
 }
 

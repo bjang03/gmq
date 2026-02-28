@@ -8,7 +8,7 @@ import (
 // Gmq 消息队列统一接口定义
 type Gmq interface {
 	GmqGetConn(ctx context.Context) any                                // 获取消息队列连接对象
-	GmqConnect(ctx context.Context) error                              // 连接消息队列
+	GmqConnect(ctx context.Context, cfg map[string]any) error          // 连接消息队列
 	GmqPublish(ctx context.Context, msg types.Publish) error           // 发布消息
 	GmqPublishDelay(ctx context.Context, msg types.PublishDelay) error // 发布延迟消息
 	GmqSubscribe(ctx context.Context, msg types.Subscribe) error       // 订阅消息

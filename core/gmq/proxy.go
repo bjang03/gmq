@@ -417,8 +417,8 @@ func (p *GmqProxy) GmqGetConn(ctx context.Context) any {
 }
 
 // GmqConnect 连接消息队列
-func (p *GmqProxy) GmqConnect(ctx context.Context) error {
-	err := p.plugin.GmqConnect(ctx)
+func (p *GmqProxy) GmqConnect(ctx context.Context, cfg map[string]any) error {
+	err := p.plugin.GmqConnect(ctx, cfg)
 	if err == nil {
 		atomic.StoreInt32(&p.connected, 1)
 	}

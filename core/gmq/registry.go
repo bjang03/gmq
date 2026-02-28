@@ -5,6 +5,7 @@ import (
 	"github.com/bjang03/gmq/mq"
 	"github.com/bjang03/gmq/types"
 	"github.com/bjang03/gmq/utils"
+	"github.com/spf13/cast"
 	"log"
 	"sync"
 	"time"
@@ -32,34 +33,25 @@ func GmqRegisterPlugins(name string, plugin Gmq) {
 	GmqPlugins[name] = proxy
 }
 
-// GmqStartPlugins 启动所有消息队列插件
-func GmqStartPlugins() {
-	config, configMap, err := utils.LoadGMQConfig("config.yml")
+// Init 启动所有消息队列插件
+func Init() {
+	config, err := utils.LoadGMQConfig()
 	if err != nil {
 		log.Fatalf("[GMQ]加载配置失败: %v", err)
 	}
-	for k, v := range config.GMQ {
-		for _, item := range v {
-			var mqItem types.MQItem
-			if k == "nats" {
-				ok := false
-				if mqItem, ok = configMap[item.Name]; ok {
-					GmqRegisterPlugins(item.Name, &mq.NatsConn{})
-				}
+	for secondLevel, thirdLevelData := range config.GMQ {
+		for thirdLevel, configItems := range thirdLevelData {
+			configMap := cast.ToStringMap(configItems)
+			if secondLevel == "nats" {
+				GmqRegisterPlugins(thirdLevel, &mq.NatsConn{})
 			}
-			if k == "redis" {
-				ok := false
-				if mqItem, ok = configMap[item.Name]; ok {
-					GmqRegisterPlugins(item.Name, &mq.RedisConn{})
-				}
+			if secondLevel == "redis" {
+				GmqRegisterPlugins(thirdLevel, &mq.RedisConn{})
 			}
-			if k == "rabbitmq" {
-				ok := false
-				if mqItem, ok = configMap[item.Name]; ok {
-					GmqRegisterPlugins(item.Name, &mq.RabbitMQConn{})
-				}
+			if secondLevel == "rabbitmq" {
+				GmqRegisterPlugins(thirdLevel, &mq.RabbitMQConn{})
 			}
-			connectPlugins(item.Name, mqItem.Meta)
+			connectPlugins(thirdLevel, configMap)
 		}
 	}
 }

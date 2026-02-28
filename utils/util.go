@@ -6,7 +6,6 @@ import (
 	"github.com/bjang03/gmq/types"
 	"github.com/spf13/cast"
 	"gopkg.in/yaml.v3"
-	"log"
 	"os"
 	"reflect"
 	"strings"
@@ -63,38 +62,19 @@ func MapToStruct(target interface{}, dataMap map[string]interface{}) error {
 // LoadGMQConfig 读取配置文件并返回 {name: 配置项} 的映射
 // 参数: configPath - 配置文件路径（如config.yaml）
 // 返回: 全局映射（key=配置项name，value=该配置项的所有信息）、错误信息
-func LoadGMQConfig(configPath string) (*types.GMQRoot, map[string]types.MQItem, error) {
+func LoadGMQConfig() (*types.GMQConfig, error) {
 	// 1. 读取文件内容
+	configPath := "config.yml"
 	content, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("读取配置文件失败: %w", err)
+		return nil, fmt.Errorf("读取配置文件失败: %w", err)
 	}
-
 	// 2. 解析YAML到结构体
-	var root *types.GMQRoot
-	if err := yaml.Unmarshal(content, &root); err != nil {
-		return nil, nil, fmt.Errorf("解析YAML失败: %w", err)
+	config := new(types.GMQConfig)
+	if err := yaml.Unmarshal(content, config); err != nil {
+		return nil, fmt.Errorf("解析YAML失败: %w", err)
 	}
-
-	// 3. 转换为 {name: 配置项} 的映射（核心逻辑）
-	nameToConfig := make(map[string]types.MQItem)
-	for mqType, items := range root.GMQ {
-		for _, item := range items {
-			// 校验name不能为空
-			if item.Name == "" {
-				log.Printf("警告: %s类型存在空name的配置项，已跳过", mqType)
-				continue
-			}
-			// 校验name是否重复（重复则覆盖，也可改为报错）
-			if _, exists := nameToConfig[item.Name]; exists {
-				log.Printf("警告: 配置项name=%s重复，已覆盖", item.Name)
-			}
-			// 存入映射（key=name，value=完整配置项）
-			nameToConfig[item.Name] = item
-		}
-	}
-
-	return root, nameToConfig, nil
+	return config, nil
 }
 
 // ConvertToMap 通用数据转map[string]interface{}（无反射+适配Redis）

@@ -200,7 +200,11 @@ func (c *RedisConn) GmqAck(ctx context.Context, msg *types.AckMessage) error {
 	msgId := cast.ToString(attr["MessageId"])
 	topic := cast.ToString(attr["Topic"])
 	group := cast.ToString(attr["Group"])
-	_, err := c.conn.XAckDel(ctx, topic, group, msgId).Result()
+	_, err := c.conn.XAck(ctx, topic, group, msgId).Result()
+	if err != nil {
+		return fmt.Errorf("ack message failed：%v\n", err)
+	}
+	_, err = c.conn.XDel(ctx, topic, msgId).Result()
 	return err
 }
 

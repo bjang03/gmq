@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,14 +44,6 @@ func newGmqProxy(name string, plugin Gmq) *GmqProxy {
 		plugin: plugin,
 	}
 	return p
-}
-
-// safeCloneMap 安全地克隆 map，处理 nil 情况
-func safeCloneMap(m map[string]interface{}) map[string]interface{} {
-	if m == nil {
-		return nil
-	}
-	return maps.Clone(m)
 }
 
 // validatePublishMsg 统一校验发布消息公共参数

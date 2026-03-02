@@ -12,7 +12,7 @@ var natsRegisterName = "nats-test"
 // NATS 注册
 func natsRegister(ctx context.Context) {
 	gmq.GmqRegisterPlugins(natsRegisterName, &NatsConn{})
-	gmq.GmqStartPlugins()
+	gmq.Init()
 	defer gmq.Shutdown(ctx)
 }
 

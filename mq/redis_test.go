@@ -13,7 +13,7 @@ var redisRegisterName = "redis-test"
 // Redis 注册
 func redisRegister(ctx context.Context) {
 	gmq.GmqRegisterPlugins(redisRegisterName, &RedisConn{})
-	gmq.GmqStartPlugins()
+	gmq.Init()
 	defer gmq.Shutdown(ctx)
 }
 

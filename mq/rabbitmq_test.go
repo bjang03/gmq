@@ -12,7 +12,7 @@ var rabbitMQRegisterName = "rabbitmq-test"
 // RabbitMQ 注册
 func rabbitMQRegister(ctx context.Context) {
 	gmq.GmqRegisterPlugins(rabbitMQRegisterName, &RabbitMQConn{})
-	gmq.GmqStartPlugins()
+	gmq.Init()
 	defer gmq.Shutdown(ctx)
 }
 

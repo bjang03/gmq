@@ -7,16 +7,14 @@ import (
 	"github.com/bjang03/gmq/utils"
 	"github.com/spf13/cast"
 	"log"
-	"sync"
 	"time"
 )
 
 // globalShutdown 用于优雅关闭信号
 var (
-	GmqPlugins         = make(map[string]*GmqProxy)
-	globalShutdown     = make(chan struct{})
-	globalShutdownOnce sync.Once
-	pluginCancelFuncs  = make(map[string]context.CancelFunc)
+	GmqPlugins        = make(map[string]*GmqProxy)
+	globalShutdown    = make(chan struct{})
+	pluginCancelFuncs = make(map[string]context.CancelFunc)
 )
 
 // GmqRegisterPlugins 注册消息队列插件
@@ -121,13 +119,11 @@ func connectPlugins(name string, cfg map[string]any) {
 
 // Shutdown 优雅关闭所有消息队列连接
 func Shutdown(ctx context.Context) error {
-	globalShutdownOnce.Do(func() {
-		select {
-		case <-globalShutdown:
-		default:
-			close(globalShutdown)
-		}
-	})
+	select {
+	case <-globalShutdown:
+	default:
+		close(globalShutdown)
+	}
 
 	proxies := make([]*GmqProxy, 0, len(GmqPlugins))
 	for _, p := range GmqPlugins {

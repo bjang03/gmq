@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>死信队列管理 - GMQ</title>
+    <link rel="stylesheet" href="/ui/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-left">
+                <button class="btn btn-secondary btn-sm" onclick="goBack()">← 返回</button>
+                <h1>☠️ 死信队列管理</h1>
+            </div>
+            <div class="mq-info" id="mq-info"></div>
+        </header>
+
+        <div class="deadletter-page">
+            <div class="deadletter-controls">
+                <input type="text" id="dlq-queue-input" class="form-input" placeholder="输入队列名称">
+                <button class="btn btn-primary" onclick="loadDeadLetterMessages()">查询</button>
+                <button class="btn btn-refresh" onclick="refreshDeadLetterMessages()">刷新</button>
+            </div>
+
+            <div class="dead-letter-list" id="dead-letter-list">
+                <div class="empty-state">
+                    <div class="empty-icon">📦</div>
+                    <div class="empty-text">请输入队列名称查询死信消息</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 死信消息编辑模态框 -->
+    <div class="modal" id="edit-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>编辑死信消息</h3>
+                <button class="modal-close" onclick="closeEditModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>消息内容 (JSON)</label>
+                    <textarea id="edit-message-body" class="form-textarea" rows="10"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeEditModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveDeadLetterMessage()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/ui/js/deadletter.js"></script>
+</body>
+</html>

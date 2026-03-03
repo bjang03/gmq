@@ -19,6 +19,7 @@ package core
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/bjang03/gmq/mq"
@@ -32,8 +33,10 @@ import (
 // pluginCancelFuncs stores cancellation functions for plugin connection goroutines (name -> cancelFunc)
 var (
 	GmqPlugins        = make(map[string]*GmqProxy)
+	pluginsMu         sync.RWMutex // protects GmqPlugins for concurrent access
 	globalShutdown    = make(chan struct{})
 	pluginCancelFuncs = make(map[string]context.CancelFunc)
+	cancelFuncsMu     sync.RWMutex // protects pluginCancelFuncs for concurrent access
 )
 
 // GmqRegisterPlugins registers a message queue plugin with a given name.
@@ -48,6 +51,10 @@ func GmqRegisterPlugins(name string, plugin Gmq) {
 		utils.LogWarn("plugin name cannot be empty", "plugin", "registry")
 		return
 	}
+
+	pluginsMu.Lock()
+	defer pluginsMu.Unlock()
+
 	if _, exists := GmqPlugins[name]; exists {
 		utils.LogWarn("plugin already registered, skipping", "name", name, "plugin", name)
 		return
@@ -93,13 +100,26 @@ func Init() {
 //   - name: plugin name
 //   - cfg: plugin configuration parameters
 func connectPlugins(name string, cfg map[string]any) {
+	pluginsMu.RLock()
 	proxy, exists := GmqPlugins[name]
+	pluginsMu.RUnlock()
+
 	if !exists {
 		utils.LogWarn("plugin not registered, skip connection create", "name", name, "plugin", name)
 		return
 	}
+
+	// Check if already has a running connection goroutine
+	cancelFuncsMu.Lock()
+	if _, exists := pluginCancelFuncs[name]; exists {
+		cancelFuncsMu.Unlock()
+		utils.LogWarn("plugin connection goroutine already exists, skipping", "name", name, "plugin", name)
+		return
+	}
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())
 	pluginCancelFuncs[name] = mgrCancel
+	cancelFuncsMu.Unlock()
+
 	logger := utils.LogWithPlugin(name)
 
 	go func(name string, cfg map[string]any, p *GmqProxy, mgrCtx context.Context) {
@@ -165,10 +185,20 @@ func Shutdown(ctx context.Context) error {
 		close(globalShutdown)
 	}
 
+	// Cancel all plugin connection goroutines
+	cancelFuncsMu.Lock()
+	for name, cancel := range pluginCancelFuncs {
+		cancel()
+		delete(pluginCancelFuncs, name)
+	}
+	cancelFuncsMu.Unlock()
+
+	pluginsMu.RLock()
 	proxies := make([]*GmqProxy, 0, len(GmqPlugins))
 	for _, p := range GmqPlugins {
 		proxies = append(proxies, p)
 	}
+	pluginsMu.RUnlock()
 
 	var lastErr error
 	for _, p := range proxies {
@@ -185,6 +215,9 @@ func Shutdown(ctx context.Context) error {
 //
 // Returns the GmqProxy if found, nil otherwise
 func GetGmq(name string) *GmqProxy {
+	pluginsMu.RLock()
+	defer pluginsMu.RUnlock()
+
 	proxy, ok := GmqPlugins[name]
 	if !ok {
 		return nil
@@ -195,6 +228,9 @@ func GetGmq(name string) *GmqProxy {
 // GetAllGmq returns a copy of all registered message queue proxies.
 // Returns a map of plugin names to their corresponding GmqProxy instances
 func GetAllGmq() map[string]*GmqProxy {
+	pluginsMu.RLock()
+	defer pluginsMu.RUnlock()
+
 	result := make(map[string]*GmqProxy, len(GmqPlugins))
 	for k, v := range GmqPlugins {
 		result[k] = v

@@ -347,10 +347,26 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 	logger.Info("subscribed successfully", "topic", cfg.Topic, "consumer", cfg.ConsumerName, "stream", streamName)
 
 	// start background goroutine to listen for context cancellation, used to clean up subscription
+	// this goroutine will exit when either:
+	// 1. context is cancelled (unsubscribe and exit)
+	// 2. subscription is closed (IsValid returns false, exit)
 	go func() {
-		<-ctx.Done()
-		logger.Debug("unsubscribing", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
-		_ = sub.Unsubscribe()
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				logger.Debug("unsubscribing due to context cancellation", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
+				_ = sub.Unsubscribe()
+				return
+			case <-ticker.C:
+				// check if subscription is still valid, if not, exit goroutine
+				if !sub.IsValid() {
+					logger.Debug("subscription closed, exiting cleanup goroutine", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
+					return
+				}
+			}
+		}
 	}()
 
 	return nil

@@ -11,7 +11,9 @@ package mq
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/bjang03/gmq/types"
 	"github.com/bjang03/gmq/utils"
@@ -219,6 +221,7 @@ func (c *RedisConn) GmqPublishDelay(_ context.Context, _ types.PublishDelay) (er
 
 // GmqSubscribe subscribes to Redis Stream messages using consumer group.
 // Uses consumer group pattern for distributed consumption.
+// This method starts a background goroutine for non-blocking message consumption.
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - sub: subscription configuration (must be *RedisSubMessage)
@@ -250,49 +253,78 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 		logger.Debug("consumer group already exists", "stream", cfg.Topic, "group", group)
 	}
 
+	logger.Info("subscribed successfully", "stream", cfg.Topic, "group", group, "consumer", cfg.ConsumerName)
+
+	// Start background goroutine for non-blocking message consumption
+	go c.consumeLoop(ctx, cfg, group, sub, logger)
+
+	return nil
+}
+
+// consumeLoop runs in a background goroutine to consume messages from Redis Stream.
+// It handles context cancellation gracefully and exits when:
+// - Context is cancelled
+// - Connection is closed
+// - An unrecoverable error occurs
+func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group string, sub types.Subscribe, logger *slog.Logger) {
 	// build structured parameters (clear parameter meaning, no need to remember command order)
 	readArgs := &redis.XReadGroupArgs{
 		Group:    group,                        // consumer group name
 		Consumer: cfg.ConsumerName,             // consumer name
 		Count:    cast.ToInt64(cfg.FetchCount), // number of messages to fetch each time
-		Block:    0,                            // block time (0 = block forever, time.Millisecond unit)
+		Block:    5 * time.Second,              // block time (use timeout instead of forever for graceful shutdown)
 		Streams:  []string{cfg.Topic, ">"},     // consumed stream + start ID (> means consume new messages)
 	}
 
-	logger.Info("subscribed successfully", "stream", cfg.Topic, "group", group, "consumer", cfg.ConsumerName)
-
 	for {
+		select {
+		case <-ctx.Done():
+			logger.Debug("subscription context done, exiting consume loop", "stream", cfg.Topic, "consumer", cfg.ConsumerName)
+			return
+		default:
+		}
+
 		if c.conn == nil {
-			logger.Error("connection is nil during consume loop")
-			return fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
+			logger.Error("connection is nil during consume loop, exiting", "stream", cfg.Topic)
+			return
 		}
 
 		streams, err := c.conn.XReadGroup(ctx, readArgs).Result()
 		if err != nil {
-			logger.Error("xreadgroup failed", "stream", cfg.Topic, "error", err)
-			return fmt.Errorf("%s: xreadgroup: %w", redisPluginName, err)
+			// Check if context was cancelled during the blocking call
+			if ctx.Err() != nil {
+				logger.Debug("context cancelled during xreadgroup, exiting", "stream", cfg.Topic, "consumer", cfg.ConsumerName)
+				return
+			}
+			// Check if it's a timeout (no new messages), just continue
+			if err == redis.Nil || strings.Contains(err.Error(), "timeout") {
+				continue
+			}
+			logger.Error("xreadgroup failed, exiting consume loop", "stream", cfg.Topic, "error", err)
+			return
 		}
 
-		select {
-		case <-ctx.Done():
-			logger.Debug("subscription context done", "stream", cfg.Topic, "consumer", cfg.ConsumerName)
-			return nil
-		default:
-			// parse structured results
-			for _, stream := range streams {
-				for _, msg := range stream.Messages {
-					message := types.AckMessage{
-						MessageData: msg.Values,
-						AckRequiredAttr: map[string]any{
-							"MessageId": msg.ID,
-							"Topic":     cfg.Topic,
-							"Group":     group,
-						},
-					}
-					if err = sub.GetAckHandleFunc()(ctx, &message); err != nil {
-						logger.Error("message handler failed", "stream", cfg.Topic, "msgId", msg.ID, "error", err)
-						continue
-					}
+		// Process messages
+		for _, stream := range streams {
+			for _, msg := range stream.Messages {
+				select {
+				case <-ctx.Done():
+					logger.Debug("context cancelled during message processing, exiting", "stream", cfg.Topic, "consumer", cfg.ConsumerName)
+					return
+				default:
+				}
+
+				message := types.AckMessage{
+					MessageData: msg.Values,
+					AckRequiredAttr: map[string]any{
+						"MessageId": msg.ID,
+						"Topic":     cfg.Topic,
+						"Group":     group,
+					},
+				}
+				if err = sub.GetAckHandleFunc()(ctx, &message); err != nil {
+					logger.Error("message handler failed", "stream", cfg.Topic, "msgId", msg.ID, "error", err)
+					continue
 				}
 			}
 		}

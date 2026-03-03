@@ -60,6 +60,8 @@ var (
 var (
 	// ErrSubscriptionNotFound indicates that subscription was not found
 	ErrSubscriptionNotFound = errors.New("subscription not found")
+	// ErrSubscriptionAlreadyExists indicates that subscription already exists
+	ErrSubscriptionAlreadyExists = errors.New("subscription already exists")
 )
 
 // Type conversion errors: errors related to type conversion utilities

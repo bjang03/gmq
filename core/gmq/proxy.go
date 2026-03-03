@@ -53,6 +53,7 @@ type GmqProxy struct {
 // Parameters:
 //   - name: plugin name for identification
 //   - plugin: underlying message queue implementation
+//
 // Returns initialized GmqProxy instance
 func newGmqProxy(name string, plugin Gmq) *GmqProxy {
 	p := &GmqProxy{
@@ -80,6 +81,7 @@ func validatePublishMsg(msg types.Publish) error {
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - msg: message to publish (must implement Publish interface)
+//
 // Returns error if all retry attempts fail
 func (p *GmqProxy) GmqPublish(ctx context.Context, msg types.Publish) error {
 	var err error
@@ -142,6 +144,7 @@ func validatePublishDelayMsg(msg types.PublishDelay) error {
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - msg: delayed message to publish (must implement PublishDelay interface)
+//
 // Returns error if all retry attempts fail
 func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) error {
 	var err error
@@ -205,19 +208,30 @@ func validateSubscribeMsg(msg *types.SubMessage) error {
 // It manages message acknowledgment based on the AutoAck setting:
 // - When AutoAck=true: acknowledges immediately before processing
 // - When AutoAck=false: acknowledges after successful processing, rejects on failure
+// Includes panic recovery to prevent a single message handler crash from affecting the entire subscription.
 // Parameters:
 //   - originalFunc: the user-provided message handler
 //   - autoAck: whether to auto-acknowledge before processing
+//
 // Returns wrapped handler function
 func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message *types.AckMessage) error {
-	return func(ctx context.Context, message *types.AckMessage) error {
+	return func(ctx context.Context, message *types.AckMessage) (err error) {
+		// panic recovery to prevent handler crash from terminating the subscription
+		defer func() {
+			if r := recover(); r != nil {
+				logger := utils.LogWithPlugin(p.name)
+				logger.Error("message handler panic recovered", "panic", r)
+				err = fmt.Errorf("handler panic: %v", r)
+			}
+		}()
+
 		if autoAck {
-			err := p.plugin.GmqAck(ctx, message)
+			err = p.plugin.GmqAck(ctx, message)
 			if err != nil {
 				return err
 			}
 		}
-		err := originalFunc(ctx, message.MessageData)
+		err = originalFunc(ctx, message.MessageData)
 		if !autoAck {
 			if err == nil {
 				err = p.plugin.GmqAck(ctx, message)
@@ -241,9 +255,9 @@ func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - msg: subscription message containing topic, consumer, and handler
+//
 // Returns error if subscription fails
-func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) error {
-	var err error
+func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err error) {
 	message, ok := msg.GetSubMsg().(*types.SubMessage)
 	if !ok {
 		return fmt.Errorf("%w: expected *types.SubMessage", types.ErrInvalidMessageType)
@@ -259,9 +273,10 @@ func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) error 
 	_, loaded := p.subscriptions.LoadOrStore(subKey, struct{}{})
 	if loaded {
 		logger := utils.LogWithPlugin(p.name)
-		logger.Warn("already subscribed to topic", "topic", message.Topic)
-		return nil
+		logger.Warn("already subscribed to topic", "topic", message.Topic, "consumer", message.ConsumerName)
+		return fmt.Errorf("%w: topic=%s, consumer=%s", types.ErrSubscriptionAlreadyExists, message.Topic, message.ConsumerName)
 	}
+	// use named return value to ensure defer sees the final error value
 	defer func() {
 		if err != nil {
 			p.subscriptions.Delete(subKey)
@@ -303,31 +318,8 @@ func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) error 
 	if err != nil {
 		return err
 	}
-	p.subscriptionParams.Store(subKey, &sub)
+	p.subscriptionParams.Store(subKey, sub)
 	logger.Info("subscribe success, save subKey", "subKey", subKey)
-	return err
-}
-
-// GmqUnsubscribe cancels an active subscription for a specific topic and consumer.
-// Parameters:
-//   - topic: the topic to unsubscribe from
-//   - consumerName: the consumer name to unsubscribe
-// Returns error if subscription not found or unsubscription fails
-func (p *GmqProxy) GmqUnsubscribe(topic, consumerName string) error {
-	subKey := p.getSubKey(topic, consumerName)
-	subObj, exists := p.subscriptions.Load(subKey)
-	if !exists {
-		return fmt.Errorf("%w: %s", types.ErrSubscriptionNotFound, subKey)
-	}
-	if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
-		if err := closer.Unsubscribe(); err != nil {
-			return fmt.Errorf("failed to unsubscribe: %w", err)
-		}
-	}
-	p.subscriptions.Delete(subKey)
-	p.subscriptionParams.Delete(subKey)
-	logger := utils.LogWithPlugin(p.name)
-	logger.Info("unsubscribed successfully", "topic", topic, "consumer", consumerName)
 	return nil
 }
 
@@ -413,6 +405,7 @@ func (p *GmqProxy) restoreSubscriptions() {
 // Parameters:
 //   - topic: the subscription topic
 //   - consumerName: the consumer name (empty for anonymous consumers)
+//
 // Returns a unique subscription key string
 func (p *GmqProxy) getSubKey(topic, consumerName string) string {
 	if consumerName != "" {
@@ -447,6 +440,7 @@ func (p *GmqProxy) GmqGetConn(ctx context.Context) any {
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - cfg: connection configuration parameters
+//
 // Returns error if connection fails
 func (p *GmqProxy) GmqConnect(ctx context.Context, cfg map[string]any) error {
 	err := p.plugin.GmqConnect(ctx, cfg)
@@ -464,6 +458,7 @@ func (p *GmqProxy) GmqConnect(ctx context.Context, cfg map[string]any) error {
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - msg: message acknowledgment information
+//
 // Returns error if acknowledgment fails
 func (p *GmqProxy) GmqAck(ctx context.Context, msg *types.AckMessage) error {
 	return p.plugin.GmqAck(ctx, msg)
@@ -474,6 +469,7 @@ func (p *GmqProxy) GmqAck(ctx context.Context, msg *types.AckMessage) error {
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - msg: message acknowledgment information
+//
 // Returns error if negative acknowledgment fails
 func (p *GmqProxy) GmqNak(ctx context.Context, msg *types.AckMessage) error {
 	return p.plugin.GmqNak(ctx, msg)
@@ -483,6 +479,7 @@ func (p *GmqProxy) GmqNak(ctx context.Context, msg *types.AckMessage) error {
 // Sets the internal connected flag to 0 and stops all background goroutines.
 // Parameters:
 //   - ctx: context for timeout/cancellation control
+//
 // Returns error if close fails
 func (p *GmqProxy) GmqClose(ctx context.Context) error {
 	// clear all subscriptions before closing

@@ -1,46 +1,83 @@
+// Package mq provides message queue implementations for the GMQ system.
+//
+// Redis Implementation Notes:
+//   - This implementation uses Redis Streams for message persistence and delivery.
+//   - Delayed messages are NOT supported because Redis Streams does not have native
+//     delayed message support. GmqPublishDelay will return ErrDelayMessageNotSupported.
+//   - Uses consumer group pattern for distributed consumption across multiple consumers.
+//   - Topic names are prefixed with "gmq:stream:" to avoid conflicts with other data.
 package mq
 
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	"github.com/bjang03/gmq/types"
 	"github.com/bjang03/gmq/utils"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cast"
-	"log"
-	"strings"
 )
 
+// Redis plugin name constant
+const redisPluginName = "redis"
+
+// RedisPubMessage represents a Redis publish message.
+// Uses Redis Streams for message persistence and delivery.
 type RedisPubMessage struct {
 	types.PubMessage
 }
 
+// RedisPubDelayMessage represents a Redis delayed publish message (not supported in current implementation).
+// Redis Streams does not have native delayed message support.
 type RedisPubDelayMessage struct {
 	types.PubDelayMessage
 }
 
+// RedisSubMessage represents a Redis subscription configuration.
+// Uses consumer group pattern for distributed consumption across multiple consumers.
 type RedisSubMessage struct {
 	types.SubMessage
 }
 
-// RedisConn Redis消息队列实现
+// RedisConn is the Redis message queue implementation using Redis Streams.
+// Provides publish, subscribe, and acknowledgment capabilities.
+// Note: Delayed messages are not supported in this implementation.
+//
+// Redis Streams Features:
+//   - Message persistence in Redis Streams
+//   - Consumer group pattern for distributed consumption
+//   - Manual acknowledgment via XAck
+//   - Automatic redelivery for unacknowledged messages in PEL (Pending Entries List)
+//
+// Topic Naming:
+//   - All topics are prefixed with "gmq:stream:" to avoid conflicts
+//   - Example: business topic "orders" becomes "gmq:stream:orders"
+//
+// Consumer Groups:
+//   - Group name format: "{consumer_name}:default:group"
+//   - Each consumer belongs to its own consumer group
+//   - Messages are consumed with ">" ID to get only new messages
 type RedisConn struct {
-	conn *redis.Client
+	conn *redis.Client // Redis client connection (go-redis client)
 }
 
+// redisConfig holds Redis connection configuration parameters.
+// Used with MapToStruct to convert config map to struct.
 type redisConfig struct {
-	Addr           string
-	Port           string
-	Db             int
-	Username       string
-	Password       string
-	PoolSize       int
-	MinIdleConns   int
-	MaxActiveConns int
-	MaxRetries     int
+	Addr           string // Redis server address
+	Port           string // Redis server port
+	Db             int    // Redis database number
+	Username       string // authentication username
+	Password       string // authentication password
+	PoolSize       int    // connection pool size
+	MinIdleConns   int    // minimum idle connections
+	MaxActiveConns int    // maximum active connections (deprecated, use PoolSize)
+	MaxRetries     int    // maximum retry attempts for commands
 }
 
-// GmqPing 检测Redis连接状态
+// GmqPing checks if Redis connection is alive.
+// Returns true if client is initialized and server responds with PONG
 func (c *RedisConn) GmqPing(ctx context.Context) bool {
 	if c.conn == nil {
 		return false
@@ -52,27 +89,42 @@ func (c *RedisConn) GmqPing(ctx context.Context) bool {
 	return true
 }
 
+// GmqGetConn retrieves the Redis client connection.
+// Returns the Redis client instance
 func (c *RedisConn) GmqGetConn(_ context.Context) any {
 	return c.conn
 }
 
-// GmqConnect 连接Redis服务器
+// GmqConnect establishes connection to Redis server.
+// Reuses existing connection if already initialized.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - cfg: connection configuration parameters
+//
+// Returns error if configuration is invalid
 func (c *RedisConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
+	logger := utils.LogWithPlugin(redisPluginName)
+
 	config := new(redisConfig)
-	err = utils.MapToStruct(config, cfg)
-	if err != nil {
-		return err
+	if err = utils.MapToStruct(config, cfg); err != nil {
+		logger.Error("config parse failed", "error", err)
+		return fmt.Errorf("%s: config: %w", redisPluginName, err)
 	}
 	if config.Addr == "" {
-		return fmt.Errorf("nats config addr is empty")
+		logger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
+		return fmt.Errorf("%s: config: %w", redisPluginName, types.ErrConfigAddrRequired)
 	}
 	if config.Port == "" {
-		return fmt.Errorf("nats config port is empty")
+		logger.Error("config validation failed", "error", types.ErrConfigPortRequired)
+		return fmt.Errorf("%s: config: %w", redisPluginName, types.ErrConfigPortRequired)
 	}
-	// 连接池已存在，直接返回（go-redis 会自动管理连接）
+
+	// connection pool already exists, reuse existing connection (go-redis automatically manages connections internally)
 	if c.conn != nil {
+		logger.Debug("connection already exists, reusing")
 		return nil
 	}
+
 	options := redis.Options{
 		Addr: config.Addr + ":" + config.Port,
 		DB:   config.Db,
@@ -93,87 +145,140 @@ func (c *RedisConn) GmqConnect(_ context.Context, cfg map[string]any) (err error
 	if config.MaxRetries > 0 {
 		options.MaxRetries = config.MaxRetries
 	}
-	// 连接 Redis
+
+	// connect to Redis
 	c.conn = redis.NewClient(&options)
-	return
+	logger.Info("connected successfully", "addr", config.Addr, "port", config.Port, "db", config.Db)
+	return nil
 }
 
-// GmqClose 关闭Redis连接
+// GmqClose closes the Redis connection.
+// Safe to call multiple times
 func (c *RedisConn) GmqClose(_ context.Context) (err error) {
+	logger := utils.LogWithPlugin(redisPluginName)
+
 	if c.conn != nil {
-		err = c.conn.Close()
+		if err = c.conn.Close(); err != nil {
+			logger.Error("close connection failed", "error", err)
+		}
 		c.conn = nil
 	}
+
+	logger.Info("connection closed")
 	return err
 }
 
-// GmqPublish 发布消息
+// GmqPublish publishes a message to Redis Stream.
+// Topic is prefixed with "gmq:stream:" to avoid conflicts with other data.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: message to publish (must be *RedisPubMessage)
+//
+// Returns error if publish fails
 func (c *RedisConn) GmqPublish(ctx context.Context, msg types.Publish) (err error) {
+	logger := utils.LogWithPlugin(redisPluginName)
+
 	cfg, ok := msg.(*RedisPubMessage)
 	if !ok {
-		return fmt.Errorf("invalid message type, expected *RedisPubMessage")
+		logger.Error("invalid message type", "expected", "*RedisPubMessage", "got", fmt.Sprintf("%T", msg))
+		return fmt.Errorf("%s: publish: %w: expected *RedisPubMessage", redisPluginName, types.ErrInvalidMessageType)
 	}
+
 	cfg.Topic = "gmq:stream:" + cfg.Topic
 	toMap, err := utils.ConvertToMap(cfg.Data)
 	if err != nil {
-		return err
+		logger.Error("convert data to map failed", "error", err)
+		return fmt.Errorf("%s: convert_data: %w", redisPluginName, err)
 	}
-	// 1. 构造 XAdd 参数结构体（类型安全，参数含义清晰）
+
+	// 1. build XAdd argument structure (type-safe, clear parameter meaning)
 	addArgs := &redis.XAddArgs{
-		Stream: cfg.Topic, // 流名称
-		ID:     "*",       // 自动生成 ID
+		Stream: cfg.Topic, // stream name
+		ID:     "*",       // auto-generate ID
 		Values: toMap,
 	}
-	// 2. 调用专用 XAdd 方法
+
+	// 2. call dedicated XAdd method
 	if _, err = c.conn.XAdd(ctx, addArgs).Result(); err != nil {
-		return fmt.Errorf("publish message failed：%v\n", err)
+		logger.Error("xadd failed", "stream", cfg.Topic, "error", err)
+		return fmt.Errorf("%s: xadd: %w", redisPluginName, err)
 	}
-	return
+
+	logger.Debug("publish success", "stream", cfg.Topic)
+	return nil
 }
 
-// GmqPublishDelay 发布延迟消息
+// GmqPublishDelay is not supported in Redis implementation.
+// Redis Streams does not have native delayed message support.
+// Returns ErrDelayMessageNotSupported error
 func (c *RedisConn) GmqPublishDelay(_ context.Context, _ types.PublishDelay) (err error) {
-	return fmt.Errorf("redis not support delay message")
+	logger := utils.LogWithPlugin(redisPluginName)
+	logger.Error("publish delay not supported")
+	return fmt.Errorf("%s: %w", redisPluginName, types.ErrDelayMessageNotSupported)
 }
 
-// GmqSubscribe 订阅Redis消息
+// GmqSubscribe subscribes to Redis Stream messages using consumer group.
+// Uses consumer group pattern for distributed consumption.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - sub: subscription configuration (must be *RedisSubMessage)
+//
+// Returns error if subscription fails
 func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err error) {
+	logger := utils.LogWithPlugin(redisPluginName)
+
 	cfg, ok := sub.GetSubMsg().(*RedisSubMessage)
 	if !ok {
-		return fmt.Errorf("invalid message type, expected *RedisSubMessage")
+		logger.Error("invalid message type", "expected", "*RedisSubMessage", "got", fmt.Sprintf("%T", sub.GetSubMsg()))
+		return fmt.Errorf("%s: subscribe: %w: expected *RedisSubMessage", redisPluginName, types.ErrInvalidMessageType)
 	}
+
 	if c.conn == nil {
-		return fmt.Errorf("redis connection is nil")
+		logger.Error("connection is nil")
+		return fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
 	}
+
 	cfg.Topic = "gmq:stream:" + cfg.Topic
 	group := fmt.Sprintf("%s:default:group", cfg.ConsumerName)
+
 	_, err = c.conn.XGroupCreateMkStream(ctx, cfg.Topic, group, "0").Result()
 	if err != nil {
 		if !strings.Contains(err.Error(), "BUSYGROUP") && !strings.Contains(err.Error(), "already exists") {
-			return fmt.Errorf("subscribe message failed：%v\n", err)
+			logger.Error("create consumer group failed", "stream", cfg.Topic, "group", group, "error", err)
+			return fmt.Errorf("%s: create_group: %w", redisPluginName, err)
 		}
+		logger.Debug("consumer group already exists", "stream", cfg.Topic, "group", group)
 	}
-	// 构造结构化参数（参数含义清晰，无需记命令顺序）
+
+	// build structured parameters (clear parameter meaning, no need to remember command order)
 	readArgs := &redis.XReadGroupArgs{
-		Group:    group,                        // 消费者组名称
-		Consumer: cfg.ConsumerName,             // 消费者名称
-		Count:    cast.ToInt64(cfg.FetchCount), // 每次拉取的消息数
-		Block:    0,                            // 阻塞时间（0 = 永久阻塞，time.Millisecond 单位）
-		Streams:  []string{cfg.Topic, ">"},     // 消费的流 + 起始 ID（> 表示消费新消息）
+		Group:    group,                        // consumer group name
+		Consumer: cfg.ConsumerName,             // consumer name
+		Count:    cast.ToInt64(cfg.FetchCount), // number of messages to fetch each time
+		Block:    0,                            // block time (0 = block forever, time.Millisecond unit)
+		Streams:  []string{cfg.Topic, ">"},     // consumed stream + start ID (> means consume new messages)
 	}
+
+	logger.Info("subscribed successfully", "stream", cfg.Topic, "group", group, "consumer", cfg.ConsumerName)
+
 	for {
 		if c.conn == nil {
-			return fmt.Errorf("redis connection is nil")
+			logger.Error("connection is nil during consume loop")
+			return fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
 		}
+
 		streams, err := c.conn.XReadGroup(ctx, readArgs).Result()
 		if err != nil {
-			return fmt.Errorf("subscribe message failed：%v\n", err)
+			logger.Error("xreadgroup failed", "stream", cfg.Topic, "error", err)
+			return fmt.Errorf("%s: xreadgroup: %w", redisPluginName, err)
 		}
+
 		select {
 		case <-ctx.Done():
+			logger.Debug("subscription context done", "stream", cfg.Topic, "consumer", cfg.ConsumerName)
 			return nil
 		default:
-			// 解析结构化结果（示例）
+			// parse structured results
 			for _, stream := range streams {
 				for _, msg := range stream.Messages {
 					message := types.AckMessage{
@@ -185,7 +290,7 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 						},
 					}
 					if err = sub.GetAckHandleFunc()(ctx, &message); err != nil {
-						log.Printf("⚠️ Message processing failed: %v", err)
+						logger.Error("message handler failed", "stream", cfg.Topic, "msgId", msg.ID, "error", err)
 						continue
 					}
 				}
@@ -194,21 +299,39 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 	}
 }
 
-// GmqAck 确认消息
+// GmqAck acknowledges successful processing of a Redis Stream message.
+// Acknowledges and removes the message from the pending entries list (PEL).
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: message acknowledgment information
+//
+// Returns error if acknowledgment fails
 func (c *RedisConn) GmqAck(ctx context.Context, msg *types.AckMessage) error {
+	logger := utils.LogWithPlugin(redisPluginName)
+
 	attr := cast.ToStringMap(msg.AckRequiredAttr)
 	msgId := cast.ToString(attr["MessageId"])
 	topic := cast.ToString(attr["Topic"])
 	group := cast.ToString(attr["Group"])
+
 	_, err := c.conn.XAck(ctx, topic, group, msgId).Result()
 	if err != nil {
-		return fmt.Errorf("ack message failed：%v\n", err)
+		logger.Error("xack failed", "stream", topic, "group", group, "msgId", msgId, "error", err)
+		return fmt.Errorf("%s: xack: %w", redisPluginName, err)
 	}
+
 	_, err = c.conn.XDel(ctx, topic, msgId).Result()
-	return err
+	if err != nil {
+		logger.Error("xdel failed", "stream", topic, "msgId", msgId, "error", err)
+		return fmt.Errorf("%s: xdel: %w", redisPluginName, err)
+	}
+
+	return nil
 }
 
-// GmqNak 否定确认消息 - Redis 不支持 Nak，需要手动重新投递或进入死信队列
+// GmqNak is a no-op for Redis implementation.
+// Redis Streams does not support negative acknowledgment in the same way as other message queues.
+// Messages remain in PEL until explicitly acknowledged or expire
 func (c *RedisConn) GmqNak(_ context.Context, _ *types.AckMessage) error {
 	return nil
 }

@@ -1,43 +1,59 @@
+// Package core provides the core functionality for the GMQ message queue system.
+// It includes the unified Gmq interface, proxy wrapper, and plugin registry.
+// The proxy layer adds monitoring, retry logic, and connection management.
 package core
 
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/bjang03/gmq/types"
+	"github.com/bjang03/gmq/utils"
 )
 
-// anonConsumerCounter 匿名消费者计数器，用于生成唯一订阅key
+// anonConsumerCounter atomic counter for generating unique subscription keys for anonymous consumers
 var anonConsumerCounter atomic.Int64
 
+// subMessage wraps subscription message with acknowledgment handler.
+// This internal structure is used by the proxy to manage message acknowledgments.
 type subMessage struct {
-	SubMsg     any
-	HandleFunc func(ctx context.Context, message *types.AckMessage) error // 消息处理函数
+	SubMsg     any                                                        // The original subscription message
+	HandleFunc func(ctx context.Context, message *types.AckMessage) error // Wrapped handler function for acknowledgment control
 }
 
+// GetSubMsg returns the subscription message
 func (m *subMessage) GetSubMsg() any {
 	return m.SubMsg
 }
 
+// GetAckHandleFunc returns the acknowledgment handler function
 func (m *subMessage) GetAckHandleFunc() func(ctx context.Context, message *types.AckMessage) error {
 	return m.HandleFunc
 }
 
-// GmqProxy 消息队列代理包装器，用于统一监控指标处理
+// GmqProxy message queue proxy wrapper for unified monitoring, retry logic, and connection management.
+// It wraps the underlying Gmq implementation to add:
+// - Automatic retry with exponential backoff
+// - Subscription management and restoration
+// - Connection status tracking
+// - Structured logging
 type GmqProxy struct {
-	name      string // 代理名称
-	plugin    Gmq    // 消息队列插件实例
-	connected int32  // 连接状态: 0=未连接, 1=已连接，原子访问
+	name      string // proxy/plugin name for identification and logging
+	plugin    Gmq    // underlying message queue plugin instance
+	connected int32  // connection status: 0=disconnected, 1=connected (atomic access for thread safety)
 
-	subscriptions      sync.Map // 订阅管理 - key: subKey, value: subscription object
-	subscriptionParams sync.Map // 订阅参数缓存 - key: subKey, value: *subscriptionInfo
+	subscriptions      sync.Map // active subscription tracking: key=subKey, value=empty struct for fast lookup
+	subscriptionParams sync.Map // subscription parameter cache: key=subKey, value=*subMessage for restoration
 }
 
-// newGmqProxy 创建新的代理包装器
+// newGmqProxy creates a new proxy wrapper for a given plugin.
+// Parameters:
+//   - name: plugin name for identification
+//   - plugin: underlying message queue implementation
+// Returns initialized GmqProxy instance
 func newGmqProxy(name string, plugin Gmq) *GmqProxy {
 	p := &GmqProxy{
 		name:   name,
@@ -46,152 +62,169 @@ func newGmqProxy(name string, plugin Gmq) *GmqProxy {
 	return p
 }
 
-// validatePublishMsg 统一校验发布消息公共参数
+// validatePublishMsg validates common parameters for publish messages.
+// Ensures topic and data are not empty.
+// Returns error if validation fails
 func validatePublishMsg(msg types.Publish) error {
 	if msg.GetTopic() == "" {
-		return fmt.Errorf("topic is required")
+		return types.ErrTopicRequired
 	}
 	if msg.GetData() == nil {
-		return fmt.Errorf("data is required")
+		return types.ErrDataRequired
 	}
 	return nil
 }
 
-// GmqPublish 发布消息（带统一监控和重试）
+// GmqPublish publishes a message with unified monitoring and retry logic.
+// Implements exponential backoff retry with configurable attempts and delay.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: message to publish (must implement Publish interface)
+// Returns error if all retry attempts fail
 func (p *GmqProxy) GmqPublish(ctx context.Context, msg types.Publish) error {
 	var err error
 	if err = validatePublishMsg(msg); err != nil {
-		log.Printf("validate error: %v", err)
+		logger := utils.LogWithPlugin(p.name)
+		logger.Error("validate publish message failed", "error", err)
 		return err
 	}
+	logger := utils.LogWithPlugin(p.name)
 	for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
 		if attempt > 0 || !p.plugin.GmqPing(ctx) {
-			// 第一次 ping 失败 或 重试时，执行等待逻辑
 			if attempt > 0 && p.plugin.GmqPing(ctx) {
 				break
 			}
-			// 第一次延迟用基础值，后续用指数退避
 			delay := types.MsgRetryDelay
 			if attempt > 0 {
 				delay = types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			}
-			log.Printf("attempt %d: ping failed, wait %v", attempt, delay)
+			logger.Warn("publish attempt ping failed, wait", "attempt", attempt, "delay", delay)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
 				err = ctx.Err()
-				log.Printf("attempt %d: context canceled: %v", attempt, err)
+				logger.Error("publish attempt context canceled", "attempt", attempt, "error", err)
 				return err
 			}
 		}
-		// 执行发布
 		if err = p.plugin.GmqPublish(ctx, msg); err != nil {
-			log.Printf("attempt %d: publish error: %v", attempt, err)
+			logger.Error("publish attempt failed", "attempt", attempt, "error", err)
 			if attempt == types.MsgRetryDeliver-1 {
-				log.Printf("all attempts failed: %v", err)
+				logger.Error("all publish attempts failed", "error", err)
 			}
 		} else {
-			log.Printf("attempt %d: publish success", attempt)
+			logger.Info("publish attempt success", "attempt", attempt, "topic", msg.GetTopic())
 			return nil
 		}
 	}
 	return err
 }
 
-// validatePublishDelayMsg 统一校验延迟发布消息公共参数
+// validatePublishDelayMsg validates common parameters for delayed publish messages.
+// Ensures topic, data, and delay seconds are valid.
+// Returns error if validation fails
 func validatePublishDelayMsg(msg types.PublishDelay) error {
 	if msg.GetTopic() == "" {
-		return fmt.Errorf("topic is required")
+		return types.ErrTopicRequired
 	}
 	if msg.GetData() == nil {
-		return fmt.Errorf("data is required")
+		return types.ErrDataRequired
 	}
 	if msg.GetDelaySeconds() <= 0 {
-		return fmt.Errorf("delay seconds must be greater than 0")
+		return types.ErrDelaySecondsRequired
 	}
 	return nil
 }
 
-// GmqPublishDelay 发布延迟消息（带统一监控和重试）
+// GmqPublishDelay publishes a delayed message with unified monitoring and retry logic.
+// The message will be delivered after the specified delay period.
+// Implements exponential backoff retry with configurable attempts and delay.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delayed message to publish (must implement PublishDelay interface)
+// Returns error if all retry attempts fail
 func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) error {
 	var err error
 	if err = validatePublishDelayMsg(msg); err != nil {
-		log.Printf("validate error: %v", err)
+		logger := utils.LogWithPlugin(p.name)
+		logger.Error("validate publish delay message failed", "error", err)
 		return err
 	}
+	logger := utils.LogWithPlugin(p.name)
 	for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
 		if attempt > 0 || !p.plugin.GmqPing(ctx) {
-			// 第一次 ping 失败 或 重试时，执行等待逻辑
 			if attempt > 0 && p.plugin.GmqPing(ctx) {
 				break
 			}
-			// 第一次延迟用基础值，后续用指数退避
 			delay := types.MsgRetryDelay
 			if attempt > 0 {
 				delay = types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			}
-			log.Printf("attempt %d: ping failed, wait %v", attempt, delay)
+			logger.Warn("publish delay attempt ping failed, wait", "attempt", attempt, "delay", delay)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
 				err = ctx.Err()
-				log.Printf("attempt %d: context canceled: %v", attempt, err)
+				logger.Error("publish delay attempt context canceled", "attempt", attempt, "error", err)
 				return err
 			}
 		}
-		// 执行发布
 		if err = p.plugin.GmqPublishDelay(ctx, msg); err != nil {
-			log.Printf("attempt %d: publish error: %v", attempt, err)
+			logger.Error("publish delay attempt failed", "attempt", attempt, "error", err)
 			if attempt == types.MsgRetryDeliver-1 {
-				log.Printf("all attempts failed: %v", err)
+				logger.Error("all publish delay attempts failed", "error", err)
 			}
 		} else {
-			log.Printf("attempt %d: publish success", attempt)
+			logger.Info("publish delay attempt success", "attempt", attempt, "topic", msg.GetTopic(), "delay_seconds", msg.GetDelaySeconds())
 			return nil
 		}
 	}
 	return err
 }
 
-// validateSubscribeMsg 统一校验订阅消息公共参数
+// validateSubscribeMsg validates common parameters for subscribe messages.
+// Ensures topic, consumer name, fetch count, and handler function are valid.
+// Returns error if validation fails
 func validateSubscribeMsg(msg *types.SubMessage) error {
 	if msg.Topic == "" {
-		return fmt.Errorf("topic is required")
+		return types.ErrTopicRequired
 	}
 	if msg.ConsumerName == "" {
-		return fmt.Errorf("consumer name is required")
+		return types.ErrConsumerNameRequired
 	}
 	if msg.FetchCount <= 0 {
-		return fmt.Errorf("fetch count must be greater than 0")
+		return types.ErrFetchCountRequired
 	}
 	if msg.HandleFunc == nil {
-		return fmt.Errorf("handle func is required")
+		return types.ErrHandleFuncRequired
 	}
 	return nil
 }
 
-// wrapHandleFunc 包装用户的 HandleFunc，在代理层统一控制ACK
+// wrapHandleFunc wraps the user's HandleFunc to control ACK at proxy layer.
+// It manages message acknowledgment based on the AutoAck setting:
+// - When AutoAck=true: acknowledges immediately before processing
+// - When AutoAck=false: acknowledges after successful processing, rejects on failure
+// Parameters:
+//   - originalFunc: the user-provided message handler
+//   - autoAck: whether to auto-acknowledge before processing
+// Returns wrapped handler function
 func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message *types.AckMessage) error {
 	return func(ctx context.Context, message *types.AckMessage) error {
 		if autoAck {
-			// 自动确认模式：无论处理成功或失败，都确认消息
 			err := p.plugin.GmqAck(ctx, message)
 			if err != nil {
 				return err
 			}
 		}
-		// 执行用户处理函数
 		err := originalFunc(ctx, message.MessageData)
 		if !autoAck {
-			// 手动确认模式：处理成功则确认，处理失败则终止消息
 			if err == nil {
-				// 处理成功：确认消息
 				err = p.plugin.GmqAck(ctx, message)
 				if err != nil {
 					return err
 				}
 			} else {
-				// 处理失败：终止消息
 				err = p.plugin.GmqNak(ctx, message)
 				if err != nil {
 					return err
@@ -202,105 +235,104 @@ func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message
 	}
 }
 
-// GmqSubscribe 订阅消息（带统一监控和重试）
+// GmqSubscribe subscribes to messages from a topic with unified monitoring and retry logic.
+// Implements exponential backoff retry during subscription establishment.
+// Prevents duplicate subscriptions for the same topic and consumer.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: subscription message containing topic, consumer, and handler
+// Returns error if subscription fails
 func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) error {
 	var err error
 	message, ok := msg.GetSubMsg().(*types.SubMessage)
 	if !ok {
-		return fmt.Errorf("invalid message type, expected *types.SubMessage")
+		return fmt.Errorf("%w: expected *types.SubMessage", types.ErrInvalidMessageType)
 	}
-	// 统一校验公共参数
 	if err = validateSubscribeMsg(message); err != nil {
 		return err
 	}
-	// 包装 HandleFunc，在代理层统一控制ACK
 	sub := new(subMessage)
 	sub.SubMsg = msg
 	sub.HandleFunc = p.wrapHandleFunc(message.HandleFunc, message.AutoAck)
 	message.HandleFunc = nil
-	// 步骤2：生成subKey，检查是否已订阅
 	subKey := p.getSubKey(message.Topic, message.ConsumerName)
-	// 原子操作：LoadOrStore → 不存在则存入struct{}{}，存在则返回已有值
 	_, loaded := p.subscriptions.LoadOrStore(subKey, struct{}{})
 	if loaded {
-		// 已存在订阅，直接返回
-		log.Printf("[GMQ] already subscribed to topic: %s", message.Topic)
-		return err
+		logger := utils.LogWithPlugin(p.name)
+		logger.Warn("already subscribed to topic", "topic", message.Topic)
+		return nil
 	}
-	// 最终清理：订阅失败则删除槽位
 	defer func() {
 		if err != nil {
 			p.subscriptions.Delete(subKey)
 			p.subscriptionParams.Delete(subKey)
-			log.Printf("[GMQ] subscribe failed, clean slot for subKey: %s, err: %v", subKey, err)
+			logger := utils.LogWithPlugin(p.name)
+			logger.Warn("subscribe failed, clean slot", "subKey", subKey, "error", err)
 		}
 	}()
-	// 步骤5：带重试的订阅逻辑
+	logger := utils.LogWithPlugin(p.name)
 	for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
-		// 5.1：Ping检查 + 指数退避等待
 		if attempt > 0 || !p.plugin.GmqPing(ctx) {
 			if attempt > 0 && p.plugin.GmqPing(ctx) {
-				break // ping通，跳过等待
+				break
 			}
 			delay := types.MsgRetryDelay
 			if attempt > 0 {
 				delay = types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			}
-			log.Printf("[GMQ] subscribe attempt %d: ping failed, wait %v", attempt, delay)
-			// 监听上下文取消
+			logger.Warn("subscribe attempt ping failed, wait", "attempt", attempt, "delay", delay)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
 				err = ctx.Err()
-				log.Printf("[GMQ] subscribe attempt %d: context canceled: %v", attempt, err)
+				logger.Error("subscribe attempt context canceled", "attempt", attempt, "error", err)
 				return err
 			}
 		}
-		// 5.2：执行订阅（无返回对象，仅判断错误）
 		err = p.plugin.GmqSubscribe(ctx, sub)
 		if err != nil {
-			log.Printf("[GMQ] subscribe attempt %d: error: %v", attempt, err)
+			logger.Error("subscribe attempt failed", "attempt", attempt, "error", err)
 			if attempt == types.MsgRetryDeliver-1 {
-				log.Printf("[GMQ] subscribe all %d attempts failed: %v", types.MsgRetryDeliver, err)
+				logger.Error("all subscribe attempts failed", "attempts", types.MsgRetryDeliver, "error", err)
 			}
-			continue // 失败则重试
+			continue
 		}
-		// 5.3：订阅成功，跳出循环
-		log.Printf("[GMQ] subscribe attempt %d: success", attempt)
+		logger.Info("subscribe attempt success", "attempt", attempt, "topic", message.Topic)
 		break
 	}
-	// 步骤6：检查最终订阅结果（所有重试都失败则返回）
 	if err != nil {
 		return err
 	}
-	// 步骤7：保存订阅参数（用于断线重连）
 	p.subscriptionParams.Store(subKey, &sub)
-	log.Printf("[GMQ] subscribe success, save subKey: %s", subKey)
+	logger.Info("subscribe success, save subKey", "subKey", subKey)
 	return err
 }
 
-// GmqUnsubscribe 取消订阅
+// GmqUnsubscribe cancels an active subscription for a specific topic and consumer.
+// Parameters:
+//   - topic: the topic to unsubscribe from
+//   - consumerName: the consumer name to unsubscribe
+// Returns error if subscription not found or unsubscription fails
 func (p *GmqProxy) GmqUnsubscribe(topic, consumerName string) error {
 	subKey := p.getSubKey(topic, consumerName)
-
 	subObj, exists := p.subscriptions.Load(subKey)
 	if !exists {
-		return fmt.Errorf("subscription not found: %s", subKey)
+		return fmt.Errorf("%w: %s", types.ErrSubscriptionNotFound, subKey)
 	}
-
-	// 如果订阅对象实现了关闭接口，调用关闭
 	if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
 		if err := closer.Unsubscribe(); err != nil {
 			return fmt.Errorf("failed to unsubscribe: %w", err)
 		}
 	}
-
 	p.subscriptions.Delete(subKey)
-	p.subscriptionParams.Delete(subKey) // 同时删除订阅参数缓存
+	p.subscriptionParams.Delete(subKey)
+	logger := utils.LogWithPlugin(p.name)
+	logger.Info("unsubscribed successfully", "topic", topic, "consumer", consumerName)
 	return nil
 }
 
-// clearSubscriptions 清理所有订阅
+// clearSubscriptions clears all active subscriptions when shutting down or reconnecting.
+// It unsubscribes from all registered topics and cleans up the subscription maps.
 func (p *GmqProxy) clearSubscriptions() {
 	p.subscriptions.Range(func(key, value any) bool {
 		subKey := key.(string)
@@ -314,67 +346,60 @@ func (p *GmqProxy) clearSubscriptions() {
 	})
 }
 
-// restoreSubscriptions 断线重连后恢复所有订阅
+// restoreSubscriptions re-establishes all subscriptions after a successful reconnection.
+// It iterates through cached subscription parameters and attempts to resubscribe
+// with the original configuration, implementing retry logic for each subscription.
 func (p *GmqProxy) restoreSubscriptions() {
-	// 步骤1：清理旧订阅资源（增加错误日志）
+	logger := utils.LogWithPlugin(p.name)
 	p.subscriptions.Range(func(key, value any) bool {
 		subKey := key.(string)
 		subObj := value
-		// 取消旧订阅，记录错误
 		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
 			if err := closer.Unsubscribe(); err != nil {
-				log.Printf("[GMQ] Failed to unsubscribe old subscription: key=%s, err=%v", subKey, err)
+				logger.Warn("failed to unsubscribe old subscription", "key", subKey, "error", err)
 			}
 		}
 		p.subscriptions.Delete(subKey)
 		return true
 	})
-	// 使用带取消的 context，支持优雅退出
 	restoreCtx, restoreCancel := context.WithCancel(context.Background())
 	defer restoreCancel()
-	// 重新订阅
+	logger = utils.LogWithPlugin(p.name)
 	p.subscriptionParams.Range(func(key, value any) bool {
 		subKey := key.(string)
 		info, ok := value.(*subMessage)
 		if !ok {
-			log.Printf("[GMQ] Invalid subMessage info for key=%s", subKey)
+			logger.Error("invalid subMessage info", "key", subKey)
 			return true
 		}
 		var err error
-		// 带重试+ping检查的订阅
 		for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
-			// 检查上下文是否取消/超时
 			if restoreCtx.Err() != nil {
-				log.Printf("[GMQ] Restore subscription canceled: key=%s, err=%v", subKey, restoreCtx.Err())
-				return false // 终止遍历
+				logger.Error("restore subscription canceled", "key", subKey, "error", restoreCtx.Err())
+				return false
 			}
-			// 重试前ping检查服务端是否可达（首次也检查）
 			if attempt > 0 || !p.plugin.GmqPing(restoreCtx) {
 				if attempt > 0 && p.plugin.GmqPing(restoreCtx) {
-					break // ping通，跳过等待
+					break
 				}
-				// 指数退避等待
 				delay := types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
-				log.Printf("[GMQ] Restore subscription attempt %d: ping failed, wait %v (key=%s)", attempt, delay, subKey)
+				logger.Warn("restore subscription ping failed, wait", "attempt", attempt, "delay", delay, "key", subKey)
 				select {
 				case <-time.After(delay):
 				case <-restoreCtx.Done():
 					return false
 				}
 			}
-			// 执行订阅（无对象版，仅返回错误）
 			err = p.plugin.GmqSubscribe(restoreCtx, info)
 			if err == nil {
-				log.Printf("[GMQ] Restore subscription success: key=%s (attempt=%d)", subKey, attempt)
+				logger.Info("restore subscription success", "key", subKey, "attempt", attempt)
 				break
 			}
-			// 记录重试失败日志
-			log.Printf("[GMQ] Restore subscription attempt %d failed: key=%s, err=%v", attempt, subKey, err)
+			logger.Error("restore subscription attempt failed", "attempt", attempt, "key", subKey, "error", err)
 			if attempt == types.MsgRetryDeliver-1 {
-				log.Printf("[GMQ] Restore subscription all attempts failed: key=%s", subKey)
+				logger.Error("restore subscription all attempts failed", "key", subKey)
 			}
 		}
-		// 订阅成功：保存状态（用空结构体标记，避免nil）
 		if err == nil {
 			p.subscriptions.Store(subKey, struct{}{})
 		}
@@ -382,51 +407,85 @@ func (p *GmqProxy) restoreSubscriptions() {
 	})
 }
 
-// getSubKey 生成订阅的唯一key，使用原子计数器避免相同 topic 不同消费者的冲突
+// getSubKey generates a unique subscription key for tracking subscriptions.
+// For named consumers, uses "topic:consumerName" format.
+// For anonymous consumers, uses "topic:anon-{counter}" format with atomic counter.
+// Parameters:
+//   - topic: the subscription topic
+//   - consumerName: the consumer name (empty for anonymous consumers)
+// Returns a unique subscription key string
 func (p *GmqProxy) getSubKey(topic, consumerName string) string {
 	if consumerName != "" {
 		return topic + ":" + consumerName
 	}
-	// 使用原子计数器生成唯一后缀，确保相同 topic 多次订阅不会冲突
+	// use atomic counter to generate unique suffix to avoid conflicts
 	counter := anonConsumerCounter.Add(1)
 	return fmt.Sprintf("%s:anon-%d", topic, counter)
 }
 
-// GmqPing 检测连接状态
+// GmqPing checks if the connection is alive.
+// It first checks the local connection status flag for efficiency,
+// then verifies the actual connection with the underlying plugin.
+// Returns true if connected and alive, false otherwise
 func (p *GmqProxy) GmqPing(ctx context.Context) bool {
-	// 代理层统一校验：检查是否已连接
+	// proxy layer validation: check if connected
 	if atomic.LoadInt32(&p.connected) == 0 {
 		return false
 	}
-	// 检查连接是否有效
+	// check if connection is valid
 	return p.plugin.GmqPing(ctx)
 }
 
-// GmqGetConn 获取连接
+// GmqGetConn retrieves the underlying message queue connection object.
+// Returns the raw connection object (type varies by implementation)
 func (p *GmqProxy) GmqGetConn(ctx context.Context) any {
 	return p.plugin.GmqGetConn(ctx)
 }
 
-// GmqConnect 连接消息队列
+// GmqConnect establishes a connection to the message queue server.
+// On successful connection, sets the internal connected flag to 1.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - cfg: connection configuration parameters
+// Returns error if connection fails
 func (p *GmqProxy) GmqConnect(ctx context.Context, cfg map[string]any) error {
 	err := p.plugin.GmqConnect(ctx, cfg)
 	if err == nil {
 		atomic.StoreInt32(&p.connected, 1)
+		logger := utils.LogWithPlugin(p.name)
+		logger.Info("connection established successfully")
 	}
 	return err
 }
 
+// GmqAck acknowledges successful processing of a message.
+// This tells the message queue that the message has been processed successfully
+// and can be removed from the queue.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: message acknowledgment information
+// Returns error if acknowledgment fails
 func (p *GmqProxy) GmqAck(ctx context.Context, msg *types.AckMessage) error {
 	return p.plugin.GmqAck(ctx, msg)
 }
 
+// GmqNak negatively acknowledges a message, indicating processing failure.
+// The message will be re-queued or sent to dead letter queue depending on configuration.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: message acknowledgment information
+// Returns error if negative acknowledgment fails
 func (p *GmqProxy) GmqNak(ctx context.Context, msg *types.AckMessage) error {
 	return p.plugin.GmqNak(ctx, msg)
 }
 
-// GmqClose 关闭连接
+// GmqClose closes the connection and cleans up all subscriptions.
+// Sets the internal connected flag to 0 and stops all background goroutines.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+// Returns error if close fails
 func (p *GmqProxy) GmqClose(ctx context.Context) error {
-	// 关闭前先清理所有订阅
+	// clear all subscriptions before closing
 	p.clearSubscriptions()
 
 	err := p.plugin.GmqClose(ctx)

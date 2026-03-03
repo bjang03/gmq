@@ -1,41 +1,74 @@
+// Package core provides the core functionality for the GMQ message queue system.
+// It includes the unified Gmq interface, proxy wrapper, and plugin registry.
+// The proxy layer adds monitoring, retry logic, and connection management.
+//
+// Plugin Registry:
+//   - GmqRegisterPlugins: Register a new message queue plugin instance
+//   - GetGmq: Retrieve a specific plugin by name
+//   - GetAllGmq: Get all registered plugins
+//
+// Lifecycle Management:
+//   - Init: Initialize the GMQ system with configuration from config.yml
+//   - Shutdown: Gracefully close all connections and stop background goroutines
+//
+// Connection Management:
+//   - Automatic reconnection with exponential backoff (5s to 60s max)
+//   - Connection health monitoring via periodic ping checks
+//   - Subscription restoration after reconnection
 package core
 
 import (
 	"context"
+	"time"
+
 	"github.com/bjang03/gmq/mq"
 	"github.com/bjang03/gmq/types"
 	"github.com/bjang03/gmq/utils"
 	"github.com/spf13/cast"
-	"log"
-	"time"
 )
 
-// globalShutdown 用于优雅关闭信号
+// GmqPlugins stores all registered message queue plugins (name -> GmqProxy)
+// globalShutdown is a signal channel for graceful shutdown of all plugins
+// pluginCancelFuncs stores cancellation functions for plugin connection goroutines (name -> cancelFunc)
 var (
 	GmqPlugins        = make(map[string]*GmqProxy)
 	globalShutdown    = make(chan struct{})
 	pluginCancelFuncs = make(map[string]context.CancelFunc)
 )
 
-// GmqRegisterPlugins 注册消息队列插件
+// GmqRegisterPlugins registers a message queue plugin with a given name.
+// If the name is empty or already registered, this function logs a warning and returns without error.
+// The plugin is wrapped in a GmqProxy for unified monitoring and retry logic.
+// Parameters:
+//   - name: unique identifier for the plugin (used for logging and plugin retrieval)
+//   - plugin: message queue implementation instance (must implement Gmq interface)
 func GmqRegisterPlugins(name string, plugin Gmq) {
-	log.Printf("[GMQ] Registering plugin: %s\n", name)
+	utils.LogInfo("registering plugin", "name", name, "plugin", name)
 	if name == "" {
-		log.Printf("[GMQ] Plugin name cannot be empty\n")
+		utils.LogWarn("plugin name cannot be empty", "plugin", "registry")
 		return
 	}
 	if _, exists := GmqPlugins[name]; exists {
+		utils.LogWarn("plugin already registered, skipping", "name", name, "plugin", name)
 		return
 	}
 	proxy := newGmqProxy(name, plugin)
 	GmqPlugins[name] = proxy
 }
 
-// Init 启动所有消息队列插件
+// Init initializes the GMQ system by loading configuration and registering plugins.
+// It reads the config.yml file, creates plugin instances based on configuration,
+// and starts background goroutines for connection management.
+// This function should be called once at application startup.
+// Example:
+//
+//	gmq.Init()  // Load config and register plugins
+//	defer gmq.Shutdown(context.Background())  // Clean shutdown
 func Init() {
 	config, err := utils.LoadGMQConfig()
 	if err != nil {
-		log.Fatalf("[GMQ]加载配置失败: %v", err)
+		utils.LogError("failed to load config", "error", err, "plugin", "registry")
+		return
 	}
 	for secondLevel, thirdLevelData := range config.GMQ {
 		for thirdLevel, configItems := range thirdLevelData {
@@ -54,21 +87,23 @@ func Init() {
 	}
 }
 
-// connectPlugins 启动后台协程自动维护连接状态，断线自动重连
+// connectPlugins starts background goroutine to automatically maintain connection status and reconnect on disconnect.
+// It implements exponential backoff retry logic with configurable delay limits.
+// Parameters:
+//   - name: plugin name
+//   - cfg: plugin configuration parameters
 func connectPlugins(name string, cfg map[string]any) {
-	// 先获取已注册的proxy
 	proxy, exists := GmqPlugins[name]
 	if !exists {
-		log.Printf("[GMQ] Plugin %s not registered, skip connection create", name)
+		utils.LogWarn("plugin not registered, skip connection create", "name", name, "plugin", name)
 		return
 	}
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())
 	pluginCancelFuncs[name] = mgrCancel
+	logger := utils.LogWithPlugin(name)
 
 	go func(name string, cfg map[string]any, p *GmqProxy, mgrCtx context.Context) {
-
 		reconnectDelay := types.BaseReconnectDelay
-
 		for {
 			select {
 			case <-globalShutdown:
@@ -97,6 +132,7 @@ func connectPlugins(name string, cfg map[string]any) {
 				connCancel()
 
 				if err != nil {
+					logger.Error("connect failed, wait for retry", "error", err, "delay", reconnectDelay)
 					select {
 					case <-time.After(reconnectDelay):
 					case <-mgrCtx.Done():
@@ -109,7 +145,7 @@ func connectPlugins(name string, cfg map[string]any) {
 					continue
 				}
 
-				log.Printf("[GMQ] %s reconnected successfully", name)
+				logger.Info("reconnected successfully", "name", name)
 				reconnectDelay = types.BaseReconnectDelay
 				p.restoreSubscriptions()
 			}
@@ -117,7 +153,11 @@ func connectPlugins(name string, cfg map[string]any) {
 	}(name, cfg, proxy, mgrCtx)
 }
 
-// Shutdown 优雅关闭所有消息队列连接
+// Shutdown gracefully shuts down all message queue connections and stops background goroutines.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//
+// Returns the last error encountered during shutdown (may be nil)
 func Shutdown(ctx context.Context) error {
 	select {
 	case <-globalShutdown:
@@ -139,7 +179,11 @@ func Shutdown(ctx context.Context) error {
 	return lastErr
 }
 
-// GetGmq 获取已注册的消息队列代理
+// GetGmq retrieves a registered message queue proxy by name.
+// Parameters:
+//   - name: plugin name
+//
+// Returns the GmqProxy if found, nil otherwise
 func GetGmq(name string) *GmqProxy {
 	proxy, ok := GmqPlugins[name]
 	if !ok {
@@ -148,7 +192,8 @@ func GetGmq(name string) *GmqProxy {
 	return proxy
 }
 
-// GetAllGmq 获取所有已注册的消息队列代理的副本
+// GetAllGmq returns a copy of all registered message queue proxies.
+// Returns a map of plugin names to their corresponding GmqProxy instances
 func GetAllGmq() map[string]*GmqProxy {
 	result := make(map[string]*GmqProxy, len(GmqPlugins))
 	for k, v := range GmqPlugins {

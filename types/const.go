@@ -1,16 +1,19 @@
+// Package types provides unified type definitions for the GMQ message queue system.
+// It includes configuration structures, message types, constants, and error definitions
+// used across all message queue implementations (NATS, Redis, RabbitMQ).
 package types
 
 import "time"
 
-// 默认重连配置
+// Default reconnection configuration constants
 const (
-	BaseReconnectDelay = 5 * time.Second  // 基础重连延迟
-	MaxReconnectDelay  = 60 * time.Second // 最大重连延迟
-	ConnectTimeout     = 30 * time.Second // 连接超时
+	BaseReconnectDelay = 5 * time.Second  // Base delay before first reconnection attempt
+	MaxReconnectDelay  = 60 * time.Second // Maximum delay between reconnection attempts (caps exponential backoff)
+	ConnectTimeout     = 30 * time.Second // Timeout for establishing initial connection
 )
 
-// 默认重试配置
+// Default retry configuration constants for message operations
 const (
-	MsgRetryDeliver = 3               // 消息的最大重试次数，达到此值后进入死信队列(默认3次)
-	MsgRetryDelay   = 3 * time.Second // 消息的重试延迟时间(秒，默认3s)
+	MsgRetryDeliver = 3               // Maximum retry attempts for publish/subscribe operations
+	MsgRetryDelay   = 3 * time.Second // Base delay between retry attempts (exponential backoff applied)
 )

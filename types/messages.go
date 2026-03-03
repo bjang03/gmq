@@ -1,73 +1,80 @@
+// Package types provides unified type definitions for the GMQ message queue system.
+// It includes configuration structures, message types, constants, and error definitions
+// used across all message queue implementations (NATS, Redis, RabbitMQ).
 package types
 
 import (
 	"context"
 )
 
-// PubMessage 发布消息基础结构
+// PubMessage publish message base structure
 type PubMessage struct {
-	Topic string // 主题名称
-	Data  any    // 消息数据
+	Topic string // topic name
+	Data  any    // message data
 }
 
-// GetTopic 获取主题名称
+// GetTopic gets topic name
 func (m *PubMessage) GetTopic() string {
 	return m.Topic
 }
 
-// GetData 获取消息数据
+// GetData gets message data
 func (m *PubMessage) GetData() any {
 	return m.Data
 }
 
-// PubDelayMessage 延迟发布消息基础结构
+// PubDelayMessage delayed publish message base structure
 type PubDelayMessage struct {
 	PubMessage
-	DelaySeconds int // 延迟秒数
+	DelaySeconds int // delay seconds
 }
 
+// GetDelaySeconds gets delay seconds
 func (m *PubDelayMessage) GetDelaySeconds() int {
 	return m.DelaySeconds
 }
 
-// SubMessage 订阅消息基础结构
+// SubMessage subscription message base structure
 type SubMessage struct {
-	Topic        string                                       // 主题名称
-	ConsumerName string                                       // 消费者名称（用于群组消费）
-	AutoAck      bool                                         // 是否自动确认
-	FetchCount   int                                          // 每次拉取消息数量
-	HandleFunc   func(ctx context.Context, message any) error // 消息处理函数
+	Topic        string                                       // topic name to subscribe to
+	ConsumerName string                                       // consumer name for group consumption (required)
+	AutoAck      bool                                         // when true: acknowledge before processing; when false: acknowledge after successful processing (default: false)
+	FetchCount   int                                          // number of messages to fetch each time (QoS prefetch count, must be > 0)
+	HandleFunc   func(ctx context.Context, message any) error // message handler function (not used directly in wrapped implementation)
 }
 
+// GetSubMsg gets subscription message
 func (m *SubMessage) GetSubMsg() any {
 	return m
 }
 
+// GetAckHandleFunc gets acknowledgment handler function
 func (m *SubMessage) GetAckHandleFunc() func(ctx context.Context, message *AckMessage) error {
 	return nil
 }
 
-// AckMessage 确认消息结构
+// AckMessage acknowledgment message structure used for message processing feedback.
+// This structure wraps the original message and provides attributes required for acknowledgment operations.
 type AckMessage struct {
-	MessageData     any // 消息数据
-	AckRequiredAttr any // 确认所需属性（如 nats.Msg、amqp.Delivery 等）
+	MessageData     any // message data payload received from the message queue
+	AckRequiredAttr any // attributes required for acknowledgment (e.g., *nats.Msg, amqp.Delivery, or map for Redis)
 }
 
-// Publish 发布消息接口（用于类型约束）
+// Publish publish message interface (type constraint for publish operations)
 type Publish interface {
-	GetTopic() string
-	GetData() any
+	GetTopic() string // Get the message topic/subject
+	GetData() any     // Get the message payload data
 }
 
-// PublishDelay 发布延迟消息接口（用于类型约束）
+// PublishDelay publish delayed message interface (type constraint for delayed publish operations)
 type PublishDelay interface {
-	GetTopic() string
-	GetData() any
-	GetDelaySeconds() int
+	GetTopic() string     // Get the message topic/subject
+	GetData() any         // Get the message payload data
+	GetDelaySeconds() int // Get the delay time in seconds
 }
 
-// Subscribe 订阅消息接口（用于类型约束）
+// Subscribe subscribe message interface (type constraint for subscription operations)
 type Subscribe interface {
-	GetSubMsg() any
-	GetAckHandleFunc() func(ctx context.Context, message *AckMessage) error
+	GetSubMsg() any                                                         // Get the subscription message configuration
+	GetAckHandleFunc() func(ctx context.Context, message *AckMessage) error // Get the acknowledgment handler function
 }

@@ -1,3 +1,5 @@
+// Package utils provides utility functions for the GMQ message queue system.
+// It includes logging utilities, validation, configuration loading, and type conversion helpers.
 package utils
 
 import (
@@ -11,83 +13,89 @@ import (
 	"strings"
 )
 
-// MapToStruct 将map[string]interface{}转换为结构体（无反射）
+// MapToStruct converts map[string]interface{} to struct field values.
+// Performs case-insensitive matching between map keys and struct field names.
+// Supports field types: string, int, bool.
+// Parameters:
+//   - target: struct pointer to populate (e.g., &config{})
+//   - dataMap: source map with key-value pairs
+// Returns error if target is not a struct pointer or contains unsupported field types
 func MapToStruct(target interface{}, dataMap map[string]interface{}) error {
-	// 1. 检查入参是否为结构体指针
+	// 1. check if input is a struct pointer
 	val := reflect.ValueOf(target)
 	if val.Kind() != reflect.Ptr || val.Elem().Kind() != reflect.Struct {
-		return fmt.Errorf("target必须是结构体指针（如&natsConfig{}）")
+		return fmt.Errorf("%w (e.g. &config{})", types.ErrTargetMustBeStructPtr)
 	}
-	// 解引用指针，获取结构体的可修改值
+	// dereference pointer to get modifiable struct value
 	structVal := val.Elem()
-	// 获取结构体类型信息
+	// get struct type information
 	structType := structVal.Type()
-	// 2. 遍历结构体的所有字段
+	// 2. iterate through all fields of the struct
 	for i := 0; i < structVal.NumField(); i++ {
-		// 获取字段值（可修改）
+		// get field value (modifiable)
 		field := structVal.Field(i)
-		// 获取字段类型信息（名称、类型等）
+		// get field type information (name, type, etc.)
 		fieldInfo := structType.Field(i)
-		// 结构体字段名（如Name、Url、Username）
+		// struct field name (e.g. Name, Url, Username)
 		fieldName := fieldInfo.Name
-		// 3. 从map中获取对应key的值（key=字段名，大小写敏感）
-		// 如果map的key是小写（如"name"），可改为 strings.ToLower(fieldName) 匹配
+		// 3. get corresponding value from map (key=field name, case sensitive)
+		// if map key is lowercase (e.g. "name"), can use strings.ToLower(fieldName) for matching
 		fieldName = strings.ToLower(fieldName)
 		valFromMap, ok := dataMap[fieldName]
 		if !ok {
-			// map中无该key，跳过（也可返回错误，根据业务需求调整）
+			// key not in map, skip (can also return error, adjust based on business needs)
 			continue
 		}
-		// 4. 用cast库将map中的值转换为字段类型，并赋值
+		// 4. use cast library to convert map value to field type and assign
 		switch field.Kind() {
 		case reflect.String:
-			// 转换为字符串（cast.ToString支持任意类型转string）
 			strVal := cast.ToString(valFromMap)
 			field.SetString(strVal)
 		case reflect.Int:
-			// 如需支持int类型，可添加：
 			intVal := cast.ToInt(valFromMap)
 			field.SetInt(int64(intVal))
 		case reflect.Bool:
-			// 如需支持bool类型，可添加：
 			boolVal := cast.ToBool(valFromMap)
 			field.SetBool(boolVal)
 		default:
-			return fmt.Errorf("暂不支持字段%s的类型：%s", fieldName, field.Kind())
+			return fmt.Errorf("%w: %s", types.ErrUnsupportedFieldType, fieldName)
 		}
 	}
 	return nil
 }
 
-// LoadGMQConfig 读取配置文件并返回 {name: 配置项} 的映射
-// 参数: configPath - 配置文件路径（如config.yaml）
-// 返回: 全局映射（key=配置项name，value=该配置项的所有信息）、错误信息
+// LoadGMQConfig reads configuration from config.yml file and parses it.
+// The function expects a YAML file with the gmq configuration structure.
+// Returns the parsed GMQConfig or error if file doesn't exist or is malformed
 func LoadGMQConfig() (*types.GMQConfig, error) {
-	// 1. 读取文件内容
+	// 1. read file content
 	configPath := "config.yml"
 	content, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
-	// 2. 解析YAML到结构体
+	// 2. parse YAML to struct
 	config := new(types.GMQConfig)
 	if err := yaml.Unmarshal(content, config); err != nil {
-		return nil, fmt.Errorf("解析YAML失败: %w", err)
+		return nil, fmt.Errorf("failed to parse yaml: %w", err)
 	}
 	return config, nil
 }
 
-// ConvertToMap 通用数据转map[string]interface{}（无反射+适配Redis）
-// 核心改进：
-// 1. 完全移除反射，仅用类型断言+cast包
-// 2. 切片/数组直接序列化为JSON字符串（避免[]interface{}）
-// 3. 所有value最终为string/int/float/bool，可直接存入Redis
+// ConvertToMap converts generic data to map[string]interface{} for Redis compatibility.
+// Core improvements:
+// 1. Uses type assertion and cast package for common types
+// 2. Serializes slices/arrays directly to JSON strings (avoid []interface{})
+// 3. All values end up as string/int/float/bool, can be directly stored in Redis
+// Parameters:
+//   - data: input data to convert (supports maps, basic types, slices, structs)
+// Returns converted map or error if conversion fails
 func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 	if data == nil {
 		return nil, fmt.Errorf("convert failed: data is nil (input type: nil)")
 	}
 
-	// 处理一级指针（无反射，仅支持常见指针类型）
+	// handle level-1 pointers (no reflection, only support common pointer types)
 	switch v := data.(type) {
 	case *map[string]interface{}:
 		if v == nil {
@@ -106,10 +114,10 @@ func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 	case *string, *int, *int8, *int16, *int32, *int64,
 		*uint, *uint8, *uint16, *uint32, *uint64,
 		*float32, *float64, *bool:
-		// 用cast包安全解引用
+		// use cast package to safely dereference
 		return ConvertToMap(cast.ToString(v))
 	case *[]string, *[]int, *[]int64:
-		// 切片指针：解引用后序列化为JSON
+		// slice pointer: dereference then serialize to JSON
 		if v == nil {
 			return nil, fmt.Errorf("convert failed: nil slice pointer (type: %T)", data)
 		}
@@ -120,7 +128,7 @@ func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"data": string(jsonBytes)}, nil
 	}
 
-	// 1. 优先处理原生map类型
+	// 1. prioritize handling native map types
 	switch v := data.(type) {
 	case map[string]interface{}:
 		return v, nil
@@ -135,7 +143,7 @@ func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 		return res, nil
 	}
 
-	// 2. 处理基础类型（直接封装）
+	// 2. handle basic types (direct wrapping)
 	switch v := data.(type) {
 	case string, int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64,
@@ -143,7 +151,7 @@ func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"data": v}, nil
 	}
 
-	// 3. 处理切片/数组类型（核心修复：直接序列化为JSON字符串）
+	// 3. handle slice/array types (core fix: serialize directly to JSON string)
 	switch v := data.(type) {
 	case []string, []int, []int64, []float64, []bool, []interface{}:
 		jsonBytes, err := json.Marshal(v)
@@ -153,7 +161,7 @@ func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"data": string(jsonBytes)}, nil
 	}
 
-	// 4. 兜底：JSON序列化所有复杂类型（结构体/自定义类型）
+	// 4. fallback: JSON serialize all complex types (structs/custom types)
 	jsonBytes, err := json.Marshal(data)
 	if err != nil {
 		res := cast.ToStringMap(data)
@@ -163,12 +171,12 @@ func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("convert failed: json marshal error (%v), cast also return empty (type: %T)", err, data)
 	}
 
-	// 尝试反序列化为map（结构体/JSON对象）
+	// try to deserialize to map (structs/JSON objects)
 	var res map[string]interface{}
 	if err = json.Unmarshal(jsonBytes, &res); err == nil {
 		return res, nil
 	}
 
-	// 最终兜底：序列化为JSON字符串封装
+	// final fallback: serialize to JSON string wrapper
 	return map[string]interface{}{"data": string(jsonBytes)}, nil
 }

@@ -71,8 +71,8 @@ func GmqRegisterPlugins(name string, plugin Gmq) {
 //
 //	gmq.Init()  // Load config and register plugins
 //	defer gmq.Shutdown(context.Background())  // Clean shutdown
-func Init() {
-	config, err := utils.LoadGMQConfig()
+func Init(configPath string) {
+	config, err := utils.LoadGMQConfig(configPath)
 	if err != nil {
 		utils.LogError("failed to load config", "error", err, "plugin", "registry")
 		return

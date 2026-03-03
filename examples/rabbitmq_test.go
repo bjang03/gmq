@@ -3,22 +3,22 @@ package mq
 import (
 	"context"
 	gmq "github.com/bjang03/gmq/core/gmq"
+	mq2 "github.com/bjang03/gmq/mq"
 	"github.com/bjang03/gmq/types"
 	"testing"
 )
 
 var rabbitMQRegisterName = "rabbitmq-test"
 
-// RabbitMQ 注册
+// RabbitMQ register
 func rabbitMQRegister(ctx context.Context) {
-	gmq.GmqRegisterPlugins(rabbitMQRegisterName, &RabbitMQConn{})
-	gmq.Init()
+	gmq.Init("config.yml")
 	defer gmq.Shutdown(ctx)
 }
 
-// ============ 消息发布测试 ============
+// ============ Message Publish Tests ============
 
-// TestRabbitMQPublish RabbitMQ发布消息
+// TestRabbitMQPublish tests RabbitMQ publish message
 func TestRabbitMQPublish(t *testing.T) {
 	ctx := context.Background()
 	rabbitMQRegister(ctx)
@@ -31,7 +31,7 @@ func TestRabbitMQPublish(t *testing.T) {
 		"index":   1,
 	}
 
-	pubMsg := &RabbitMQPubMessage{
+	pubMsg := &mq2.RabbitMQPubMessage{
 		PubMessage: types.PubMessage{
 			Topic: topic,
 			Data:  testData,
@@ -44,7 +44,7 @@ func TestRabbitMQPublish(t *testing.T) {
 	}
 }
 
-// TestRabbitMQPublishWithDifferentDataTypes RabbitMQ发布不同类型的数据
+// TestRabbitMQPublishWithDifferentDataTypes tests RabbitMQ publish with different data types
 func TestRabbitMQPublishWithDifferentDataTypes(t *testing.T) {
 	ctx := context.Background()
 	rabbitMQRegister(ctx)
@@ -67,7 +67,7 @@ func TestRabbitMQPublishWithDifferentDataTypes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			pubMsg := &RabbitMQPubMessage{
+			pubMsg := &mq2.RabbitMQPubMessage{
 				PubMessage: types.PubMessage{
 					Topic: topic,
 					Data:  tc.data,
@@ -82,7 +82,7 @@ func TestRabbitMQPublishWithDifferentDataTypes(t *testing.T) {
 	}
 }
 
-// TestRabbitMQPublishNonDurable RabbitMQ发布非持久化消息
+// TestRabbitMQPublishNonDurable tests RabbitMQ publish non-durable message
 func TestRabbitMQPublishNonDurable(t *testing.T) {
 	ctx := context.Background()
 	rabbitMQRegister(ctx)
@@ -94,7 +94,7 @@ func TestRabbitMQPublishNonDurable(t *testing.T) {
 		"message": "Test non-durable message",
 	}
 
-	pubMsg := &RabbitMQPubMessage{
+	pubMsg := &mq2.RabbitMQPubMessage{
 		PubMessage: types.PubMessage{
 			Topic: topic,
 			Data:  testData,
@@ -107,9 +107,9 @@ func TestRabbitMQPublishNonDurable(t *testing.T) {
 	}
 }
 
-// ============ 延迟消息测试 ============
+// ============ Delay Message Tests ============
 
-// TestRabbitMQPublishDelay RabbitMQ发布延迟消息
+// TestRabbitMQPublishDelay tests RabbitMQ publish delay message
 func TestRabbitMQPublishDelay(t *testing.T) {
 	ctx := context.Background()
 	rabbitMQRegister(ctx)
@@ -122,7 +122,7 @@ func TestRabbitMQPublishDelay(t *testing.T) {
 		"index":   1,
 	}
 
-	delayMsg := &RabbitMQPubDelayMessage{
+	delayMsg := &mq2.RabbitMQPubDelayMessage{
 		PubDelayMessage: types.PubDelayMessage{
 			DelaySeconds: 2,
 			PubMessage: types.PubMessage{
@@ -138,9 +138,9 @@ func TestRabbitMQPublishDelay(t *testing.T) {
 	}
 }
 
-// ============ 消息订阅测试 ============
+// ============ Message Subscribe Tests ============
 
-// TestRabbitMQSubscribe RabbitMQ订阅消息
+// TestRabbitMQSubscribe tests RabbitMQ subscribe message
 func TestRabbitMQSubscribe(t *testing.T) {
 	ctx := context.Background()
 	rabbitMQRegister(ctx)
@@ -149,7 +149,7 @@ func TestRabbitMQSubscribe(t *testing.T) {
 
 	topic := "test.subscribe.topic"
 
-	subMsg := &RabbitMQSubMessage{
+	subMsg := &mq2.RabbitMQSubMessage{
 		SubMessage: types.SubMessage{
 			Topic:        topic,
 			ConsumerName: "test-consumer",

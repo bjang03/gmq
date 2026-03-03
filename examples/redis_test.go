@@ -3,6 +3,7 @@ package mq
 import (
 	"context"
 	gmq "github.com/bjang03/gmq/core/gmq"
+	mq2 "github.com/bjang03/gmq/mq"
 	"testing"
 
 	"github.com/bjang03/gmq/types"
@@ -10,16 +11,15 @@ import (
 
 var redisRegisterName = "redis-test"
 
-// Redis 注册
+// Redis register
 func redisRegister(ctx context.Context) {
-	gmq.GmqRegisterPlugins(redisRegisterName, &RedisConn{})
-	gmq.Init()
+	gmq.Init("config.yml")
 	defer gmq.Shutdown(ctx)
 }
 
-// ============ 消息发布测试 ============
+// ============ Message Publish Tests ============
 
-// TestRedisPublish 测试Redis发布消息
+// TestRedisPublish tests Redis publish message
 func TestRedisPublish(t *testing.T) {
 	ctx := context.Background()
 	redisRegister(ctx)
@@ -32,7 +32,7 @@ func TestRedisPublish(t *testing.T) {
 		"index":   1,
 	}
 
-	pubMsg := &RedisPubMessage{
+	pubMsg := &mq2.RedisPubMessage{
 		PubMessage: types.PubMessage{
 			Topic: topic,
 			Data:  testData,
@@ -44,7 +44,7 @@ func TestRedisPublish(t *testing.T) {
 	}
 }
 
-// TestRedisPublishWithDifferentDataTypes 测试Redis发布不同类型的数据
+// TestRedisPublishWithDifferentDataTypes tests Redis publish with different data types
 func TestRedisPublishWithDifferentDataTypes(t *testing.T) {
 	ctx := context.Background()
 	redisRegister(ctx)
@@ -67,7 +67,7 @@ func TestRedisPublishWithDifferentDataTypes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			pubMsg := &RedisPubMessage{
+			pubMsg := &mq2.RedisPubMessage{
 				PubMessage: types.PubMessage{
 					Topic: topic,
 					Data:  tc.data,
@@ -81,22 +81,22 @@ func TestRedisPublishWithDifferentDataTypes(t *testing.T) {
 	}
 }
 
-// TestRedisPublishDelay 测试Redis延迟消息（Redis不支持延迟消息）
+// TestRedisPublishDelay tests Redis delay message (Redis does not support delay messages)
 func TestRedisPublishDelay(t *testing.T) {
 	ctx := context.Background()
 	redisRegister(ctx)
 
 	getGmq := gmq.GetGmq(redisRegisterName)
 
-	err := getGmq.GmqPublishDelay(ctx, &RedisPubDelayMessage{})
+	err := getGmq.GmqPublishDelay(ctx, &mq2.RedisPubDelayMessage{})
 	if err == nil {
 		t.Error("Expected error for delay message, got nil")
 	}
 }
 
-// ============ 消息订阅测试 ============
+// ============ Message Subscribe Tests ============
 
-// TestRedisSubscribe 测试Redis订阅消息
+// TestRedisSubscribe tests Redis subscribe message
 func TestRedisSubscribe(t *testing.T) {
 	ctx := context.Background()
 	redisRegister(ctx)
@@ -105,7 +105,7 @@ func TestRedisSubscribe(t *testing.T) {
 
 	topic := "test.subscribe.topic"
 
-	subMsg := &RedisSubMessage{
+	subMsg := &mq2.RedisSubMessage{
 		SubMessage: types.SubMessage{
 			Topic:        topic,
 			ConsumerName: "test-consumer",

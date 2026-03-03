@@ -3,22 +3,22 @@ package mq
 import (
 	"context"
 	gmq "github.com/bjang03/gmq/core/gmq"
+	mq2 "github.com/bjang03/gmq/mq"
 	"github.com/bjang03/gmq/types"
 	"testing"
 )
 
 var natsRegisterName = "nats-test"
 
-// NATS 注册
+// NATS register
 func natsRegister(ctx context.Context) {
-	gmq.GmqRegisterPlugins(natsRegisterName, &NatsConn{})
-	gmq.Init()
+	gmq.Init("config.yml")
 	defer gmq.Shutdown(ctx)
 }
 
-// ============ 消息发布测试 ============
+// ============ Message Publish Tests ============
 
-// TestNatsPublish NATS发布消息
+// TestNatsPublish tests NATS publish message
 func TestNatsPublish(t *testing.T) {
 	ctx := context.Background()
 	natsRegister(ctx)
@@ -30,7 +30,7 @@ func TestNatsPublish(t *testing.T) {
 		"message": "Test message for publish",
 		"index":   1,
 	}
-	pubMsg := &NatsPubMessage{
+	pubMsg := &mq2.NatsPubMessage{
 		PubMessage: types.PubMessage{
 			Topic: topic,
 			Data:  testData,
@@ -42,7 +42,7 @@ func TestNatsPublish(t *testing.T) {
 	}
 }
 
-// TestNatsPublishWithDifferentDataTypes NATS发布不同类型的数据
+// TestNatsPublishWithDifferentDataTypes tests NATS publish with different data types
 func TestNatsPublishWithDifferentDataTypes(t *testing.T) {
 	ctx := context.Background()
 	natsRegister(ctx)
@@ -65,7 +65,7 @@ func TestNatsPublishWithDifferentDataTypes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			pubMsg := &NatsPubMessage{
+			pubMsg := &mq2.NatsPubMessage{
 				PubMessage: types.PubMessage{
 					Topic: topic,
 					Data:  tc.data,
@@ -80,7 +80,7 @@ func TestNatsPublishWithDifferentDataTypes(t *testing.T) {
 	}
 }
 
-// TestNatsPublishNonDurable NATS发布非持久化消息
+// TestNatsPublishNonDurable tests NATS publish non-durable message
 func TestNatsPublishNonDurable(t *testing.T) {
 	ctx := context.Background()
 	natsRegister(ctx)
@@ -92,7 +92,7 @@ func TestNatsPublishNonDurable(t *testing.T) {
 		"message": "Test non-durable message",
 	}
 
-	pubMsg := &NatsPubMessage{
+	pubMsg := &mq2.NatsPubMessage{
 		PubMessage: types.PubMessage{
 			Topic: topic,
 			Data:  testData,
@@ -105,9 +105,9 @@ func TestNatsPublishNonDurable(t *testing.T) {
 	}
 }
 
-// ============ 延迟消息测试 ============
+// ============ Delay Message Tests ============
 
-// TestNatsPublishDelay NATS发布延迟消息
+// TestNatsPublishDelay tests NATS publish delay message
 func TestNatsPublishDelay(t *testing.T) {
 	ctx := context.Background()
 	natsRegister(ctx)
@@ -120,7 +120,7 @@ func TestNatsPublishDelay(t *testing.T) {
 		"index":   1,
 	}
 
-	delayMsg := &NatsPubDelayMessage{
+	delayMsg := &mq2.NatsPubDelayMessage{
 		PubDelayMessage: types.PubDelayMessage{
 			DelaySeconds: 2,
 			PubMessage: types.PubMessage{
@@ -136,9 +136,9 @@ func TestNatsPublishDelay(t *testing.T) {
 	}
 }
 
-// ============ 消息订阅测试 ============
+// ============ Message Subscribe Tests ============
 
-// TestNatsSubscribe NATS订阅消息
+// TestNatsSubscribe tests NATS subscribe message
 func TestNatsSubscribe(t *testing.T) {
 	ctx := context.Background()
 	natsRegister(ctx)
@@ -147,7 +147,7 @@ func TestNatsSubscribe(t *testing.T) {
 
 	topic := "test.subscribe.topic"
 
-	subMsg := &NatsSubMessage{
+	subMsg := &mq2.NatsSubMessage{
 		SubMessage: types.SubMessage{
 			Topic:        topic,
 			ConsumerName: "test-consumer",
@@ -166,7 +166,7 @@ func TestNatsSubscribe(t *testing.T) {
 	}
 }
 
-// TestNatsSubscribeDelay NATS订阅延迟消息
+// TestNatsSubscribeDelay tests NATS subscribe delay message
 func TestNatsSubscribeDelay(t *testing.T) {
 	ctx := context.Background()
 	natsRegister(ctx)
@@ -175,7 +175,7 @@ func TestNatsSubscribeDelay(t *testing.T) {
 
 	topic := "test.subscribe.delay.topic"
 
-	subMsg := &NatsSubMessage{
+	subMsg := &mq2.NatsSubMessage{
 		SubMessage: types.SubMessage{
 			Topic:        topic,
 			ConsumerName: "test-delay-consumer",

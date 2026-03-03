@@ -19,6 +19,7 @@ import (
 // Parameters:
 //   - target: struct pointer to populate (e.g., &config{})
 //   - dataMap: source map with key-value pairs
+//
 // Returns error if target is not a struct pointer or contains unsupported field types
 func MapToStruct(target interface{}, dataMap map[string]interface{}) error {
 	// 1. check if input is a struct pointer
@@ -67,9 +68,8 @@ func MapToStruct(target interface{}, dataMap map[string]interface{}) error {
 // LoadGMQConfig reads configuration from config.yml file and parses it.
 // The function expects a YAML file with the gmq configuration structure.
 // Returns the parsed GMQConfig or error if file doesn't exist or is malformed
-func LoadGMQConfig() (*types.GMQConfig, error) {
+func LoadGMQConfig(configPath string) (*types.GMQConfig, error) {
 	// 1. read file content
-	configPath := "config.yml"
 	content, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -89,6 +89,7 @@ func LoadGMQConfig() (*types.GMQConfig, error) {
 // 3. All values end up as string/int/float/bool, can be directly stored in Redis
 // Parameters:
 //   - data: input data to convert (supports maps, basic types, slices, structs)
+//
 // Returns converted map or error if conversion fails
 func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 	if data == nil {

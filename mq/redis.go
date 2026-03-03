@@ -241,22 +241,22 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 		return fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
 	}
 
-	cfg.Topic = "gmq:stream:" + cfg.Topic
+	topic := "gmq:stream:" + cfg.Topic
 	group := fmt.Sprintf("%s:default:group", cfg.ConsumerName)
 
-	_, err = c.conn.XGroupCreateMkStream(ctx, cfg.Topic, group, "0").Result()
+	_, err = c.conn.XGroupCreateMkStream(ctx, topic, group, "0").Result()
 	if err != nil {
 		if !strings.Contains(err.Error(), "BUSYGROUP") && !strings.Contains(err.Error(), "already exists") {
-			logger.Error("create consumer group failed", "stream", cfg.Topic, "group", group, "error", err)
+			logger.Error("create consumer group failed", "stream", topic, "group", group, "error", err)
 			return fmt.Errorf("%s: create_group: %w", redisPluginName, err)
 		}
-		logger.Debug("consumer group already exists", "stream", cfg.Topic, "group", group)
+		logger.Debug("consumer group already exists", "stream", topic, "group", group)
 	}
 
-	logger.Info("subscribed successfully", "stream", cfg.Topic, "group", group, "consumer", cfg.ConsumerName)
+	logger.Info("subscribed successfully", "stream", topic, "group", group, "consumer", cfg.ConsumerName)
 
 	// Start background goroutine for non-blocking message consumption
-	go c.consumeLoop(ctx, cfg, group, sub, logger)
+	c.consumeLoop(ctx, cfg, group, sub, logger)
 
 	return nil
 }
@@ -267,25 +267,26 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 // - Connection is closed
 // - An unrecoverable error occurs
 func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group string, sub types.Subscribe, logger *slog.Logger) {
+	topic := "gmq:stream:" + cfg.Topic
 	// build structured parameters (clear parameter meaning, no need to remember command order)
 	readArgs := &redis.XReadGroupArgs{
 		Group:    group,                        // consumer group name
 		Consumer: cfg.ConsumerName,             // consumer name
 		Count:    cast.ToInt64(cfg.FetchCount), // number of messages to fetch each time
 		Block:    5 * time.Second,              // block time (use timeout instead of forever for graceful shutdown)
-		Streams:  []string{cfg.Topic, ">"},     // consumed stream + start ID (> means consume new messages)
+		Streams:  []string{topic, ">"},         // consumed stream + start ID (> means consume new messages)
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Debug("subscription context done, exiting consume loop", "stream", cfg.Topic, "consumer", cfg.ConsumerName)
+			logger.Debug("subscription context done, exiting consume loop", "stream", topic, "consumer", cfg.ConsumerName)
 			return
 		default:
 		}
 
 		if c.conn == nil {
-			logger.Error("connection is nil during consume loop, exiting", "stream", cfg.Topic)
+			logger.Error("connection is nil during consume loop, exiting", "stream", topic)
 			return
 		}
 
@@ -293,11 +294,11 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 		if err != nil {
 			// Check if context was cancelled during the blocking call
 			if ctx.Err() != nil {
-				logger.Debug("context cancelled during xreadgroup, exiting", "stream", cfg.Topic, "consumer", cfg.ConsumerName)
+				logger.Debug("context cancelled during xreadgroup, exiting", "stream", topic, "consumer", cfg.ConsumerName)
 				return
 			}
 			// Check if it's a timeout (no new messages), just continue
-			if err == redis.Nil || strings.Contains(err.Error(), "timeout") {
+			if err == redis.Nil || strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "key no longer exists") {
 				continue
 			}
 			logger.Error("xreadgroup failed, exiting consume loop", "stream", cfg.Topic, "error", err)
@@ -309,7 +310,7 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 			for _, msg := range stream.Messages {
 				select {
 				case <-ctx.Done():
-					logger.Debug("context cancelled during message processing, exiting", "stream", cfg.Topic, "consumer", cfg.ConsumerName)
+					logger.Debug("context cancelled during message processing, exiting", "stream", topic, "consumer", cfg.ConsumerName)
 					return
 				default:
 				}
@@ -318,12 +319,12 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 					MessageData: msg.Values,
 					AckRequiredAttr: map[string]any{
 						"MessageId": msg.ID,
-						"Topic":     cfg.Topic,
+						"Topic":     topic,
 						"Group":     group,
 					},
 				}
 				if err = sub.GetAckHandleFunc()(ctx, &message); err != nil {
-					logger.Error("message handler failed", "stream", cfg.Topic, "msgId", msg.ID, "error", err)
+					logger.Error("message handler failed", "stream", topic, "msgId", msg.ID, "error", err)
 					continue
 				}
 			}

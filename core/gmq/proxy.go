@@ -76,52 +76,6 @@ func validatePublishMsg(msg types.Publish) error {
 	return nil
 }
 
-// GmqPublish publishes a message with unified monitoring and retry logic.
-// Implements exponential backoff retry with configurable attempts and delay.
-// Parameters:
-//   - ctx: context for timeout/cancellation control
-//   - msg: message to publish (must implement Publish interface)
-//
-// Returns error if all retry attempts fail
-func (p *GmqProxy) GmqPublish(ctx context.Context, msg types.Publish) error {
-	var err error
-	if err = validatePublishMsg(msg); err != nil {
-		logger := utils.LogWithPlugin(p.name)
-		logger.Error("validate publish message failed", "error", err)
-		return err
-	}
-	logger := utils.LogWithPlugin(p.name)
-	for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
-		if attempt > 0 || !p.plugin.GmqPing(ctx) {
-			if attempt > 0 && p.plugin.GmqPing(ctx) {
-				break
-			}
-			delay := types.MsgRetryDelay
-			if attempt > 0 {
-				delay = types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
-			}
-			logger.Warn("publish attempt ping failed, wait", "attempt", attempt, "delay", delay)
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				err = ctx.Err()
-				logger.Error("publish attempt context canceled", "attempt", attempt, "error", err)
-				return err
-			}
-		}
-		if err = p.plugin.GmqPublish(ctx, msg); err != nil {
-			logger.Error("publish attempt failed", "attempt", attempt, "error", err)
-			if attempt == types.MsgRetryDeliver-1 {
-				logger.Error("all publish attempts failed", "error", err)
-			}
-		} else {
-			logger.Info("publish attempt success", "attempt", attempt, "topic", msg.GetTopic())
-			return nil
-		}
-	}
-	return err
-}
-
 // validatePublishDelayMsg validates common parameters for delayed publish messages.
 // Ensures topic, data, and delay seconds are valid.
 // Returns error if validation fails
@@ -138,22 +92,25 @@ func validatePublishDelayMsg(msg types.PublishDelay) error {
 	return nil
 }
 
-// GmqPublishDelay publishes a delayed message with unified monitoring and retry logic.
-// The message will be delivered after the specified delay period.
-// Implements exponential backoff retry with configurable attempts and delay.
+// retryConfig holds configuration for retry operations
+type retryConfig struct {
+	operation   string
+	topic       string
+	extraFields map[string]any
+}
+
+// executeWithRetry executes an operation with exponential backoff retry logic.
+// This is the core retry mechanism used by publish and subscribe operations.
 // Parameters:
 //   - ctx: context for timeout/cancellation control
-//   - msg: delayed message to publish (must implement PublishDelay interface)
+//   - cfg: retry configuration including operation name and logging fields
+//   - operation: the actual operation function to execute
 //
 // Returns error if all retry attempts fail
-func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) error {
-	var err error
-	if err = validatePublishDelayMsg(msg); err != nil {
-		logger := utils.LogWithPlugin(p.name)
-		logger.Error("validate publish delay message failed", "error", err)
-		return err
-	}
+func (p *GmqProxy) executeWithRetry(ctx context.Context, cfg retryConfig, operation func() error) error {
 	logger := utils.LogWithPlugin(p.name)
+	var err error
+
 	for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
 		if attempt > 0 || !p.plugin.GmqPing(ctx) {
 			if attempt > 0 && p.plugin.GmqPing(ctx) {
@@ -163,26 +120,86 @@ func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) 
 			if attempt > 0 {
 				delay = types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
 			}
-			logger.Warn("publish delay attempt ping failed, wait", "attempt", attempt, "delay", delay)
+			logger.Warn(cfg.operation+" attempt ping failed, wait", append([]any{"attempt", attempt, "delay", delay}, mapToSlice(cfg.extraFields)...))
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
 				err = ctx.Err()
-				logger.Error("publish delay attempt context canceled", "attempt", attempt, "error", err)
+				logger.Error(cfg.operation+" attempt context canceled", "attempt", attempt, "error", err)
 				return err
 			}
 		}
-		if err = p.plugin.GmqPublishDelay(ctx, msg); err != nil {
-			logger.Error("publish delay attempt failed", "attempt", attempt, "error", err)
+		if err = operation(); err != nil {
+			logger.Error(cfg.operation+" attempt failed", "attempt", attempt, "error", err)
 			if attempt == types.MsgRetryDeliver-1 {
-				logger.Error("all publish delay attempts failed", "error", err)
+				logger.Error("all "+cfg.operation+" attempts failed", "error", err)
 			}
 		} else {
-			logger.Info("publish delay attempt success", "attempt", attempt, "topic", msg.GetTopic(), "delay_seconds", msg.GetDelaySeconds())
+			successFields := []any{"attempt", attempt, "topic", cfg.topic}
+			successFields = append(successFields, mapToSlice(cfg.extraFields)...)
+			logger.Info(cfg.operation+" attempt success", successFields...)
 			return nil
 		}
 	}
 	return err
+}
+
+// mapToSlice converts a map to a slice of alternating keys and values for logging
+func mapToSlice(m map[string]any) []any {
+	if m == nil {
+		return nil
+	}
+	result := make([]any, 0, len(m)*2)
+	for k, v := range m {
+		result = append(result, k, v)
+	}
+	return result
+}
+
+// GmqPublish publishes a message with unified monitoring and retry logic.
+// Implements exponential backoff retry with configurable attempts and delay.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: message to publish (must implement Publish interface)
+//
+// Returns error if all retry attempts fail
+func (p *GmqProxy) GmqPublish(ctx context.Context, msg types.Publish) error {
+	if err := validatePublishMsg(msg); err != nil {
+		logger := utils.LogWithPlugin(p.name)
+		logger.Error("validate publish message failed", "error", err)
+		return err
+	}
+
+	return p.executeWithRetry(ctx, retryConfig{
+		operation: "publish",
+		topic:     msg.GetTopic(),
+	}, func() error {
+		return p.plugin.GmqPublish(ctx, msg)
+	})
+}
+
+// GmqPublishDelay publishes a delayed message with unified monitoring and retry logic.
+// The message will be delivered after the specified delay period.
+// Implements exponential backoff retry with configurable attempts and delay.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delayed message to publish (must implement PublishDelay interface)
+//
+// Returns error if all retry attempts fail
+func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) error {
+	if err := validatePublishDelayMsg(msg); err != nil {
+		logger := utils.LogWithPlugin(p.name)
+		logger.Error("validate publish delay message failed", "error", err)
+		return err
+	}
+
+	return p.executeWithRetry(ctx, retryConfig{
+		operation:   "publish delay",
+		topic:       msg.GetTopic(),
+		extraFields: map[string]any{"delay_seconds": msg.GetDelaySeconds()},
+	}, func() error {
+		return p.plugin.GmqPublishDelay(ctx, msg)
+	})
 }
 
 // validateSubscribeMsg validates common parameters for subscribe messages.
@@ -285,40 +302,19 @@ func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 			logger.Warn("subscribe failed, clean slot", "subKey", subKey, "error", err)
 		}
 	}()
-	logger := utils.LogWithPlugin(p.name)
-	for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
-		if attempt > 0 || !p.plugin.GmqPing(ctx) {
-			if attempt > 0 && p.plugin.GmqPing(ctx) {
-				break
-			}
-			delay := types.MsgRetryDelay
-			if attempt > 0 {
-				delay = types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
-			}
-			logger.Warn("subscribe attempt ping failed, wait", "attempt", attempt, "delay", delay)
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				err = ctx.Err()
-				logger.Error("subscribe attempt context canceled", "attempt", attempt, "error", err)
-				return err
-			}
-		}
-		err = p.plugin.GmqSubscribe(ctx, sub)
-		if err != nil {
-			logger.Error("subscribe attempt failed", "attempt", attempt, "error", err)
-			if attempt == types.MsgRetryDeliver-1 {
-				logger.Error("all subscribe attempts failed", "attempts", types.MsgRetryDeliver, "error", err)
-			}
-			continue
-		}
-		logger.Info("subscribe attempt success", "attempt", attempt, "topic", message.Topic)
-		break
-	}
+
+	err = p.executeWithRetry(ctx, retryConfig{
+		operation: "subscribe",
+		topic:     message.Topic,
+	}, func() error {
+		return p.plugin.GmqSubscribe(ctx, sub)
+	})
+
 	if err != nil {
 		return err
 	}
 	p.subscriptionParams.Store(subKey, sub)
+	logger := utils.LogWithPlugin(p.name)
 	logger.Info("subscribe success, save subKey", "subKey", subKey)
 	return nil
 }
@@ -354,9 +350,10 @@ func (p *GmqProxy) restoreSubscriptions() {
 		p.subscriptions.Delete(subKey)
 		return true
 	})
+
 	restoreCtx, restoreCancel := context.WithCancel(context.Background())
 	defer restoreCancel()
-	logger = utils.LogWithPlugin(p.name)
+
 	p.subscriptionParams.Range(func(key, value any) bool {
 		subKey := key.(string)
 		info, ok := value.(*subMessage)
@@ -364,38 +361,19 @@ func (p *GmqProxy) restoreSubscriptions() {
 			logger.Error("invalid subMessage info", "key", subKey)
 			return true
 		}
-		var err error
-		for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
-			if restoreCtx.Err() != nil {
-				logger.Error("restore subscription canceled", "key", subKey, "error", restoreCtx.Err())
-				return false
-			}
-			if attempt > 0 || !p.plugin.GmqPing(restoreCtx) {
-				if attempt > 0 && p.plugin.GmqPing(restoreCtx) {
-					break
-				}
-				delay := types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
-				logger.Warn("restore subscription ping failed, wait", "attempt", attempt, "delay", delay, "key", subKey)
-				select {
-				case <-time.After(delay):
-				case <-restoreCtx.Done():
-					return false
-				}
-			}
-			err = p.plugin.GmqSubscribe(restoreCtx, info)
-			if err == nil {
-				logger.Info("restore subscription success", "key", subKey, "attempt", attempt)
-				break
-			}
-			logger.Error("restore subscription attempt failed", "attempt", attempt, "key", subKey, "error", err)
-			if attempt == types.MsgRetryDeliver-1 {
-				logger.Error("restore subscription all attempts failed", "key", subKey)
-			}
-		}
+
+		err := p.executeWithRetry(restoreCtx, retryConfig{
+			operation:   "restore subscription",
+			topic:       subKey,
+			extraFields: map[string]any{"key": subKey},
+		}, func() error {
+			return p.plugin.GmqSubscribe(restoreCtx, info)
+		})
+
 		if err == nil {
 			p.subscriptions.Store(subKey, struct{}{})
 		}
-		return true
+		return restoreCtx.Err() == nil
 	})
 }
 
@@ -426,7 +404,8 @@ func (p *GmqProxy) GmqPing(ctx context.Context) bool {
 		return false
 	}
 	// check if connection is valid
-	return p.plugin.GmqPing(ctx)
+	ping := p.plugin.GmqPing(ctx)
+	return ping
 }
 
 // GmqGetConn retrieves the underlying message queue connection object.

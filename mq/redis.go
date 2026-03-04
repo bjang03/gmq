@@ -30,12 +30,6 @@ type RedisPubMessage struct {
 	types.PubMessage
 }
 
-// RedisPubDelayMessage represents a Redis delayed publish message (not supported in current implementation).
-// Redis Streams does not have native delayed message support.
-type RedisPubDelayMessage struct {
-	types.PubDelayMessage
-}
-
 // RedisSubMessage represents a Redis subscription configuration.
 // Uses consumer group pattern for distributed consumption across multiple consumers.
 type RedisSubMessage struct {
@@ -165,7 +159,6 @@ func (c *RedisConn) GmqClose(_ context.Context) (err error) {
 		}
 		c.conn = nil
 	}
-
 	logger.Info("connection closed")
 	return err
 }
@@ -210,15 +203,6 @@ func (c *RedisConn) GmqPublish(ctx context.Context, msg types.Publish) (err erro
 	return nil
 }
 
-// GmqPublishDelay is not supported in Redis implementation.
-// Redis Streams does not have native delayed message support.
-// Returns ErrDelayMessageNotSupported error
-func (c *RedisConn) GmqPublishDelay(_ context.Context, _ types.PublishDelay) (err error) {
-	logger := utils.LogWithPlugin(redisPluginName)
-	logger.Error("publish delay not supported")
-	return fmt.Errorf("%s: %w", redisPluginName, types.ErrDelayMessageNotSupported)
-}
-
 // GmqSubscribe subscribes to Redis Stream messages using consumer group.
 // Uses consumer group pattern for distributed consumption.
 // This method starts a background goroutine for non-blocking message consumption.
@@ -256,9 +240,7 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 	logger.Info("subscribed successfully", "stream", topic, "group", group, "consumer", cfg.ConsumerName)
 
 	// Start background goroutine for non-blocking message consumption
-	c.consumeLoop(ctx, cfg, group, sub, logger)
-
-	return nil
+	return c.consumeLoop(ctx, cfg, group, sub, logger)
 }
 
 // consumeLoop runs in a background goroutine to consume messages from Redis Stream.
@@ -266,7 +248,7 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 // - Context is cancelled
 // - Connection is closed
 // - An unrecoverable error occurs
-func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group string, sub types.Subscribe, logger *slog.Logger) {
+func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group string, sub types.Subscribe, logger *slog.Logger) error {
 	topic := "gmq:stream:" + cfg.Topic
 	// build structured parameters (clear parameter meaning, no need to remember command order)
 	readArgs := &redis.XReadGroupArgs{
@@ -281,13 +263,13 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 		select {
 		case <-ctx.Done():
 			logger.Debug("subscription context done, exiting consume loop", "stream", topic, "consumer", cfg.ConsumerName)
-			return
+			return ctx.Err()
 		default:
 		}
 
 		if c.conn == nil {
 			logger.Error("connection is nil during consume loop, exiting", "stream", topic)
-			return
+			return fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
 		}
 
 		streams, err := c.conn.XReadGroup(ctx, readArgs).Result()
@@ -295,14 +277,14 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 			// Check if context was cancelled during the blocking call
 			if ctx.Err() != nil {
 				logger.Debug("context cancelled during xreadgroup, exiting", "stream", topic, "consumer", cfg.ConsumerName)
-				return
+				return ctx.Err()
 			}
 			// Check if it's a timeout (no new messages), just continue
 			if err == redis.Nil || strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "key no longer exists") {
 				continue
 			}
 			logger.Error("xreadgroup failed, exiting consume loop", "stream", cfg.Topic, "error", err)
-			return
+			return fmt.Errorf("xreadgroup failed, exiting consume loop %s: %w", cfg.Topic, err)
 		}
 
 		// Process messages
@@ -311,7 +293,7 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 				select {
 				case <-ctx.Done():
 					logger.Debug("context cancelled during message processing, exiting", "stream", topic, "consumer", cfg.ConsumerName)
-					return
+					return ctx.Err()
 				default:
 				}
 
@@ -359,12 +341,5 @@ func (c *RedisConn) GmqAck(ctx context.Context, msg *types.AckMessage) error {
 		return fmt.Errorf("%s: xdel: %w", redisPluginName, err)
 	}
 
-	return nil
-}
-
-// GmqNak is a no-op for Redis implementation.
-// Redis Streams does not support negative acknowledgment in the same way as other message queues.
-// Messages remain in PEL until explicitly acknowledged or expire
-func (c *RedisConn) GmqNak(_ context.Context, _ *types.AckMessage) error {
 	return nil
 }

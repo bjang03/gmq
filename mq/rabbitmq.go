@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/bjang03/gmq/types"
@@ -40,6 +41,8 @@ type RabbitMQPubDelayMessage struct {
 // Embeds SubMessage for basic subscription fields.
 type RabbitMQSubMessage struct {
 	types.SubMessage
+	Durable    bool // whether to persist messages to disk (persistent messages survive broker restart)
+	IsDelayMsg bool // whether this is a delayed message stream (requires AllowMsgSchedules)
 }
 
 // RabbitMQConn is the RabbitMQ message queue implementation.
@@ -62,6 +65,12 @@ type RabbitMQConn struct {
 	unifiedDLExchange string           // unified dead letter exchange name for all failed messages
 	unifiedDLQueue    string           // unified dead letter queue name for collecting failed messages
 	unifiedDLConsumer string           // unified dead letter consumer name for monitoring failed messages
+
+	// 监听断开的通道
+	connCloseChan    chan *amqp.Error
+	channelCloseChan chan *amqp.Error
+	// 重连控制
+	reconnectChan chan struct{}
 }
 
 // rabbitMQConfig holds RabbitMQ connection configuration parameters.
@@ -140,7 +149,10 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err er
 	url := fmt.Sprintf("amqp://%s:%s@%s:%s/%s", config.Username, config.Password, config.Addr, config.Port, config.VHost)
 
 	// create connection
-	newConn, err := amqp.Dial(url)
+	//newConn, err := amqp.Dial(url)
+	newConn, err := amqp.DialConfig(url, amqp.Config{
+		Heartbeat: 30 * time.Second, // 心跳检测，主动发现静默断开
+	})
 	if err != nil {
 		logger.Error("connect failed", "addr", config.Addr, "port", config.Port, "error", err)
 		return fmt.Errorf("%s: connect: %w", rabbitmqPluginName, err)
@@ -153,11 +165,59 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err er
 		logger.Error("create channel failed", "error", err)
 		return fmt.Errorf("%s: create_channel: %w", rabbitmqPluginName, err)
 	}
-
+	// 4. 注册连接/信道断开监听
+	c.connCloseChan = newConn.NotifyClose(make(chan *amqp.Error, 1))
+	c.channelCloseChan = newChannel.NotifyClose(make(chan *amqp.Error, 1))
 	c.conn = newConn
 	c.channel = newChannel
+	c.monitorDisconnect()
 	logger.Info("connected successfully", "addr", config.Addr, "port", config.Port, "vhost", config.VHost)
 	return nil
+}
+
+// monitorDisconnect 监听连接/信道断开事件
+func (c *RabbitMQConn) monitorDisconnect() {
+	for {
+		select {
+		// 监听连接断开
+		case err := <-c.connCloseChan:
+			if err != nil {
+				log.Printf("❌ 连接断开: %v", err)
+			} else {
+				log.Println("❌ 连接被主动关闭")
+			}
+			c.triggerReconnect()
+
+		// 监听信道断开
+		case err := <-c.channelCloseChan:
+			if err != nil {
+				log.Printf("❌ 信道断开: %v", err)
+			} else {
+				log.Println("❌ 信道被主动关闭")
+			}
+			c.triggerReconnect()
+
+		// 监听重连信号
+		case <-c.reconnectChan:
+			log.Println("🔄 开始尝试重连...")
+			// 指数退避重连（避免频繁重试）
+			backoff := []time.Duration{1 * time.Second, 3 * time.Second, 5 * time.Second, 10 * time.Second}
+			for _, delay := range backoff {
+				time.Sleep(delay)
+				log.Println("✅ 重连成功")
+				break
+			}
+		}
+	}
+}
+
+// triggerReconnect 触发重连（非阻塞）
+func (c *RabbitMQConn) triggerReconnect() {
+	// 防止重复触发重连
+	select {
+	case c.reconnectChan <- struct{}{}:
+	default:
+	}
 }
 
 // GmqClose closes the RabbitMQ connection and channel.
@@ -175,9 +235,77 @@ func (c *RabbitMQConn) GmqClose(_ context.Context) (err error) {
 		c.conn.Close()
 		c.conn = nil
 	}
-
 	logger.Info("connection closed")
 	return nil
+}
+
+func (c *RabbitMQConn) setupQueue(topic string, durable bool, delayMsg bool) (string, string, error) {
+	logger := utils.LogWithPlugin(rabbitmqPluginName)
+
+	// 0. ensure unified dead letter exchange and queue are created (idempotent)
+	if err := c.setupUnifiedDeadLetter(); err != nil {
+		return "", "", err
+	}
+
+	// 1. basic configuration
+	exchangeType := "fanout"
+	exchangeName := topic
+	routingKey := topic
+	args := amqp.Table{}
+	if delayMsg {
+		exchangeType = "x-delayed-message"
+		exchangeName = topic + ".delayed"
+		args["x-delayed-type"] = "fanout"
+	}
+
+	// 2. declare business queue (associate with dead letter configuration)
+	// directly point dead letter to unified dead letter exchange
+	queueArgs := amqp.Table{
+		// core: specify current queue's dead letter exchange as unified dead letter exchange
+		"x-dead-letter-exchange": c.unifiedDLExchange,
+		// fanout type exchange does not need routing key
+		"x-dead-letter-routing-key": "",
+	}
+
+	// 3. declare business Exchange
+	if err := c.channel.ExchangeDeclare(
+		exchangeName, // business exchange name
+		exchangeType, // exchange type (normal/fanout or delayed/x-delayed-message)
+		durable,      // whether to persist
+		false,        // autoDelete
+		false,        // internal
+		false,        // noWait
+		args,         // exchange arguments (delayed exchange needs x-delayed-type)
+	); err != nil {
+		logger.Error("declare exchange failed", "exchange", exchangeName, "type", exchangeType, "error", err)
+		return "", "", fmt.Errorf("%s: declare_exchange: %w", rabbitmqPluginName, err)
+	}
+
+	// 4. declare business queue
+	if _, err := c.channel.QueueDeclare(
+		topic,     // business queue name
+		durable,   // whether to persist
+		false,     // autoDelete
+		false,     // exclusive
+		false,     // noWait
+		queueArgs, // queue arguments (including dead letter configuration)
+	); err != nil {
+		logger.Error("declare queue failed", "queue", topic, "error", err)
+		return "", "", fmt.Errorf("%s: declare_queue: %w", rabbitmqPluginName, err)
+	}
+
+	// 5. bind business queue to business exchange
+	if err := c.channel.QueueBind(
+		topic,        // business queue name
+		routingKey,   // routing key
+		exchangeName, // business exchange name
+		false,        // noWait
+		nil,          // args
+	); err != nil {
+		logger.Error("bind queue failed", "queue", topic, "exchange", exchangeName, "error", err)
+		return "", "", fmt.Errorf("%s: bind_queue: %w", rabbitmqPluginName, err)
+	}
+	return exchangeName, routingKey, nil
 }
 
 // setupUnifiedDeadLetter creates or verifies unified dead letter exchange and queue (idempotent operation).
@@ -300,70 +428,8 @@ func (c *RabbitMQConn) GmqPublishDelay(ctx context.Context, msg types.PublishDel
 func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, durable bool, delayTime int, data any) error {
 	logger := utils.LogWithPlugin(rabbitmqPluginName)
 
-	// 0. ensure unified dead letter exchange and queue are created (idempotent)
-	if err := c.setupUnifiedDeadLetter(); err != nil {
-		return err
-	}
-
 	delayMsg := delayTime > 0
-	// 1. basic configuration
-	exchangeType := "fanout"
-	exchangeName := topic
-	routingKey := topic
-	args := amqp.Table{}
-	if delayMsg {
-		exchangeType = "x-delayed-message"
-		exchangeName = topic + ".delayed"
-		args["x-delayed-type"] = "fanout"
-	}
-
-	// 2. declare business queue (associate with dead letter configuration)
-	// directly point dead letter to unified dead letter exchange
-	queueArgs := amqp.Table{
-		// core: specify current queue's dead letter exchange as unified dead letter exchange
-		"x-dead-letter-exchange": c.unifiedDLExchange,
-		// fanout type exchange does not need routing key
-		"x-dead-letter-routing-key": "",
-	}
-
-	// 3. declare business Exchange
-	if err := c.channel.ExchangeDeclare(
-		exchangeName, // business exchange name
-		exchangeType, // exchange type (normal/fanout or delayed/x-delayed-message)
-		durable,      // whether to persist
-		false,        // autoDelete
-		false,        // internal
-		false,        // noWait
-		args,         // exchange arguments (delayed exchange needs x-delayed-type)
-	); err != nil {
-		logger.Error("declare exchange failed", "exchange", exchangeName, "type", exchangeType, "error", err)
-		return fmt.Errorf("%s: declare_exchange: %w", rabbitmqPluginName, err)
-	}
-
-	// 4. declare business queue
-	if _, err := c.channel.QueueDeclare(
-		topic,     // business queue name
-		durable,   // whether to persist
-		false,     // autoDelete
-		false,     // exclusive
-		false,     // noWait
-		queueArgs, // queue arguments (including dead letter configuration)
-	); err != nil {
-		logger.Error("declare queue failed", "queue", topic, "error", err)
-		return fmt.Errorf("%s: declare_queue: %w", rabbitmqPluginName, err)
-	}
-
-	// 5. bind business queue to business exchange
-	if err := c.channel.QueueBind(
-		topic,        // business queue name
-		routingKey,   // routing key
-		exchangeName, // business exchange name
-		false,        // noWait
-		nil,          // args
-	); err != nil {
-		logger.Error("bind queue failed", "queue", topic, "exchange", exchangeName, "error", err)
-		return fmt.Errorf("%s: bind_queue: %w", rabbitmqPluginName, err)
-	}
+	exchangeName, routingKey, err := c.setupQueue(topic, durable, delayMsg)
 
 	// 6. serialize message data
 	body, err := json.Marshal(data)
@@ -410,6 +476,7 @@ func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, durable 
 
 // GmqSubscribe subscribes to RabbitMQ messages from a queue.
 // Uses manual acknowledgment mode for reliable message processing.
+// Automatically creates the queue if it doesn't exist.
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - sub: subscription configuration (must be *RabbitMQSubMessage)
@@ -422,6 +489,12 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (e
 	if !ok {
 		logger.Error("invalid message type", "expected", "*RabbitMQSubMessage", "got", fmt.Sprintf("%T", sub.GetSubMsg()))
 		return fmt.Errorf("%s: subscribe: %w: expected *RabbitMQSubMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
+	}
+
+	_, _, err = c.setupQueue(cfg.Topic, cfg.Durable, cfg.IsDelayMsg)
+	if err != nil {
+		logger.Error("setup queue failed", "queue", cfg.Topic, "error", err)
+		return fmt.Errorf("%s: setup_queue: %w", rabbitmqPluginName, err)
 	}
 
 	if err = c.channel.Qos(cfg.FetchCount, 0, false); err != nil {

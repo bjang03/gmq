@@ -16,19 +16,23 @@ import (
 //   - Publish: GmqPublish, GmqPublishDelay (for delayed messages)
 //   - Subscribe: GmqSubscribe (with consumer group support)
 //   - Acknowledgment: GmqAck (success), GmqNak (failure)
+//   - State: GmqSetStateCallback (for connection state changes)
 //
 // Context Usage:
 //   - All methods accept a context parameter for timeout/cancellation control
 //   - Use context.WithTimeout to set operation timeouts
 //   - Use context.WithCancel for manual cancellation
 type Gmq interface {
-	GmqGetConn(ctx context.Context) any                                // Get the underlying connection object for direct access
-	GmqConnect(ctx context.Context, cfg map[string]any) error          // Establish connection to the message queue server
-	GmqPublish(ctx context.Context, msg types.Publish) error           // Publish a message to the specified topic
+	GmqGetConn(ctx context.Context) any                          // Get the underlying connection object for direct access
+	GmqConnect(ctx context.Context, cfg map[string]any) error    // Establish connection to the message queue server
+	GmqPublish(ctx context.Context, msg types.Publish) error     // Publish a message to the specified topic
+	GmqSubscribe(ctx context.Context, msg types.Subscribe) error // Subscribe to messages from a topic with a consumer
+	GmqPing(ctx context.Context) bool                            // Check if the connection is alive and working
+	GmqClose(ctx context.Context) error                          // Close the connection and cleanup resources
+	GmqAck(ctx context.Context, msg *types.AckMessage) error     // Acknowledge successful message processing
+}
+
+type GmqUnique interface {
 	GmqPublishDelay(ctx context.Context, msg types.PublishDelay) error // Publish a delayed message with specified delay time
-	GmqSubscribe(ctx context.Context, msg types.Subscribe) error       // Subscribe to messages from a topic with a consumer
-	GmqPing(ctx context.Context) bool                                  // Check if the connection is alive and working
-	GmqClose(ctx context.Context) error                                // Close the connection and cleanup resources
-	GmqAck(ctx context.Context, msg *types.AckMessage) error           // Acknowledge successful message processing
 	GmqNak(ctx context.Context, msg *types.AckMessage) error           // Negatively acknowledge message (processing failed)
 }

@@ -14,9 +14,6 @@ import (
 	"github.com/bjang03/gmq/utils"
 )
 
-// anonConsumerCounter atomic counter for generating unique subscription keys for anonymous consumers
-var anonConsumerCounter atomic.Int64
-
 // subMessage wraps subscription message with acknowledgment handler.
 // This internal structure is used by the proxy to manage message acknowledgments.
 type subMessage struct {
@@ -41,11 +38,12 @@ func (m *subMessage) GetAckHandleFunc() func(ctx context.Context, message *types
 // - Connection status tracking
 // - Structured logging
 type GmqProxy struct {
-	name      string // proxy/plugin name for identification and logging
-	plugin    Gmq    // underlying message queue plugin instance
-	connected int32  // connection status: 0=disconnected, 1=connected (atomic access for thread safety)
+	name         string // proxy/plugin name for identification and logging
+	plugin       Gmq    // underlying message queue plugin instance
+	pluginUnique GmqUnique
+	connected    int32 // connection status: 0=disconnected, 1=connected (atomic access for thread safety)
 
-	subscriptions      sync.Map // active subscription tracking: key=subKey, value=empty struct for fast lookup
+	subscriptions      sync.Map // active subscription tracking: key=subKey, value=*subscriptionInfo
 	subscriptionParams sync.Map // subscription parameter cache: key=subKey, value=*subMessage for restoration
 }
 
@@ -92,68 +90,38 @@ func validatePublishDelayMsg(msg types.PublishDelay) error {
 	return nil
 }
 
-// retryConfig holds configuration for retry operations
-type retryConfig struct {
-	operation   string
-	topic       string
-	extraFields map[string]any
-}
-
 // executeWithRetry executes an operation with exponential backoff retry logic.
-// This is the core retry mechanism used by publish and subscribe operations.
-// Parameters:
-//   - ctx: context for timeout/cancellation control
-//   - cfg: retry configuration including operation name and logging fields
-//   - operation: the actual operation function to execute
-//
 // Returns error if all retry attempts fail
-func (p *GmqProxy) executeWithRetry(ctx context.Context, cfg retryConfig, operation func() error) error {
+func (p *GmqProxy) executeWithRetry(ctx context.Context, operation string, topic string, op func() error) error {
 	logger := utils.LogWithPlugin(p.name)
 	var err error
 
 	for attempt := 0; attempt < types.MsgRetryDeliver; attempt++ {
-		if attempt > 0 || !p.plugin.GmqPing(ctx) {
-			if attempt > 0 && p.plugin.GmqPing(ctx) {
-				break
-			}
-			delay := types.MsgRetryDelay
-			if attempt > 0 {
-				delay = types.MsgRetryDelay * time.Duration(1<<uint(attempt-1))
-			}
-			logger.Warn(cfg.operation+" attempt ping failed, wait", append([]any{"attempt", attempt, "delay", delay}, mapToSlice(cfg.extraFields)...))
+		// Wait for connection if not available
+		if !p.plugin.GmqPing(ctx) {
+			delay := types.MsgRetryDelay * time.Duration(1<<uint(attempt))
+			logger.Warn(operation+" waiting for connection", "attempt", attempt, "delay", delay)
 			select {
 			case <-time.After(delay):
+				continue
 			case <-ctx.Done():
-				err = ctx.Err()
-				logger.Error(cfg.operation+" attempt context canceled", "attempt", attempt, "error", err)
-				return err
+				return ctx.Err()
 			}
 		}
-		if err = operation(); err != nil {
-			logger.Error(cfg.operation+" attempt failed", "attempt", attempt, "error", err)
-			if attempt == types.MsgRetryDeliver-1 {
-				logger.Error("all "+cfg.operation+" attempts failed", "error", err)
+
+		// Execute operation
+		if err = op(); err != nil {
+			logger.Error(operation+" failed", "attempt", attempt, "error", err)
+			// If connection is still good, don't retry
+			if p.plugin.GmqPing(ctx) {
+				return err
 			}
 		} else {
-			successFields := []any{"attempt", attempt, "topic", cfg.topic}
-			successFields = append(successFields, mapToSlice(cfg.extraFields)...)
-			logger.Info(cfg.operation+" attempt success", successFields...)
+			logger.Info(operation+" success", "attempt", attempt, "topic", topic)
 			return nil
 		}
 	}
 	return err
-}
-
-// mapToSlice converts a map to a slice of alternating keys and values for logging
-func mapToSlice(m map[string]any) []any {
-	if m == nil {
-		return nil
-	}
-	result := make([]any, 0, len(m)*2)
-	for k, v := range m {
-		result = append(result, k, v)
-	}
-	return result
 }
 
 // GmqPublish publishes a message with unified monitoring and retry logic.
@@ -169,11 +137,7 @@ func (p *GmqProxy) GmqPublish(ctx context.Context, msg types.Publish) error {
 		logger.Error("validate publish message failed", "error", err)
 		return err
 	}
-
-	return p.executeWithRetry(ctx, retryConfig{
-		operation: "publish",
-		topic:     msg.GetTopic(),
-	}, func() error {
+	return p.executeWithRetry(ctx, "publish", msg.GetTopic(), func() error {
 		return p.plugin.GmqPublish(ctx, msg)
 	})
 }
@@ -192,13 +156,8 @@ func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) 
 		logger.Error("validate publish delay message failed", "error", err)
 		return err
 	}
-
-	return p.executeWithRetry(ctx, retryConfig{
-		operation:   "publish delay",
-		topic:       msg.GetTopic(),
-		extraFields: map[string]any{"delay_seconds": msg.GetDelaySeconds()},
-	}, func() error {
-		return p.plugin.GmqPublishDelay(ctx, msg)
+	return p.executeWithRetry(ctx, "publish delay", msg.GetTopic(), func() error {
+		return p.pluginUnique.GmqPublishDelay(ctx, msg)
 	})
 }
 
@@ -219,6 +178,81 @@ func validateSubscribeMsg(msg *types.SubMessage) error {
 		return types.ErrHandleFuncRequired
 	}
 	return nil
+}
+
+// GmqSubscribe subscribes to messages from a topic with unified monitoring and retry logic.
+// Implements exponential backoff retry during subscription establishment.
+// Prevents duplicate subscriptions for the same topic and consumer.
+// This method is non-blocking - it starts a background goroutine to handle the subscription.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: subscription message containing topic, consumer, and handler
+//
+// Returns error if subscription fails
+func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err error) {
+	message, ok := msg.GetSubMsg().(*types.SubMessage)
+	if !ok {
+		return fmt.Errorf("%w: expected *types.SubMessage", types.ErrInvalidMessageType)
+	}
+	if err = validateSubscribeMsg(message); err != nil {
+		return err
+	}
+	sub := new(subMessage)
+	sub.SubMsg = msg
+	sub.HandleFunc = p.wrapHandleFunc(message.HandleFunc, message.AutoAck)
+	message.HandleFunc = nil
+	subKey := message.Topic + ":" + message.ConsumerName
+
+	// Check for duplicate subscription
+	_, loaded := p.subscriptions.Load(subKey)
+	if loaded {
+		logger := utils.LogWithPlugin(p.name)
+		logger.Warn("already subscribed to topic", "topic", message.Topic, "consumer", message.ConsumerName)
+		return fmt.Errorf("%w: topic=%s, consumer=%s", types.ErrSubscriptionAlreadyExists, message.Topic, message.ConsumerName)
+	}
+
+	// Create a dedicated context for this subscription
+	subCtx, cancel := context.WithCancel(context.Background())
+
+	// Try to store the subscription info first (optimistic locking)
+	_, loaded = p.subscriptions.LoadOrStore(subKey, cancel)
+	if loaded {
+		cancel() // Cancel the context we created
+		logger := utils.LogWithPlugin(p.name)
+		logger.Warn("already subscribed to topic", "topic", message.Topic, "consumer", message.ConsumerName)
+		return fmt.Errorf("%w: topic=%s, consumer=%s", types.ErrSubscriptionAlreadyExists, message.Topic, message.ConsumerName)
+	}
+
+	// Store subscription params for potential reconnection
+	p.subscriptionParams.Store(subKey, sub)
+
+	// Start subscription in background goroutine
+	go p.runSubscription(subCtx, subKey, sub, message)
+
+	logger := utils.LogWithPlugin(p.name)
+	logger.Info("subscribe success, started background goroutine", "subKey", subKey)
+	return nil
+}
+
+// runSubscription runs the actual subscription in a background goroutine.
+// It handles retry logic and cleanup when the subscription ends.
+func (p *GmqProxy) runSubscription(ctx context.Context, subKey string, sub *subMessage, message *types.SubMessage) {
+	logger := utils.LogWithPlugin(p.name)
+
+	err := p.executeWithRetry(ctx, "subscribe", message.Topic, func() error {
+		return p.plugin.GmqSubscribe(ctx, sub)
+	})
+
+	if err != nil {
+		logger.Error("subscription failed after retries", "subKey", subKey, "error", err)
+		p.subscriptions.Delete(subKey)
+		p.subscriptionParams.Delete(subKey)
+		return
+	}
+
+	// Wait for context cancellation (subscription ends)
+	<-ctx.Done()
+	logger.Debug("subscription goroutine exiting", "subKey", subKey, "reason", ctx.Err())
 }
 
 // wrapHandleFunc wraps the user's HandleFunc to control ACK at proxy layer.
@@ -256,7 +290,7 @@ func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message
 					return err
 				}
 			} else {
-				err = p.plugin.GmqNak(ctx, message)
+				err = p.pluginUnique.GmqNak(ctx, message)
 				if err != nil {
 					return err
 				}
@@ -266,67 +300,13 @@ func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message
 	}
 }
 
-// GmqSubscribe subscribes to messages from a topic with unified monitoring and retry logic.
-// Implements exponential backoff retry during subscription establishment.
-// Prevents duplicate subscriptions for the same topic and consumer.
-// Parameters:
-//   - ctx: context for timeout/cancellation control
-//   - msg: subscription message containing topic, consumer, and handler
-//
-// Returns error if subscription fails
-func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err error) {
-	message, ok := msg.GetSubMsg().(*types.SubMessage)
-	if !ok {
-		return fmt.Errorf("%w: expected *types.SubMessage", types.ErrInvalidMessageType)
-	}
-	if err = validateSubscribeMsg(message); err != nil {
-		return err
-	}
-	sub := new(subMessage)
-	sub.SubMsg = msg
-	sub.HandleFunc = p.wrapHandleFunc(message.HandleFunc, message.AutoAck)
-	message.HandleFunc = nil
-	subKey := p.getSubKey(message.Topic, message.ConsumerName)
-	_, loaded := p.subscriptions.LoadOrStore(subKey, struct{}{})
-	if loaded {
-		logger := utils.LogWithPlugin(p.name)
-		logger.Warn("already subscribed to topic", "topic", message.Topic, "consumer", message.ConsumerName)
-		return fmt.Errorf("%w: topic=%s, consumer=%s", types.ErrSubscriptionAlreadyExists, message.Topic, message.ConsumerName)
-	}
-	// use named return value to ensure defer sees the final error value
-	defer func() {
-		if err != nil {
-			p.subscriptions.Delete(subKey)
-			p.subscriptionParams.Delete(subKey)
-			logger := utils.LogWithPlugin(p.name)
-			logger.Warn("subscribe failed, clean slot", "subKey", subKey, "error", err)
-		}
-	}()
-
-	err = p.executeWithRetry(ctx, retryConfig{
-		operation: "subscribe",
-		topic:     message.Topic,
-	}, func() error {
-		return p.plugin.GmqSubscribe(ctx, sub)
-	})
-
-	if err != nil {
-		return err
-	}
-	p.subscriptionParams.Store(subKey, sub)
-	logger := utils.LogWithPlugin(p.name)
-	logger.Info("subscribe success, save subKey", "subKey", subKey)
-	return nil
-}
-
 // clearSubscriptions clears all active subscriptions when shutting down or reconnecting.
-// It unsubscribes from all registered topics and cleans up the subscription maps.
+// It cancels all subscription goroutines and cleans up the subscription maps.
 func (p *GmqProxy) clearSubscriptions() {
 	p.subscriptions.Range(func(key, value any) bool {
 		subKey := key.(string)
-		subObj := value
-		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
-			_ = closer.Unsubscribe()
+		if cancel, ok := value.(context.CancelFunc); ok && cancel != nil {
+			cancel() // Cancel the subscription context to stop the goroutine
 		}
 		p.subscriptions.Delete(subKey)
 		p.subscriptionParams.Delete(subKey)
@@ -335,25 +315,19 @@ func (p *GmqProxy) clearSubscriptions() {
 }
 
 // restoreSubscriptions re-establishes all subscriptions after a successful reconnection.
-// It iterates through cached subscription parameters and attempts to resubscribe
-// with the original configuration, implementing retry logic for each subscription.
 func (p *GmqProxy) restoreSubscriptions() {
 	logger := utils.LogWithPlugin(p.name)
+
+	// Cancel all existing subscription goroutines
 	p.subscriptions.Range(func(key, value any) bool {
-		subKey := key.(string)
-		subObj := value
-		if closer, ok := subObj.(interface{ Unsubscribe() error }); ok {
-			if err := closer.Unsubscribe(); err != nil {
-				logger.Warn("failed to unsubscribe old subscription", "key", subKey, "error", err)
-			}
+		if cancel, ok := value.(context.CancelFunc); ok && cancel != nil {
+			cancel()
 		}
-		p.subscriptions.Delete(subKey)
+		p.subscriptions.Delete(key.(string))
 		return true
 	})
 
-	restoreCtx, restoreCancel := context.WithCancel(context.Background())
-	defer restoreCancel()
-
+	// Re-establish all subscriptions in new goroutines
 	p.subscriptionParams.Range(func(key, value any) bool {
 		subKey := key.(string)
 		info, ok := value.(*subMessage)
@@ -362,36 +336,24 @@ func (p *GmqProxy) restoreSubscriptions() {
 			return true
 		}
 
-		err := p.executeWithRetry(restoreCtx, retryConfig{
-			operation:   "restore subscription",
-			topic:       subKey,
-			extraFields: map[string]any{"key": subKey},
-		}, func() error {
-			return p.plugin.GmqSubscribe(restoreCtx, info)
-		})
-
-		if err == nil {
-			p.subscriptions.Store(subKey, struct{}{})
+		subMsg, ok := info.SubMsg.(types.Subscribe)
+		if !ok {
+			logger.Error("invalid SubMsg type", "key", subKey)
+			return true
 		}
-		return restoreCtx.Err() == nil
-	})
-}
+		originalMsg, ok := subMsg.GetSubMsg().(*types.SubMessage)
+		if !ok {
+			logger.Error("invalid original message type", "key", subKey)
+			return true
+		}
 
-// getSubKey generates a unique subscription key for tracking subscriptions.
-// For named consumers, uses "topic:consumerName" format.
-// For anonymous consumers, uses "topic:anon-{counter}" format with atomic counter.
-// Parameters:
-//   - topic: the subscription topic
-//   - consumerName: the consumer name (empty for anonymous consumers)
-//
-// Returns a unique subscription key string
-func (p *GmqProxy) getSubKey(topic, consumerName string) string {
-	if consumerName != "" {
-		return topic + ":" + consumerName
-	}
-	// use atomic counter to generate unique suffix to avoid conflicts
-	counter := anonConsumerCounter.Add(1)
-	return fmt.Sprintf("%s:anon-%d", topic, counter)
+		subCtx, cancel := context.WithCancel(context.Background())
+		p.subscriptions.Store(subKey, cancel)
+		go p.runSubscription(subCtx, subKey, info, originalMsg)
+
+		logger.Info("restored subscription", "subKey", subKey)
+		return true
+	})
 }
 
 // GmqPing checks if the connection is alive.
@@ -404,8 +366,7 @@ func (p *GmqProxy) GmqPing(ctx context.Context) bool {
 		return false
 	}
 	// check if connection is valid
-	ping := p.plugin.GmqPing(ctx)
-	return ping
+	return p.plugin.GmqPing(ctx)
 }
 
 // GmqGetConn retrieves the underlying message queue connection object.
@@ -451,7 +412,7 @@ func (p *GmqProxy) GmqAck(ctx context.Context, msg *types.AckMessage) error {
 //
 // Returns error if negative acknowledgment fails
 func (p *GmqProxy) GmqNak(ctx context.Context, msg *types.AckMessage) error {
-	return p.plugin.GmqNak(ctx, msg)
+	return p.pluginUnique.GmqNak(ctx, msg)
 }
 
 // GmqClose closes the connection and cleans up all subscriptions.

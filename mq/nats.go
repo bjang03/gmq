@@ -32,6 +32,10 @@ import (
 // NATS plugin name constant
 const natsPluginName = "nats"
 
+// Package-level logger instance to avoid repeated heap allocation from utils.LogWithPlugin
+// This eliminates the "nats string escapes to heap" issue in every log call
+var natsLogger = utils.GetLogger().WithPlugin(natsPluginName)
+
 // NatsPubMessage represents a NATS publish message with durability option.
 // Embeds PubMessage for basic message fields.
 type NatsPubMessage struct {
@@ -71,8 +75,13 @@ type NatsSubMessage struct {
 //
 // Topic names are sanitized by replacing special characters with underscores.
 type NatsConn struct {
-	conn *nats.Conn            // NATS connection object for basic messaging
-	js   nats.JetStreamContext // JetStream context for persistent messaging and consumer management
+	conn          *nats.Conn            // NATS connection object for basic messaging
+	js            nats.JetStreamContext // JetStream context for persistent messaging and consumer management
+	setSubscribed func(bool)            // setter function to report connection state changes to proxy
+}
+
+func (c *NatsConn) SetSubscribedSetter(setter func(bool)) {
+	c.setSubscribed = setter
 }
 
 // natsConfig holds NATS connection configuration parameters.
@@ -111,35 +120,40 @@ func (c *NatsConn) GmqGetConn(_ context.Context) any {
 //
 // Returns error if connection or JetStream initialization fails
 func (c *NatsConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
-	logger := utils.LogWithPlugin(natsPluginName)
 
 	config := new(natsConfig)
 	if err = utils.MapToStruct(config, cfg); err != nil {
-		logger.Error("config parse failed", "error", err)
+		natsLogger.Error("config parse failed", "error", err)
 		return fmt.Errorf("%s: config: %w", natsPluginName, err)
 	}
 	if config.Addr == "" {
-		logger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
+		natsLogger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
 		return fmt.Errorf("%s: config: %w", natsPluginName, types.ErrConfigAddrRequired)
 	}
 	if config.Port == "" {
-		logger.Error("config validation failed", "error", types.ErrConfigPortRequired)
+		natsLogger.Error("config validation failed", "error", types.ErrConfigPortRequired)
 		return fmt.Errorf("%s: config: %w", natsPluginName, types.ErrConfigPortRequired)
 	}
 
 	// set connection options
 	opts := []nats.Option{
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
-			logger.Error("connection disconnected", "url", nc.ConnectedUrl(), "error", err)
+			natsLogger.Error("connection disconnected", "url", nc.ConnectedUrl(), "error", err)
+			if c.setSubscribed != nil {
+				c.setSubscribed(false)
+			}
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
-			logger.Info("connection reconnected", "url", nc.ConnectedUrl())
+			natsLogger.Info("connection reconnected", "url", nc.ConnectedUrl())
 		}),
 		nats.ConnectHandler(func(nc *nats.Conn) {
-			logger.Info("connection established", "url", nc.ConnectedUrl())
+			natsLogger.Info("connection established", "url", nc.ConnectedUrl())
 		}),
 		nats.ClosedHandler(func(nc *nats.Conn) {
-			logger.Info("connection closed")
+			natsLogger.Info("connection closed")
+			if c.setSubscribed != nil {
+				c.setSubscribed(false)
+			}
 		}),
 	}
 	if config.Username != "" && config.Password != "" {
@@ -148,37 +162,34 @@ func (c *NatsConn) GmqConnect(_ context.Context, cfg map[string]any) (err error)
 
 	conn, err := nats.Connect(fmt.Sprintf("nats://%s:%s", config.Addr, config.Port), opts...)
 	if err != nil {
-		logger.Error("connect failed", "addr", config.Addr, "port", config.Port, "error", err)
+		natsLogger.Error("connect failed", "addr", config.Addr, "port", config.Port, "error", err)
 		return fmt.Errorf("%s: connect: %w", natsPluginName, err)
 	}
 
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err != nil {
 		conn.Close()
-		logger.Error("jetstream init failed", "error", err)
+		natsLogger.Error("jetstream init failed", "error", err)
 		return fmt.Errorf("%s: jetstream: %w", natsPluginName, err)
 	}
 
 	c.conn = conn
 	c.js = js
-	logger.Info("connected successfully", "addr", config.Addr, "port", config.Port)
 	return nil
 }
 
 // GmqClose closes the NATS connection.
 // Safe to call multiple times
 func (c *NatsConn) GmqClose(_ context.Context) error {
-	logger := utils.LogWithPlugin(natsPluginName)
-
 	if c.conn == nil {
-		logger.Debug("connection already nil")
+		natsLogger.Debug("connection already nil")
 		return nil
 	}
 
 	c.conn.Close()
 	c.conn = nil
 	c.js = nil
-	logger.Info("connection closed")
+	natsLogger.Info("connection closed")
 	return nil
 }
 
@@ -189,20 +200,15 @@ func (c *NatsConn) GmqClose(_ context.Context) error {
 //
 // Returns error if publish fails
 func (c *NatsConn) GmqPublish(ctx context.Context, msg types.Publish) (err error) {
-	logger := utils.LogWithPlugin(natsPluginName)
-
 	cfg, ok := msg.(*NatsPubMessage)
 	if !ok {
-		logger.Error("invalid message type", "expected", "*NatsPubMessage", "got", fmt.Sprintf("%T", msg))
-		return fmt.Errorf("%s: publish: %w: expected *NatsPubMessage", natsPluginName, types.ErrInvalidMessageType)
+		natsLogger.Error("publish:invalid message type", "expected", "*NatsPubMessage", "plugin", natsPluginName)
+		return fmt.Errorf("%s: publish: %w: expected *RedisPubMessage", natsPluginName, types.ErrInvalidMessageType)
 	}
-
 	if err = c.createPublish(ctx, cfg.Topic, cfg.Durable, 0, cfg.Data); err != nil {
-		logger.Error("publish failed", "topic", cfg.Topic, "error", err)
+		natsLogger.Error("publish failed", "topic", cfg.Topic, "error", err)
 		return err
 	}
-
-	logger.Debug("publish success", "topic", cfg.Topic)
 	return nil
 }
 
@@ -214,20 +220,15 @@ func (c *NatsConn) GmqPublish(ctx context.Context, msg types.Publish) (err error
 //
 // Returns error if publish fails
 func (c *NatsConn) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) (err error) {
-	logger := utils.LogWithPlugin(natsPluginName)
-
 	cfg, ok := msg.(*NatsPubDelayMessage)
 	if !ok {
-		logger.Error("invalid message type", "expected", "*NatsPubDelayMessage", "got", fmt.Sprintf("%T", msg))
-		return fmt.Errorf("%s: publish_delay: %w: expected *NatsPubDelayMessage", natsPluginName, types.ErrInvalidMessageType)
+		natsLogger.Error("publish delay:invalid message type", "expected", "*NatsPubDelayMessage", "plugin", natsPluginName)
+		return fmt.Errorf("%s: publish delay: %w: expected *NatsPubDelayMessage", natsPluginName, types.ErrInvalidMessageType)
 	}
-
 	if err = c.createPublish(ctx, cfg.Topic, cfg.Durable, cfg.DelaySeconds, cfg.Data); err != nil {
-		logger.Error("publish delay failed", "topic", cfg.Topic, "delay", cfg.DelaySeconds, "error", err)
+		natsLogger.Error("publish delay failed", "topic", cfg.Topic, "delay", cfg.DelaySeconds, "error", err)
 		return err
 	}
-
-	logger.Debug("publish delay success", "topic", cfg.Topic, "delay", cfg.DelaySeconds)
 	return nil
 }
 
@@ -242,19 +243,16 @@ func (c *NatsConn) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) 
 //
 // Returns error if stream creation or publish fails
 func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool, delayTime int, data any) (err error) {
-	logger := utils.LogWithPlugin(natsPluginName)
-
 	// create Stream
 	if _, _, err := c.createStream(ctx, topic, durable, delayTime > 0); err != nil {
-		logger.Error("create stream failed", "topic", topic, "durable", durable, "error", err)
+		natsLogger.Error("create stream failed", "topic", topic, "durable", durable, "error", err)
 		return fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
 	}
-
 	// build message
 	m := nats.NewMsg(topic)
 	payload, err := json.Marshal(data)
 	if err != nil {
-		logger.Error("marshal data failed", "error", err)
+		natsLogger.Error("marshal data failed", "error", err)
 		return fmt.Errorf("%s: marshal: %w", natsPluginName, err)
 	}
 	m.Data = payload
@@ -270,7 +268,7 @@ func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool
 
 	// publish message
 	if _, err = c.js.PublishMsg(m, []nats.PubOpt{nats.Context(ctx)}...); err != nil {
-		logger.Error("publish message failed", "topic", topic, "error", err)
+		natsLogger.Error("publish message failed", "topic", topic, "error", err)
 		return fmt.Errorf("%s: publish: %w", natsPluginName, err)
 	}
 
@@ -285,18 +283,15 @@ func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool
 //
 // Returns error if subscription fails
 func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err error) {
-	logger := utils.LogWithPlugin(natsPluginName)
-
 	cfg, ok := msg.GetSubMsg().(*NatsSubMessage)
 	if !ok {
-		logger.Error("invalid message type", "expected", "*NatsSubMessage", "got", fmt.Sprintf("%T", msg.GetSubMsg()))
+		natsLogger.Error("subscribe:invalid message type", "expected", "*NatsSubMessage", "plugin", natsPluginName)
 		return fmt.Errorf("%s: subscribe: %w: expected *NatsSubMessage", natsPluginName, types.ErrInvalidMessageType)
 	}
-
 	// create Stream
 	streamName, _, err := c.createStream(ctx, cfg.Topic, cfg.Durable, cfg.IsDelayMsg)
 	if err != nil {
-		logger.Error("create stream failed", "topic", cfg.Topic, "error", err)
+		natsLogger.Error("create stream failed", "topic", cfg.Topic, "error", err)
 		return fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
 	}
 
@@ -317,10 +312,10 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 	if _, err = c.js.AddConsumer(streamName, consumerConfig, []nats.JSOpt{nats.Context(ctx)}...); err != nil {
 		// if Consumer already exists, ignore error
 		if !strings.Contains(err.Error(), "consumer name already in use") {
-			logger.Error("add consumer failed", "stream", streamName, "consumer", cfg.ConsumerName, "error", err)
+			natsLogger.Error("add consumer failed", "stream", streamName, "consumer", cfg.ConsumerName, "error", err)
 			return fmt.Errorf("%s: add_consumer: %w", natsPluginName, err)
 		}
-		logger.Debug("consumer already exists", "stream", streamName, "consumer", cfg.ConsumerName)
+		natsLogger.Debug("consumer already exists", "stream", streamName, "consumer", cfg.ConsumerName)
 	}
 
 	// configure subscription options - bind to created Durable Consumer
@@ -331,44 +326,19 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 	}
 
 	// use Subscribe to create push subscription
-	sub, err := c.js.Subscribe(cfg.Topic, func(natsMsg *nats.Msg) {
+	_, err = c.js.Subscribe(cfg.Topic, func(natsMsg *nats.Msg) {
 		if err = msg.GetAckHandleFunc()(ctx, &types.AckMessage{
 			MessageData:     natsMsg.Data,
 			AckRequiredAttr: natsMsg,
 		}); err != nil {
-			logger.Error("message handler failed", "subject", natsMsg.Subject, "error", err)
+			natsLogger.Error("message handler failed", "subject", natsMsg.Subject, "error", err)
 		}
 	}, subOpts...)
 	if err != nil {
-		logger.Error("subscribe failed", "topic", cfg.Topic, "consumer", cfg.ConsumerName, "error", err)
+		natsLogger.Error("subscribe failed", "topic", cfg.Topic, "consumer", cfg.ConsumerName, "error", err)
 		return fmt.Errorf("%s: subscribe: %w", natsPluginName, err)
 	}
-
-	logger.Info("subscribed successfully", "topic", cfg.Topic, "consumer", cfg.ConsumerName, "stream", streamName)
-
-	// start background goroutine to listen for context cancellation, used to clean up subscription
-	// this goroutine will exit when either:
-	// 1. context is cancelled (unsubscribe and exit)
-	// 2. subscription is closed (IsValid returns false, exit)
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				logger.Debug("unsubscribing due to context cancellation", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
-				_ = sub.Unsubscribe()
-				return
-			case <-ticker.C:
-				// check if subscription is still valid, if not, exit goroutine
-				if !sub.IsValid() {
-					logger.Debug("subscription closed, exiting cleanup goroutine", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
-					return
-				}
-			}
-		}
-	}()
-
+	natsLogger.Info("subscribe success", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
 	return nil
 }
 
@@ -382,7 +352,6 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 //
 // Returns stream name, storage type, and error
 func (c *NatsConn) createStream(_ context.Context, topic string, durable, isDelayMsg bool) (string, nats.StorageType, error) {
-	logger := utils.LogWithPlugin(natsPluginName)
 
 	// build stream name and storage type
 	// use topic name as unique identifier to avoid conflicts
@@ -434,11 +403,11 @@ func (c *NatsConn) createStream(_ context.Context, topic string, durable, isDela
 
 	// create stream
 	if err := jsStreamCreate(c.conn, jsConfig); err != nil {
-		logger.Error("create stream failed", "stream", streamName, "error", err)
+		natsLogger.Error("create stream failed", "stream", streamName, "error", err)
 		return "", 0, fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
 	}
 
-	logger.Debug("stream created/updated", "stream", streamName, "storage", storage, "subjects", subjects)
+	natsLogger.Debug("stream created/updated", "stream", streamName, "storage", storage, "subjects", subjects)
 	return streamName, storage, nil
 }
 
@@ -449,19 +418,15 @@ func (c *NatsConn) createStream(_ context.Context, topic string, durable, isDela
 //
 // Returns error if acknowledgment fails
 func (c *NatsConn) GmqAck(_ context.Context, msg *types.AckMessage) error {
-	logger := utils.LogWithPlugin(natsPluginName)
-
 	msgCfg, ok := msg.AckRequiredAttr.(*nats.Msg)
 	if !ok {
-		logger.Error("invalid ack attr type", "expected", "*nats.Msg", "got", fmt.Sprintf("%T", msg.AckRequiredAttr))
+		natsLogger.Error("ack:invalid message type", "expected", "*nats.Msg", "plugin", natsPluginName)
 		return fmt.Errorf("%s: ack: %w: expected *nats.Msg", natsPluginName, types.ErrInvalidMessageType)
 	}
-
 	if err := msgCfg.Ack(); err != nil {
-		logger.Error("ack failed", "error", err)
+		natsLogger.Error("ack failed", "error", err)
 		return fmt.Errorf("%s: ack: %w", natsPluginName, err)
 	}
-
 	return nil
 }
 
@@ -473,19 +438,15 @@ func (c *NatsConn) GmqAck(_ context.Context, msg *types.AckMessage) error {
 //
 // Returns error if negative acknowledgment fails
 func (c *NatsConn) GmqNak(_ context.Context, msg *types.AckMessage) error {
-	logger := utils.LogWithPlugin(natsPluginName)
-
 	msgCfg, ok := msg.AckRequiredAttr.(*nats.Msg)
 	if !ok {
-		logger.Error("invalid nak attr type", "expected", "*nats.Msg", "got", fmt.Sprintf("%T", msg.AckRequiredAttr))
+		natsLogger.Error("nak:invalid message type", "expected", "*nats.Msg", "plugin", natsPluginName)
 		return fmt.Errorf("%s: nak: %w: expected *nats.Msg", natsPluginName, types.ErrInvalidMessageType)
 	}
-
 	if err := msgCfg.Nak(); err != nil {
-		logger.Error("nak failed", "error", err)
+		natsLogger.Error("nak failed", "error", err)
 		return fmt.Errorf("%s: nak: %w", natsPluginName, err)
 	}
-
 	return nil
 }
 

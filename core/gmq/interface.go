@@ -16,7 +16,6 @@ import (
 //   - Publish: GmqPublish, GmqPublishDelay (for delayed messages)
 //   - Subscribe: GmqSubscribe (with consumer group support)
 //   - Acknowledgment: GmqAck (success), GmqNak (failure)
-//   - State: GmqSetStateCallback (for connection state changes)
 //
 // Context Usage:
 //   - All methods accept a context parameter for timeout/cancellation control
@@ -30,6 +29,10 @@ type Gmq interface {
 	GmqPing(ctx context.Context) bool                            // Check if the connection is alive and working
 	GmqClose(ctx context.Context) error                          // Close the connection and cleanup resources
 	GmqAck(ctx context.Context, msg *types.AckMessage) error     // Acknowledge successful message processing
+}
+
+type GmqStateSetter interface {
+	SetSubscribedSetter(setter func(bool))
 }
 
 type GmqUnique interface {

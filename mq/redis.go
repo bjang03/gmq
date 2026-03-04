@@ -11,7 +11,7 @@ package mq
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	"net"
 	"strings"
 	"time"
 
@@ -23,6 +23,10 @@ import (
 
 // Redis plugin name constant
 const redisPluginName = "redis"
+
+// Package-level logger instance to avoid repeated heap allocation from utils.LogWithPlugin
+// This eliminates the "redis string escapes to heap" issue in every log call
+var redisLogger = utils.GetLogger().WithPlugin(redisPluginName)
 
 // RedisPubMessage represents a Redis publish message.
 // Uses Redis Streams for message persistence and delivery.
@@ -55,7 +59,16 @@ type RedisSubMessage struct {
 //   - Each consumer belongs to its own consumer group
 //   - Messages are consumed with ">" ID to get only new messages
 type RedisConn struct {
-	conn *redis.Client // Redis client connection (go-redis client)
+	conn          *redis.Client // Redis client connection (go-redis client)
+	setSubscribed func(bool)
+}
+
+// SetSubscribedSetter sets the callback function to update subscription status.
+// This is used to notify the proxy layer when subscription status changes.
+// Parameters:
+//   - setter: function that accepts a boolean status (true=subscribed, false=unsubscribed)
+func (c *RedisConn) SetSubscribedSetter(setter func(bool)) {
+	c.setSubscribed = setter
 }
 
 // redisConfig holds Redis connection configuration parameters.
@@ -99,31 +112,37 @@ func (c *RedisConn) GmqGetConn(_ context.Context) any {
 //
 // Returns error if configuration is invalid
 func (c *RedisConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
-	logger := utils.LogWithPlugin(redisPluginName)
-
 	config := new(redisConfig)
 	if err = utils.MapToStruct(config, cfg); err != nil {
-		logger.Error("config parse failed", "error", err)
+		redisLogger.Error("config parse failed", "error", err)
 		return fmt.Errorf("%s: config: %w", redisPluginName, err)
 	}
 	if config.Addr == "" {
-		logger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
+		redisLogger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
 		return fmt.Errorf("%s: config: %w", redisPluginName, types.ErrConfigAddrRequired)
 	}
 	if config.Port == "" {
-		logger.Error("config validation failed", "error", types.ErrConfigPortRequired)
+		redisLogger.Error("config validation failed", "error", types.ErrConfigPortRequired)
 		return fmt.Errorf("%s: config: %w", redisPluginName, types.ErrConfigPortRequired)
 	}
 
-	// connection pool already exists, reuse existing connection (go-redis automatically manages connections internally)
+	// Connection pool already exists, reuse existing connection (go-redis automatically manages connections internally)
 	if c.conn != nil {
-		logger.Debug("connection already exists, reusing")
+		redisLogger.Debug("connection already exists, reusing")
 		return nil
 	}
-
+	netDialer := &net.Dialer{
+		Timeout:   5 * time.Second,  // connection establishment timeout
+		KeepAlive: 30 * time.Second, // TCP keep-alive interval (key parameter)
+	}
+	redisDialer := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return netDialer.DialContext(ctx, network, addr)
+	}
 	options := redis.Options{
-		Addr: config.Addr + ":" + config.Port,
-		DB:   config.Db,
+		Addr:         config.Addr + ":" + config.Port,
+		DB:           config.Db,
+		Dialer:       redisDialer,
+		MinIdleConns: 2, // maintain 2 idle connections to avoid empty connection pool
 	}
 	if config.Username != "" && config.Password != "" {
 		options.Username = config.Username
@@ -135,31 +154,25 @@ func (c *RedisConn) GmqConnect(_ context.Context, cfg map[string]any) (err error
 	if config.MinIdleConns > 0 {
 		options.MinIdleConns = config.MinIdleConns
 	}
-	if config.MaxActiveConns > 0 {
-		options.MaxActiveConns = config.MaxActiveConns
-	}
 	if config.MaxRetries > 0 {
 		options.MaxRetries = config.MaxRetries
 	}
 
-	// connect to Redis
+	// Connect to Redis server
 	c.conn = redis.NewClient(&options)
-	logger.Info("connected successfully", "addr", config.Addr, "port", config.Port, "db", config.Db)
 	return nil
 }
 
 // GmqClose closes the Redis connection.
 // Safe to call multiple times
 func (c *RedisConn) GmqClose(_ context.Context) (err error) {
-	logger := utils.LogWithPlugin(redisPluginName)
-
 	if c.conn != nil {
 		if err = c.conn.Close(); err != nil {
-			logger.Error("close connection failed", "error", err)
+			redisLogger.Error("close connection failed", "error", err)
 		}
 		c.conn = nil
 	}
-	logger.Info("connection closed")
+	redisLogger.Info("connection closed")
 	return err
 }
 
@@ -171,35 +184,31 @@ func (c *RedisConn) GmqClose(_ context.Context) (err error) {
 //
 // Returns error if publish fails
 func (c *RedisConn) GmqPublish(ctx context.Context, msg types.Publish) (err error) {
-	logger := utils.LogWithPlugin(redisPluginName)
-
 	cfg, ok := msg.(*RedisPubMessage)
 	if !ok {
-		logger.Error("invalid message type", "expected", "*RedisPubMessage", "got", fmt.Sprintf("%T", msg))
+		redisLogger.Error("publish:invalid message type", "expected", "*RedisPubMessage", "plugin", redisPluginName)
 		return fmt.Errorf("%s: publish: %w: expected *RedisPubMessage", redisPluginName, types.ErrInvalidMessageType)
 	}
 
 	cfg.Topic = "gmq:stream:" + cfg.Topic
 	toMap, err := utils.ConvertToMap(cfg.Data)
 	if err != nil {
-		logger.Error("convert data to map failed", "error", err)
+		redisLogger.Error("convert data to map failed", "error", err)
 		return fmt.Errorf("%s: convert_data: %w", redisPluginName, err)
 	}
 
-	// 1. build XAdd argument structure (type-safe, clear parameter meaning)
+	// Build XAdd argument structure (type-safe, clear parameter meaning)
 	addArgs := &redis.XAddArgs{
 		Stream: cfg.Topic, // stream name
 		ID:     "*",       // auto-generate ID
 		Values: toMap,
 	}
 
-	// 2. call dedicated XAdd method
+	// Call dedicated XAdd method to add message to stream
 	if _, err = c.conn.XAdd(ctx, addArgs).Result(); err != nil {
-		logger.Error("xadd failed", "stream", cfg.Topic, "error", err)
+		redisLogger.Error("xadd failed", "stream", cfg.Topic, "error", err)
 		return fmt.Errorf("%s: xadd: %w", redisPluginName, err)
 	}
-
-	logger.Debug("publish success", "stream", cfg.Topic)
 	return nil
 }
 
@@ -212,16 +221,14 @@ func (c *RedisConn) GmqPublish(ctx context.Context, msg types.Publish) (err erro
 //
 // Returns error if subscription fails
 func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err error) {
-	logger := utils.LogWithPlugin(redisPluginName)
-
 	cfg, ok := sub.GetSubMsg().(*RedisSubMessage)
 	if !ok {
-		logger.Error("invalid message type", "expected", "*RedisSubMessage", "got", fmt.Sprintf("%T", sub.GetSubMsg()))
+		redisLogger.Error("subscribe:invalid message type", "expected", "*RedisSubMessage", "plugin", redisPluginName)
 		return fmt.Errorf("%s: subscribe: %w: expected *RedisSubMessage", redisPluginName, types.ErrInvalidMessageType)
 	}
 
 	if c.conn == nil {
-		logger.Error("connection is nil")
+		redisLogger.Error("connection is nil")
 		return fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
 	}
 
@@ -231,44 +238,56 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 	_, err = c.conn.XGroupCreateMkStream(ctx, topic, group, "0").Result()
 	if err != nil {
 		if !strings.Contains(err.Error(), "BUSYGROUP") && !strings.Contains(err.Error(), "already exists") {
-			logger.Error("create consumer group failed", "stream", topic, "group", group, "error", err)
+			redisLogger.Error("create consumer group failed", "stream", topic, "group", group, "error", err)
 			return fmt.Errorf("%s: create_group: %w", redisPluginName, err)
 		}
-		logger.Debug("consumer group already exists", "stream", topic, "group", group)
+		redisLogger.Debug("consumer group already exists", "stream", topic, "group", group)
 	}
 
-	logger.Info("subscribed successfully", "stream", topic, "group", group, "consumer", cfg.ConsumerName)
-
-	// Start background goroutine for non-blocking message consumption
-	return c.consumeLoop(ctx, cfg, group, sub, logger)
+	// Start consume loop - this will block until context is cancelled
+	// Proxy layer already runs this in a goroutine, so we don't need another one
+	err = c.consumeLoop(ctx, cfg, group, sub, topic)
+	if err != nil && ctx.Err() == nil {
+		// Error occurred but context wasn't cancelled, notify proxy layer
+		redisLogger.Error("consume loop failed", "stream", topic, "consumer", cfg.ConsumerName, "error", err)
+		if c.setSubscribed != nil {
+			c.setSubscribed(false)
+		}
+		return err
+	}
+	redisLogger.Info("subscribe success", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
+	return nil
 }
 
 // consumeLoop runs in a background goroutine to consume messages from Redis Stream.
-// It handles context cancellation gracefully and exits when:
-// - Context is cancelled
-// - Connection is closed
-// - An unrecoverable error occurs
-func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group string, sub types.Subscribe, logger *slog.Logger) error {
-	topic := "gmq:stream:" + cfg.Topic
-	// build structured parameters (clear parameter meaning, no need to remember command order)
+// It handles context cancellation gracefully and exits when context is cancelled.
+// Blocks indefinitely on XReadGroup, waiting for new messages.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - cfg: subscription configuration
+//   - group: consumer group name
+//   - sub: subscription interface with callback handlers
+//   - topic: stream topic name (with prefix)
+func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group string, sub types.Subscribe, topic string) error {
+	// Build structured parameters (clear parameter meaning, no need to remember command order)
 	readArgs := &redis.XReadGroupArgs{
 		Group:    group,                        // consumer group name
 		Consumer: cfg.ConsumerName,             // consumer name
 		Count:    cast.ToInt64(cfg.FetchCount), // number of messages to fetch each time
-		Block:    5 * time.Second,              // block time (use timeout instead of forever for graceful shutdown)
+		Block:    -1,                           // block indefinitely for new messages
 		Streams:  []string{topic, ">"},         // consumed stream + start ID (> means consume new messages)
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Debug("subscription context done, exiting consume loop", "stream", topic, "consumer", cfg.ConsumerName)
+			redisLogger.Debug("subscription context done, exiting consume loop", "stream", topic, "consumer", cfg.ConsumerName)
 			return ctx.Err()
 		default:
 		}
 
 		if c.conn == nil {
-			logger.Error("connection is nil during consume loop, exiting", "stream", topic)
+			redisLogger.Error("connection is nil during consume loop, exiting", "stream", topic)
 			return fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
 		}
 
@@ -276,14 +295,14 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 		if err != nil {
 			// Check if context was cancelled during the blocking call
 			if ctx.Err() != nil {
-				logger.Debug("context cancelled during xreadgroup, exiting", "stream", topic, "consumer", cfg.ConsumerName)
+				redisLogger.Debug("context cancelled during xreadgroup, exiting", "stream", topic, "consumer", cfg.ConsumerName)
 				return ctx.Err()
 			}
 			// Check if it's a timeout (no new messages), just continue
 			if err == redis.Nil || strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "key no longer exists") {
 				continue
 			}
-			logger.Error("xreadgroup failed, exiting consume loop", "stream", cfg.Topic, "error", err)
+			redisLogger.Error("xreadgroup failed, exiting consume loop", "stream", cfg.Topic, "error", err)
 			return fmt.Errorf("xreadgroup failed, exiting consume loop %s: %w", cfg.Topic, err)
 		}
 
@@ -292,7 +311,7 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 			for _, msg := range stream.Messages {
 				select {
 				case <-ctx.Done():
-					logger.Debug("context cancelled during message processing, exiting", "stream", topic, "consumer", cfg.ConsumerName)
+					redisLogger.Debug("context cancelled during message processing, exiting", "stream", topic, "consumer", cfg.ConsumerName)
 					return ctx.Err()
 				default:
 				}
@@ -306,7 +325,7 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 					},
 				}
 				if err = sub.GetAckHandleFunc()(ctx, &message); err != nil {
-					logger.Error("message handler failed", "stream", topic, "msgId", msg.ID, "error", err)
+					redisLogger.Error("message handler failed", "stream", topic, "msgId", msg.ID, "error", err)
 					continue
 				}
 			}
@@ -322,8 +341,6 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 //
 // Returns error if acknowledgment fails
 func (c *RedisConn) GmqAck(ctx context.Context, msg *types.AckMessage) error {
-	logger := utils.LogWithPlugin(redisPluginName)
-
 	attr := cast.ToStringMap(msg.AckRequiredAttr)
 	msgId := cast.ToString(attr["MessageId"])
 	topic := cast.ToString(attr["Topic"])
@@ -331,13 +348,13 @@ func (c *RedisConn) GmqAck(ctx context.Context, msg *types.AckMessage) error {
 
 	_, err := c.conn.XAck(ctx, topic, group, msgId).Result()
 	if err != nil {
-		logger.Error("xack failed", "stream", topic, "group", group, "msgId", msgId, "error", err)
+		redisLogger.Error("xack failed", "stream", topic, "group", group, "msgId", msgId, "error", err)
 		return fmt.Errorf("%s: xack: %w", redisPluginName, err)
 	}
 
 	_, err = c.conn.XDel(ctx, topic, msgId).Result()
 	if err != nil {
-		logger.Error("xdel failed", "stream", topic, "msgId", msgId, "error", err)
+		redisLogger.Error("xdel failed", "stream", topic, "msgId", msgId, "error", err)
 		return fmt.Errorf("%s: xdel: %w", redisPluginName, err)
 	}
 

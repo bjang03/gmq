@@ -14,6 +14,6 @@ const (
 
 // Default retry configuration constants for message operations
 const (
-	MsgRetryDeliver = 3               // Maximum retry attempts for publish/subscribe operations
+	MsgRetryDeliver = 30              // Maximum retry attempts for publish/subscribe operations
 	MsgRetryDelay   = 3 * time.Second // Base delay between retry attempts (exponential backoff applied)
 )

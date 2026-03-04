@@ -43,14 +43,14 @@ var (
 //   - name: unique identifier for the plugin (used for logging and plugin retrieval)
 //   - plugin: message queue implementation instance (must implement Gmq interface)
 func GmqRegisterPlugins(name string, plugin Gmq) {
-	utils.LogInfo("registering plugin", "name", name, "plugin", name)
+	utils.GetLogger().Info("registering plugin", "name", name, "plugin", name)
 	if name == "" {
-		utils.LogWarn("plugin name cannot be empty", "plugin", "registry")
+		utils.GetLogger().Warn("plugin name cannot be empty", "plugin", "registry")
 		return
 	}
 
 	if _, exists := GmqPlugins[name]; exists {
-		utils.LogWarn("plugin already registered, skipping", "name", name, "plugin", name)
+		utils.GetLogger().Warn("plugin already registered, skipping", "name", name, "plugin", name)
 		return
 	}
 	proxy := newGmqProxy(name, plugin)
@@ -68,7 +68,7 @@ func GmqRegisterPlugins(name string, plugin Gmq) {
 func Init(configPath string) {
 	config, err := utils.LoadGMQConfig(configPath)
 	if err != nil {
-		utils.LogError("failed to load config", "error", err, "plugin", "registry")
+		utils.GetLogger().Error("failed to load config", "error", err, "plugin", "registry")
 		return
 	}
 	for secondLevel, thirdLevelData := range config.GMQ {
@@ -97,29 +97,29 @@ func connectPlugins(name string, cfg map[string]any) {
 	proxy, exists := GmqPlugins[name]
 
 	if !exists {
-		utils.LogWarn("plugin not registered, skip connection create", "name", name, "plugin", name)
+		utils.GetLogger().Warn("plugin not registered, skip connection create", "name", name, "plugin", name)
 		return
 	}
 
 	// Check if already has a running connection goroutine
 	if _, exists := pluginCancelFuncs[name]; exists {
-		utils.LogWarn("plugin connection goroutine already exists, skipping", "name", name, "plugin", name)
+		utils.GetLogger().Warn("plugin connection goroutine already exists, skipping", "name", name, "plugin", name)
 		return
 	}
 	mgrCtx, mgrCancel := context.WithCancel(context.Background())
 	pluginCancelFuncs[name] = mgrCancel
 
-	logger := utils.LogWithPlugin(name)
+	logger := utils.GetLogger().WithPlugin(name)
 
 	go func(name string, cfg map[string]any, p *GmqProxy, mgrCtx context.Context) {
 		reconnectDelay := types.BaseReconnectDelay
 		for {
 			select {
 			case <-globalShutdown:
-				p.clearSubscriptions()
+				p.clearSubscribe()
 				return
 			case <-mgrCtx.Done():
-				p.clearSubscriptions()
+				p.clearSubscribe()
 				return
 			default:
 				pingCtx, pingCancel := context.WithTimeout(mgrCtx, 5*time.Second)

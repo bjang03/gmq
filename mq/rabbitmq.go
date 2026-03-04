@@ -11,7 +11,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/bjang03/gmq/types"
@@ -22,27 +21,27 @@ import (
 // RabbitMQ plugin name constant
 const rabbitmqPluginName = "rabbitmq"
 
-// RabbitMQPubMessage represents a RabbitMQ publish message with durability option.
+// Package-level logger instance to avoid repeated heap allocation from utils.LogWithPlugin
+// This eliminates the "rabbitmq string escapes to heap" issue in every log call
+var rabbitmqLogger = utils.GetLogger().WithPlugin(rabbitmqPluginName)
+
+// RabbitMQPubMessage represents a RabbitMQ publish message.
 // Embeds PubMessage for basic message fields.
 type RabbitMQPubMessage struct {
 	types.PubMessage
-	Durable bool // whether to persist messages to disk (persistent messages survive broker restart)
 }
 
-// RabbitMQPubDelayMessage represents a RabbitMQ delayed publish message with durability option.
+// RabbitMQPubDelayMessage represents a RabbitMQ delayed publish message.
 // Requires x-delayed-message plugin to be installed on RabbitMQ server.
 // Embeds PubDelayMessage for delayed message fields.
 type RabbitMQPubDelayMessage struct {
 	types.PubDelayMessage
-	Durable bool // whether to persist messages to disk (persistent messages survive broker restart)
 }
 
 // RabbitMQSubMessage represents a RabbitMQ subscription configuration.
 // Embeds SubMessage for basic subscription fields.
 type RabbitMQSubMessage struct {
 	types.SubMessage
-	Durable    bool // whether to persist messages to disk (persistent messages survive broker restart)
-	IsDelayMsg bool // whether this is a delayed message stream (requires AllowMsgSchedules)
 }
 
 // RabbitMQConn is the RabbitMQ message queue implementation.
@@ -60,17 +59,12 @@ type RabbitMQSubMessage struct {
 //   - Dead letter queue: "gmq.dead.letter.queue"
 //   - Failed messages are automatically routed to the dead letter exchange
 type RabbitMQConn struct {
-	conn              *amqp.Connection // RabbitMQ connection object
-	channel           *amqp.Channel    // RabbitMQ channel for operations (channels are lightweight)
-	unifiedDLExchange string           // unified dead letter exchange name for all failed messages
-	unifiedDLQueue    string           // unified dead letter queue name for collecting failed messages
-	unifiedDLConsumer string           // unified dead letter consumer name for monitoring failed messages
-
-	// 监听断开的通道
-	connCloseChan    chan *amqp.Error
-	channelCloseChan chan *amqp.Error
-	// 重连控制
-	reconnectChan chan struct{}
+	conn              *amqp.Connection  // RabbitMQ connection object
+	channel           *amqp.Channel     // RabbitMQ channel for operations (channels are lightweight)
+	unifiedDLExchange string            // unified dead letter exchange name for all failed messages
+	unifiedDLQueue    string            // unified dead letter queue name for collecting failed messages
+	setSubscribed     func(bool)        // setter function to report connection state changes to proxy
+	activeConsumers   map[string]string // track active consumer tags for each topic (topic -> consumer tag)
 }
 
 // rabbitMQConfig holds RabbitMQ connection configuration parameters.
@@ -113,31 +107,30 @@ func (c *RabbitMQConn) GmqGetConn(_ context.Context) any {
 //
 // Returns error if connection or channel creation fails
 func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
-	logger := utils.LogWithPlugin(rabbitmqPluginName)
-
 	config := new(rabbitMQConfig)
 	if err = utils.MapToStruct(config, cfg); err != nil {
-		logger.Error("config parse failed", "error", err)
+		rabbitmqLogger.Error("config parse failed", "error", err)
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, err)
 	}
 	if config.Addr == "" {
-		logger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
+		rabbitmqLogger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, types.ErrConfigAddrRequired)
 	}
 	if config.Port == "" {
-		logger.Error("config validation failed", "error", types.ErrConfigPortRequired)
+		rabbitmqLogger.Error("config validation failed", "error", types.ErrConfigPortRequired)
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, types.ErrConfigPortRequired)
 	}
 	if config.Username == "" {
-		logger.Error("config validation failed", "error", types.ErrConfigUsernameRequired)
+		rabbitmqLogger.Error("config validation failed", "error", types.ErrConfigUsernameRequired)
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, types.ErrConfigUsernameRequired)
 	}
 	if config.Password == "" {
-		logger.Error("config validation failed", "error", types.ErrConfigPasswordRequired)
+		rabbitmqLogger.Error("config validation failed", "error", types.ErrConfigPasswordRequired)
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, types.ErrConfigPasswordRequired)
 	}
 
-	// safely close old connection (only for this data source)
+	// Cancel all active consumers explicitly before closing the channel
+	// This ensures consumer tags are released before we try to reuse them
 	if c.conn != nil && !c.conn.IsClosed() {
 		c.conn.Close()
 	}
@@ -149,12 +142,11 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err er
 	url := fmt.Sprintf("amqp://%s:%s@%s:%s/%s", config.Username, config.Password, config.Addr, config.Port, config.VHost)
 
 	// create connection
-	//newConn, err := amqp.Dial(url)
 	newConn, err := amqp.DialConfig(url, amqp.Config{
-		Heartbeat: 30 * time.Second, // 心跳检测，主动发现静默断开
+		Heartbeat: 30 * time.Second, // heartbeat detection to proactively detect silent disconnection
 	})
 	if err != nil {
-		logger.Error("connect failed", "addr", config.Addr, "port", config.Port, "error", err)
+		rabbitmqLogger.Error("connect failed", "addr", config.Addr, "port", config.Port, "error", err)
 		return fmt.Errorf("%s: connect: %w", rabbitmqPluginName, err)
 	}
 
@@ -162,85 +154,94 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err er
 	newChannel, err := newConn.Channel()
 	if err != nil {
 		newConn.Close()
-		logger.Error("create channel failed", "error", err)
+		rabbitmqLogger.Error("create channel failed", "error", err)
 		return fmt.Errorf("%s: create_channel: %w", rabbitmqPluginName, err)
 	}
-	// 4. 注册连接/信道断开监听
-	c.connCloseChan = newConn.NotifyClose(make(chan *amqp.Error, 1))
-	c.channelCloseChan = newChannel.NotifyClose(make(chan *amqp.Error, 1))
+
+	// Register connection/channel close listeners
+	connCloseChan := newConn.NotifyClose(make(chan *amqp.Error, 1))
+	channelCloseChan := newChannel.NotifyClose(make(chan *amqp.Error, 1))
+
+	// Reset active consumers map on reconnection
+	c.activeConsumers = make(map[string]string)
+
+	// Atomic assignment to avoid race conditions
 	c.conn = newConn
 	c.channel = newChannel
-	c.monitorDisconnect()
-	logger.Info("connected successfully", "addr", config.Addr, "port", config.Port, "vhost", config.VHost)
+
+	// Start monitoring goroutine to detect disconnections
+	go c.monitorDisconnect(connCloseChan, channelCloseChan)
+
 	return nil
 }
 
-// monitorDisconnect 监听连接/信道断开事件
-func (c *RabbitMQConn) monitorDisconnect() {
+// monitorDisconnect monitors connection/channel disconnection events
+// Only handles abnormal disconnections, ignores normal close events (err == nil or err.Code == 200)
+// Receives channels as parameters to avoid accessing struct fields causing race conditions
+func (c *RabbitMQConn) monitorDisconnect(connCloseChan, channelCloseChan chan *amqp.Error) {
 	for {
 		select {
-		// 监听连接断开
-		case err := <-c.connCloseChan:
-			if err != nil {
-				log.Printf("❌ 连接断开: %v", err)
-			} else {
-				log.Println("❌ 连接被主动关闭")
+		case err, ok := <-connCloseChan:
+			if !ok {
+				return
 			}
-			c.triggerReconnect()
-
-		// 监听信道断开
-		case err := <-c.channelCloseChan:
-			if err != nil {
-				log.Printf("❌ 信道断开: %v", err)
-			} else {
-				log.Println("❌ 信道被主动关闭")
+			if err != nil && err.Code == amqp.ConnectionForced {
+				// 清空 consumer tag 记录
+				c.activeConsumers = make(map[string]string)
+				if c.setSubscribed != nil {
+					c.setSubscribed(false)
+				}
 			}
-			c.triggerReconnect()
-
-		// 监听重连信号
-		case <-c.reconnectChan:
-			log.Println("🔄 开始尝试重连...")
-			// 指数退避重连（避免频繁重试）
-			backoff := []time.Duration{1 * time.Second, 3 * time.Second, 5 * time.Second, 10 * time.Second}
-			for _, delay := range backoff {
-				time.Sleep(delay)
-				log.Println("✅ 重连成功")
-				break
+		case err, ok := <-channelCloseChan:
+			if !ok {
+				return
+			}
+			if err != nil && err.Code == amqp.ConnectionForced {
+				// 清空 consumer tag 记录
+				c.activeConsumers = make(map[string]string)
+				if c.setSubscribed != nil {
+					c.setSubscribed(false)
+				}
 			}
 		}
 	}
 }
 
-// triggerReconnect 触发重连（非阻塞）
-func (c *RabbitMQConn) triggerReconnect() {
-	// 防止重复触发重连
-	select {
-	case c.reconnectChan <- struct{}{}:
-	default:
-	}
+// SetSubscribedSetter sets the callback function to update subscription status.
+// The setter function is called when connection or channel disconnects.
+func (c *RabbitMQConn) SetSubscribedSetter(setter func(bool)) {
+	c.setSubscribed = setter
 }
 
 // GmqClose closes the RabbitMQ connection and channel.
 // Safe to call multiple times
 func (c *RabbitMQConn) GmqClose(_ context.Context) (err error) {
-	logger := utils.LogWithPlugin(rabbitmqPluginName)
 
+	// Clear external callback reference to avoid memory leak
+	c.setSubscribed = nil
+
+	// Get and clear references, then close
+	// amqp's Close() method is idempotent, can be safely called multiple times
 	if c.channel != nil {
-		if err = c.channel.Close(); err != nil {
-			logger.Error("close channel failed", "error", err)
-		}
+		c.channel.Close()
 		c.channel = nil
 	}
 	if c.conn != nil {
 		c.conn.Close()
 		c.conn = nil
 	}
-	logger.Info("connection closed")
+
+	rabbitmqLogger.Info("connection closed")
 	return nil
 }
 
-func (c *RabbitMQConn) setupQueue(topic string, durable bool, delayMsg bool) (string, string, error) {
-	logger := utils.LogWithPlugin(rabbitmqPluginName)
+// setupQueue creates or verifies RabbitMQ queue, exchange, and binding configuration.
+// Parameters:
+//   - topic: business topic name (used as exchange name, routing key, and queue name)
+//   - delayMsg: whether this is a delayed message queue
+//
+// Returns exchange name, routing key, and error if any operation fails
+func (c *RabbitMQConn) setupQueue(topic string, delayMsg bool) (string, string, error) {
 
 	// 0. ensure unified dead letter exchange and queue are created (idempotent)
 	if err := c.setupUnifiedDeadLetter(); err != nil {
@@ -271,26 +272,26 @@ func (c *RabbitMQConn) setupQueue(topic string, durable bool, delayMsg bool) (st
 	if err := c.channel.ExchangeDeclare(
 		exchangeName, // business exchange name
 		exchangeType, // exchange type (normal/fanout or delayed/x-delayed-message)
-		durable,      // whether to persist
+		true,         // durable - always persist
 		false,        // autoDelete
 		false,        // internal
 		false,        // noWait
 		args,         // exchange arguments (delayed exchange needs x-delayed-type)
 	); err != nil {
-		logger.Error("declare exchange failed", "exchange", exchangeName, "type", exchangeType, "error", err)
+		rabbitmqLogger.Error("declare exchange failed", "exchange", exchangeName, "type", exchangeType, "error", err)
 		return "", "", fmt.Errorf("%s: declare_exchange: %w", rabbitmqPluginName, err)
 	}
 
 	// 4. declare business queue
 	if _, err := c.channel.QueueDeclare(
 		topic,     // business queue name
-		durable,   // whether to persist
+		true,      // durable - always persist
 		false,     // autoDelete
 		false,     // exclusive
 		false,     // noWait
 		queueArgs, // queue arguments (including dead letter configuration)
 	); err != nil {
-		logger.Error("declare queue failed", "queue", topic, "error", err)
+		rabbitmqLogger.Error("declare queue failed", "queue", topic, "error", err)
 		return "", "", fmt.Errorf("%s: declare_queue: %w", rabbitmqPluginName, err)
 	}
 
@@ -302,7 +303,7 @@ func (c *RabbitMQConn) setupQueue(topic string, durable bool, delayMsg bool) (st
 		false,        // noWait
 		nil,          // args
 	); err != nil {
-		logger.Error("bind queue failed", "queue", topic, "exchange", exchangeName, "error", err)
+		rabbitmqLogger.Error("bind queue failed", "queue", topic, "exchange", exchangeName, "error", err)
 		return "", "", fmt.Errorf("%s: bind_queue: %w", rabbitmqPluginName, err)
 	}
 	return exchangeName, routingKey, nil
@@ -312,56 +313,54 @@ func (c *RabbitMQConn) setupQueue(topic string, durable bool, delayMsg bool) (st
 // This is called automatically during publish operations to ensure dead letter infrastructure exists.
 // Returns error if declaration or binding fails
 func (c *RabbitMQConn) setupUnifiedDeadLetter() error {
-	logger := utils.LogWithPlugin(rabbitmqPluginName)
-
-	// set unified dead letter exchange and queue names
-	c.unifiedDLExchange = "gmq.dead.letter.exchange"
-	c.unifiedDLQueue = "gmq.dead.letter.queue"
-	c.unifiedDLConsumer = "gmq.dead.letter.consumer"
 
 	// declare unified dead letter exchange (fanout type)
 	// if exchange already exists with same config, RabbitMQ will ignore this operation (idempotent)
 	if err := c.channel.ExchangeDeclare(
-		c.unifiedDLExchange, // exchange name
-		"fanout",            // fanout type, broadcast to all bound queues
-		true,                // durable
-		false,               // autoDelete
-		false,               // internal
-		false,               // noWait
-		nil,                 // args
+		"gmq.dead.letter.exchange", // exchange name
+		"fanout",                   // fanout type, broadcast to all bound queues
+		true,                       // durable
+		false,                      // autoDelete
+		false,                      // internal
+		false,                      // noWait
+		nil,                        // args
 	); err != nil {
-		logger.Error("declare dead letter exchange failed", "exchange", c.unifiedDLExchange, "error", err)
+		rabbitmqLogger.Error("declare dead letter exchange failed", "exchange", "gmq.dead.letter.exchange", "error", err)
 		return fmt.Errorf("%s: declare_dl_exchange: %w", rabbitmqPluginName, err)
 	}
 
 	// declare unified dead letter queue
 	// if queue already exists with same config, RabbitMQ will ignore this operation (idempotent)
 	if _, err := c.channel.QueueDeclare(
-		c.unifiedDLQueue, // unified dead letter queue name
-		true,             // durable
-		false,            // autoDelete
-		false,            // exclusive
-		false,            // noWait
-		nil,              // args
+		"gmq.dead.letter.queue", // unified dead letter queue name
+		true,                    // durable
+		false,                   // autoDelete
+		false,                   // exclusive
+		false,                   // noWait
+		nil,                     // args
 	); err != nil {
-		logger.Error("declare dead letter queue failed", "queue", c.unifiedDLQueue, "error", err)
+		rabbitmqLogger.Error("declare dead letter queue failed", "queue", "gmq.dead.letter.queue", "error", err)
 		return fmt.Errorf("%s: declare_dl_queue: %w", rabbitmqPluginName, err)
 	}
 
 	// bind unified dead letter queue to unified dead letter exchange
 	// if binding already exists, RabbitMQ will ignore this operation (idempotent)
 	if err := c.channel.QueueBind(
-		c.unifiedDLQueue,    // unified dead letter queue
-		"",                  // fanout type does not need routing key
-		c.unifiedDLExchange, // unified dead letter exchange
-		false,               // noWait
-		nil,                 // args
+		"gmq.dead.letter.queue",    // unified dead letter queue
+		"",                         // fanout type does not need routing key
+		"gmq.dead.letter.exchange", // unified dead letter exchange
+		false,                      // noWait
+		nil,                        // args
 	); err != nil {
-		logger.Error("bind dead letter queue failed", "queue", c.unifiedDLQueue, "exchange", c.unifiedDLExchange, "error", err)
+		rabbitmqLogger.Error("bind dead letter queue failed", "queue", "gmq.dead.letter.queue", "exchange", "gmq.dead.letter.exchange", "error", err)
 		return fmt.Errorf("%s: bind_dl_queue: %w", rabbitmqPluginName, err)
 	}
 
-	logger.Debug("dead letter infrastructure ready", "exchange", c.unifiedDLExchange, "queue", c.unifiedDLQueue)
+	// Set field values only after all operations succeed
+	c.unifiedDLExchange = "gmq.dead.letter.exchange"
+	c.unifiedDLQueue = "gmq.dead.letter.queue"
+
+	rabbitmqLogger.Debug("dead letter infrastructure ready", "exchange", c.unifiedDLExchange, "queue", c.unifiedDLQueue)
 	return nil
 }
 
@@ -372,20 +371,15 @@ func (c *RabbitMQConn) setupUnifiedDeadLetter() error {
 //
 // Returns error if publish fails
 func (c *RabbitMQConn) GmqPublish(ctx context.Context, msg types.Publish) (err error) {
-	logger := utils.LogWithPlugin(rabbitmqPluginName)
-
 	cfg, ok := msg.(*RabbitMQPubMessage)
 	if !ok {
-		logger.Error("invalid message type", "expected", "*RabbitMQPubMessage", "got", fmt.Sprintf("%T", msg))
+		rabbitmqLogger.Error("publish:invalid message type", "expected", "*RabbitMQPubMessage", "plugin", rabbitmqPluginName)
 		return fmt.Errorf("%s: publish: %w: expected *RabbitMQPubMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
 	}
-
-	if err = c.createPublish(ctx, cfg.Topic, cfg.Durable, 0, cfg.Data); err != nil {
-		logger.Error("publish failed", "topic", cfg.Topic, "error", err)
+	if err = c.createPublish(ctx, cfg.Topic, 0, cfg.Data); err != nil {
+		rabbitmqLogger.Error("publish failed", "topic", cfg.Topic, "error", err)
 		return err
 	}
-
-	logger.Debug("publish success", "topic", cfg.Topic)
 	return nil
 }
 
@@ -397,20 +391,15 @@ func (c *RabbitMQConn) GmqPublish(ctx context.Context, msg types.Publish) (err e
 //
 // Returns error if publish fails
 func (c *RabbitMQConn) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) (err error) {
-	logger := utils.LogWithPlugin(rabbitmqPluginName)
-
 	cfg, ok := msg.(*RabbitMQPubDelayMessage)
 	if !ok {
-		logger.Error("invalid message type", "expected", "*RabbitMQPubDelayMessage", "got", fmt.Sprintf("%T", msg))
+		rabbitmqLogger.Error("publish_delay:invalid message type", "expected", "*RabbitMQPubDelayMessage", "plugin", rabbitmqPluginName)
 		return fmt.Errorf("%s: publish_delay: %w: expected *RabbitMQPubDelayMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
 	}
-
-	if err = c.createPublish(ctx, cfg.Topic, cfg.Durable, cfg.DelaySeconds, cfg.Data); err != nil {
-		logger.Error("publish delay failed", "topic", cfg.Topic, "delay", cfg.DelaySeconds, "error", err)
+	if err = c.createPublish(ctx, cfg.Topic, cfg.DelaySeconds, cfg.Data); err != nil {
+		rabbitmqLogger.Error("publish delay failed", "topic", cfg.Topic, "delay", cfg.DelaySeconds, "error", err)
 		return err
 	}
-
-	logger.Debug("publish delay success", "topic", cfg.Topic, "delay", cfg.DelaySeconds)
 	return nil
 }
 
@@ -420,33 +409,29 @@ func (c *RabbitMQConn) GmqPublishDelay(ctx context.Context, msg types.PublishDel
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - topic: business topic name (used as exchange name, routing key, and queue name)
-//   - durable: whether to persist messages
 //   - delayTime: delay time in seconds (0 for immediate delivery)
 //   - data: message payload
 //
 // Returns error if any operation fails
-func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, durable bool, delayTime int, data any) error {
-	logger := utils.LogWithPlugin(rabbitmqPluginName)
+func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, delayTime int, data any) error {
 
 	delayMsg := delayTime > 0
-	exchangeName, routingKey, err := c.setupQueue(topic, durable, delayMsg)
-
-	// 6. serialize message data
+	exchangeName, routingKey, err := c.setupQueue(topic, delayMsg)
+	if err != nil {
+		return err
+	}
+	// serialize message data
 	body, err := json.Marshal(data)
 	if err != nil {
-		logger.Error("marshal data failed", "error", err)
+		rabbitmqLogger.Error("marshal data failed", "error", err)
 		return fmt.Errorf("%s: marshal: %w", rabbitmqPluginName, err)
 	}
 
-	// 7. build publish message
-	deliveryMode := amqp.Transient
-	if durable {
-		deliveryMode = amqp.Persistent
-	}
+	// build publish message
 	publishing := amqp.Publishing{
 		ContentType:  "application/json",
 		Body:         body,
-		DeliveryMode: deliveryMode,
+		DeliveryMode: amqp.Persistent, // always persistent
 		Timestamp:    time.Now(),
 	}
 
@@ -458,7 +443,7 @@ func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, durable 
 		}
 	}
 
-	// 8. publish message
+	// publish message
 	if err = c.channel.PublishWithContext(
 		ctx,
 		exchangeName, // business exchange name
@@ -467,7 +452,7 @@ func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, durable 
 		false,        // immediate
 		publishing,
 	); err != nil {
-		logger.Error("publish message failed", "exchange", exchangeName, "routingKey", routingKey, "error", err)
+		rabbitmqLogger.Error("publish message failed", "exchange", exchangeName, "routingKey", routingKey, "error", err)
 		return fmt.Errorf("%s: publish: %w", rabbitmqPluginName, err)
 	}
 
@@ -477,34 +462,43 @@ func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, durable 
 // GmqSubscribe subscribes to RabbitMQ messages from a queue.
 // Uses manual acknowledgment mode for reliable message processing.
 // Automatically creates the queue if it doesn't exist.
+// This method blocks until context is cancelled (proxy layer runs it in a goroutine).
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - sub: subscription configuration (must be *RabbitMQSubMessage)
 //
 // Returns error if subscription fails
 func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err error) {
-	logger := utils.LogWithPlugin(rabbitmqPluginName)
-
 	cfg, ok := sub.GetSubMsg().(*RabbitMQSubMessage)
 	if !ok {
-		logger.Error("invalid message type", "expected", "*RabbitMQSubMessage", "got", fmt.Sprintf("%T", sub.GetSubMsg()))
+		rabbitmqLogger.Error("subscribe:invalid message type", "expected", "*RabbitMQSubMessage", "plugin", rabbitmqPluginName)
 		return fmt.Errorf("%s: subscribe: %w: expected *RabbitMQSubMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
 	}
 
-	_, _, err = c.setupQueue(cfg.Topic, cfg.Durable, cfg.IsDelayMsg)
+	_, _, err = c.setupQueue(cfg.Topic, false)
 	if err != nil {
-		logger.Error("setup queue failed", "queue", cfg.Topic, "error", err)
+		rabbitmqLogger.Error("setup queue failed", "queue", cfg.Topic, "error", err)
 		return fmt.Errorf("%s: setup_queue: %w", rabbitmqPluginName, err)
 	}
 
+	// Cancel existing consumer with same tag before creating new one
+	// This prevents "NOT_ALLOWED - attempt to reuse consumer tag" errors
+	if existingTag, exists := c.activeConsumers[cfg.Topic]; exists {
+		if err := c.channel.Cancel(existingTag, false); err != nil {
+			rabbitmqLogger.Warn("cancel existing consumer before subscribe", "topic", cfg.Topic, "consumerTag", existingTag, "error", err)
+		}
+	}
+
 	if err = c.channel.Qos(cfg.FetchCount, 0, false); err != nil {
-		logger.Error("set qos failed", "prefetch", cfg.FetchCount, "error", err)
+		rabbitmqLogger.Error("set qos failed", "prefetch", cfg.FetchCount, "error", err)
 		return fmt.Errorf("%s: set_qos: %w", rabbitmqPluginName, err)
 	}
 
+	// Use cfg.ConsumerName as the consumer tag for consistent message distribution
+	// The consumer tag is explicitly cancelled during reconnection to prevent reuse errors
 	msgs, err := c.channel.Consume(
 		cfg.Topic,        // queue
-		cfg.ConsumerName, // consumer
+		cfg.ConsumerName, // consumer - use configured consumer name as tag
 		false,            // auto-ack
 		false,            // exclusive
 		false,            // no-local
@@ -512,29 +506,27 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (e
 		nil,              // args
 	)
 	if err != nil {
-		logger.Error("consume failed", "queue", cfg.Topic, "consumer", cfg.ConsumerName, "error", err)
+		rabbitmqLogger.Error("consume failed", "queue", cfg.Topic, "consumerName", cfg.ConsumerName, "error", err)
 		return fmt.Errorf("%s: consume: %w", rabbitmqPluginName, err)
 	}
+	rabbitmqLogger.Info("subscribe success", "queue", cfg.Topic, "consumerName", cfg.ConsumerName)
+	// Track active consumer for cleanup during reconnection
+	c.activeConsumers[cfg.Topic] = cfg.ConsumerName
+	// Clean up consumer tracking when exit
+	defer delete(c.activeConsumers, cfg.Topic)
 
-	logger.Info("subscribed successfully", "queue", cfg.Topic, "consumer", cfg.ConsumerName)
-
+	// Consume messages - this will block until context is cancelled
+	// Proxy layer already runs this in a goroutine, so we don't need another one
 	for msgv := range msgs {
-		select {
-		case <-ctx.Done():
-			logger.Debug("subscription context done", "queue", cfg.Topic, "consumer", cfg.ConsumerName)
-			return nil
-		default:
-			if err = sub.GetAckHandleFunc()(ctx, &types.AckMessage{
-				MessageData:     msgv.Body,
-				AckRequiredAttr: msgv,
-			}); err != nil {
-				logger.Error("message handler failed", "queue", cfg.Topic, "consumer", cfg.ConsumerName, "deliveryTag", msgv.DeliveryTag, "error", err)
-				continue
-			}
+		if err = sub.GetAckHandleFunc()(ctx, &types.AckMessage{
+			MessageData:     msgv.Body,
+			AckRequiredAttr: &msgv,
+		}); err != nil {
+			rabbitmqLogger.Error("message handler failed", "queue", cfg.Topic, "consumerName", cfg.ConsumerName, "deliveryTag", msgv.DeliveryTag, "error", err)
+			continue
 		}
 	}
 
-	logger.Debug("consume loop ended", "queue", cfg.Topic, "consumer", cfg.ConsumerName)
 	return nil
 }
 
@@ -545,19 +537,15 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (e
 //
 // Returns error if acknowledgment fails
 func (c *RabbitMQConn) GmqAck(_ context.Context, msg *types.AckMessage) error {
-	logger := utils.LogWithPlugin(rabbitmqPluginName)
-
-	msgCfg, ok := msg.AckRequiredAttr.(amqp.Delivery)
+	msgCfg, ok := msg.AckRequiredAttr.(*amqp.Delivery)
 	if !ok {
-		logger.Error("invalid ack attr type", "expected", "amqp.Delivery", "got", fmt.Sprintf("%T", msg.AckRequiredAttr))
-		return fmt.Errorf("%s: ack: %w: expected amqp.Delivery", rabbitmqPluginName, types.ErrInvalidMessageType)
+		rabbitmqLogger.Error("ack:invalid message type", "expected", "*amqp.Delivery", "plugin", rabbitmqPluginName)
+		return fmt.Errorf("%s: ack: %w: expected *amqp.Delivery", rabbitmqPluginName, types.ErrInvalidMessageType)
 	}
-
 	if err := msgCfg.Ack(false); err != nil {
-		logger.Error("ack failed", "deliveryTag", msgCfg.DeliveryTag, "error", err)
+		rabbitmqLogger.Error("ack failed", "deliveryTag", msgCfg.DeliveryTag, "error", err)
 		return fmt.Errorf("%s: ack: %w", rabbitmqPluginName, err)
 	}
-
 	return nil
 }
 
@@ -569,20 +557,16 @@ func (c *RabbitMQConn) GmqAck(_ context.Context, msg *types.AckMessage) error {
 //
 // Returns error if negative acknowledgment fails
 func (c *RabbitMQConn) GmqNak(_ context.Context, msg *types.AckMessage) error {
-	logger := utils.LogWithPlugin(rabbitmqPluginName)
-
-	msgCfg, ok := msg.AckRequiredAttr.(amqp.Delivery)
-	if !ok {
-		logger.Error("invalid nak attr type", "expected", "amqp.Delivery", "got", fmt.Sprintf("%T", msg.AckRequiredAttr))
-		return fmt.Errorf("%s: nak: %w: expected amqp.Delivery", rabbitmqPluginName, types.ErrInvalidMessageType)
+	msgCfg, ok := msg.AckRequiredAttr.(*amqp.Delivery)
+	if !ok || msg.AckRequiredAttr == nil {
+		rabbitmqLogger.Error("nak:invalid message type", "expected", "*amqp.Delivery", "plugin", rabbitmqPluginName)
+		return fmt.Errorf("%s: ack: %w: expected *amqp.Delivery", rabbitmqPluginName, types.ErrInvalidMessageType)
 	}
-
 	// requeue=true: message re-enters queue and will be redelivered
 	// requeue=false: message does not re-enter queue, goes to dead letter queue (if dead letter exchange configured)
 	if err := msgCfg.Nack(false, false); err != nil {
-		logger.Error("nak failed", "deliveryTag", msgCfg.DeliveryTag, "error", err)
+		rabbitmqLogger.Error("nak failed", "deliveryTag", msgCfg.DeliveryTag, "error", err)
 		return fmt.Errorf("%s: nak: %w", rabbitmqPluginName, err)
 	}
-
 	return nil
 }

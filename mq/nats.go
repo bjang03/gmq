@@ -181,6 +181,9 @@ func (c *NatsConn) GmqConnect(_ context.Context, cfg map[string]any) (err error)
 // GmqClose closes the NATS connection.
 // Safe to call multiple times
 func (c *NatsConn) GmqClose(_ context.Context) error {
+	// Clear external callback reference to avoid memory leak
+	c.setSubscribed = nil
+
 	if c.conn == nil {
 		natsLogger.Debug("connection already nil")
 		return nil
@@ -203,7 +206,7 @@ func (c *NatsConn) GmqPublish(ctx context.Context, msg types.Publish) (err error
 	cfg, ok := msg.(*NatsPubMessage)
 	if !ok {
 		natsLogger.Error("publish:invalid message type", "expected", "*NatsPubMessage", "plugin", natsPluginName)
-		return fmt.Errorf("%s: publish: %w: expected *RedisPubMessage", natsPluginName, types.ErrInvalidMessageType)
+		return fmt.Errorf("%s: publish: %w: expected *NatsPubMessage", natsPluginName, types.ErrInvalidMessageType)
 	}
 	if err = c.createPublish(ctx, cfg.Topic, cfg.Durable, 0, cfg.Data); err != nil {
 		natsLogger.Error("publish failed", "topic", cfg.Topic, "error", err)
@@ -469,16 +472,6 @@ const (
 	jSApiStreamUpdateT = "$JS.API.STREAM.UPDATE.%s" // Stream update API template
 )
 
-// resp is the response structure for checking errors in NATS JetStream API responses.
-// Used internally to parse JSON responses from JetStream API calls.
-var resp struct {
-	Error *struct {
-		Code        int    `json:"code"`
-		ErrCode     int    `json:"err_code"`
-		Description string `json:"description"`
-	} `json:"error,omitempty"`
-}
-
 // jsStreamRequest sends a Stream API request to NATS JetStream.
 // This is a low-level function that directly calls NATS JetStream REST API.
 // Parameters:
@@ -488,6 +481,15 @@ var resp struct {
 //
 // Returns error if the request fails or the response indicates an error
 func jsStreamRequest(nc *nats.Conn, apiTemplate string, cfg *streamConfig) error {
+	// Local response structure to avoid race conditions in concurrent calls
+	var resp struct {
+		Error *struct {
+			Code        int    `json:"code"`
+			ErrCode     int    `json:"err_code"`
+			Description string `json:"description"`
+		} `json:"error,omitempty"`
+	}
+
 	j, err := json.Marshal(cfg)
 	if err != nil {
 		return err
@@ -532,5 +534,28 @@ func jsStreamCreate(nc *nats.Conn, cfg *streamConfig) (err error) {
 //
 // Returns error if update fails
 func jsStreamUpdate(nc *nats.Conn, cfg *streamConfig) error {
-	return jsStreamRequest(nc, jSApiStreamUpdateT, cfg)
+	// Local response structure to avoid race conditions in concurrent calls
+	var resp struct {
+		Error *struct {
+			Code        int    `json:"code"`
+			ErrCode     int    `json:"err_code"`
+			Description string `json:"description"`
+		} `json:"error,omitempty"`
+	}
+
+	j, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	msg, err := nc.Request(fmt.Sprintf(jSApiStreamUpdateT, cfg.Name), j, time.Second*3)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(msg.Data, &resp); err != nil {
+		return err
+	}
+	if resp.Error != nil {
+		return fmt.Errorf("JS API error: %s", resp.Error.Description)
+	}
+	return nil
 }

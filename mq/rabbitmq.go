@@ -59,12 +59,14 @@ type RabbitMQSubMessage struct {
 //   - Dead letter queue: "gmq.dead.letter.queue"
 //   - Failed messages are automatically routed to the dead letter exchange
 type RabbitMQConn struct {
-	conn              *amqp.Connection  // RabbitMQ connection object
-	channel           *amqp.Channel     // RabbitMQ channel for operations (channels are lightweight)
-	unifiedDLExchange string            // unified dead letter exchange name for all failed messages
-	unifiedDLQueue    string            // unified dead letter queue name for collecting failed messages
-	setSubscribed     func(bool)        // setter function to report connection state changes to proxy
-	activeConsumers   map[string]string // track active consumer tags for each topic (topic -> consumer tag)
+	conn              *amqp.Connection   // RabbitMQ connection object
+	channel           *amqp.Channel      // RabbitMQ channel for operations (channels are lightweight)
+	unifiedDLExchange string             // unified dead letter exchange name for all failed messages
+	unifiedDLQueue    string             // unified dead letter queue name for collecting failed messages
+	setSubscribed     func(bool)         // setter function to report connection state changes to proxy
+	activeConsumers   map[string]string  // track active consumer tags for each topic (topic -> consumer tag)
+	monitorCtx        context.Context    // monitor goroutine context for cleanup
+	monitorCancel     context.CancelFunc // monitor goroutine cancel function
 }
 
 // rabbitMQConfig holds RabbitMQ connection configuration parameters.
@@ -129,6 +131,16 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err er
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, types.ErrConfigPasswordRequired)
 	}
 
+	// Stop existing monitor goroutine before creating new connection
+	// This prevents goroutine leak on reconnection
+	if c.monitorCancel != nil {
+		c.monitorCancel()
+		// Wait a short time to ensure the goroutine exits
+		time.Sleep(10 * time.Millisecond)
+		c.monitorCancel = nil
+		c.monitorCtx = nil
+	}
+
 	// Cancel all active consumers explicitly before closing the channel
 	// This ensures consumer tags are released before we try to reuse them
 	if c.conn != nil && !c.conn.IsClosed() {
@@ -158,6 +170,9 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err er
 		return fmt.Errorf("%s: create_channel: %w", rabbitmqPluginName, err)
 	}
 
+	// Create monitor context and cancel function
+	monitorCtx, monitorCancel := context.WithCancel(context.Background())
+
 	// Register connection/channel close listeners
 	connCloseChan := newConn.NotifyClose(make(chan *amqp.Error, 1))
 	channelCloseChan := newChannel.NotifyClose(make(chan *amqp.Error, 1))
@@ -168,19 +183,24 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err er
 	// Atomic assignment to avoid race conditions
 	c.conn = newConn
 	c.channel = newChannel
+	c.monitorCtx = monitorCtx
+	c.monitorCancel = monitorCancel
 
 	// Start monitoring goroutine to detect disconnections
-	go c.monitorDisconnect(connCloseChan, channelCloseChan)
+	go c.monitorDisconnect(monitorCtx, connCloseChan, channelCloseChan)
 
 	return nil
 }
 
 // monitorDisconnect monitors connection/channel disconnection events
 // Only handles abnormal disconnections, ignores normal close events (err == nil or err.Code == 200)
-// Receives channels as parameters to avoid accessing struct fields causing race conditions
-func (c *RabbitMQConn) monitorDisconnect(connCloseChan, channelCloseChan chan *amqp.Error) {
+// Receives context to allow clean shutdown
+func (c *RabbitMQConn) monitorDisconnect(ctx context.Context, connCloseChan, channelCloseChan chan *amqp.Error) {
 	for {
 		select {
+		case <-ctx.Done():
+			// Context cancelled, exit monitoring
+			return
 		case err, ok := <-connCloseChan:
 			if !ok {
 				return
@@ -217,8 +237,18 @@ func (c *RabbitMQConn) SetSubscribedSetter(setter func(bool)) {
 // Safe to call multiple times
 func (c *RabbitMQConn) GmqClose(_ context.Context) (err error) {
 
+	// Stop monitor goroutine to prevent goroutine leak
+	if c.monitorCancel != nil {
+		c.monitorCancel()
+		c.monitorCancel = nil
+		c.monitorCtx = nil
+	}
+
 	// Clear external callback reference to avoid memory leak
 	c.setSubscribed = nil
+
+	// Clear active consumers map
+	c.activeConsumers = nil
 
 	// Get and clear references, then close
 	// amqp's Close() method is idempotent, can be safely called multiple times

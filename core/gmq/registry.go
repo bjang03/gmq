@@ -189,6 +189,12 @@ func Shutdown(ctx context.Context) error {
 			lastErr = err
 		}
 	}
+
+	// Clear global maps to prevent memory leaks and allow clean re-initialization
+	for name := range GmqPlugins {
+		delete(GmqPlugins, name)
+	}
+
 	return lastErr
 }
 

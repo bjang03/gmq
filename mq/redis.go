@@ -166,6 +166,9 @@ func (c *RedisConn) GmqConnect(_ context.Context, cfg map[string]any) (err error
 // GmqClose closes the Redis connection.
 // Safe to call multiple times
 func (c *RedisConn) GmqClose(_ context.Context) (err error) {
+	// Clear external callback reference to avoid memory leak
+	c.setSubscribed = nil
+
 	if c.conn != nil {
 		if err = c.conn.Close(); err != nil {
 			redisLogger.Error("close connection failed", "error", err)

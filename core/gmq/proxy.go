@@ -479,8 +479,17 @@ func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) error 
 	// Store subscription parameters for reconnection recovery
 	p.subscribeParams.Store(subKey, sub)
 
-	// Start background subscription goroutine
-	go p.runSubscribe(subCtx, subKey, sub, message)
+	// Start background subscription goroutine with panic recovery and context cleanup
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("subscribe goroutine panic recovered", "subKey", subKey, "panic", r)
+				// Ensure context is cancelled on panic to prevent leak
+				p.cleanupSubscribe(subKey)
+			}
+		}()
+		p.runSubscribe(subCtx, subKey, sub, message)
+	}()
 
 	// Start monitor (if needed)
 	p.monitor.Start(p.getSubscribeCount())
@@ -606,8 +615,9 @@ func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message
 // clearSubscribe clears all active subscriptions
 func (p *GmqProxy) clearSubscribe() {
 	var cancels []context.CancelFunc
+	keysToDelete := []string{}
 
-	// Collect cancel functions
+	// Collect cancel functions and keys
 	p.subscribe.Range(func(key, value any) bool {
 		subKey, ok := key.(string)
 		if !ok {
@@ -618,12 +628,17 @@ func (p *GmqProxy) clearSubscribe() {
 		if cancel, ok := value.(context.CancelFunc); ok && cancel != nil {
 			cancels = append(cancels, cancel)
 		}
-		p.subscribe.Delete(subKey)
-		p.subscribeParams.Delete(subKey)
+		keysToDelete = append(keysToDelete, subKey)
 		return true
 	})
 
-	// Call cancel functions outside Range to avoid holding lock
+	// Clean up both subscribe and subscribeParams maps
+	for _, subKey := range keysToDelete {
+		p.subscribe.Delete(subKey)
+		p.subscribeParams.Delete(subKey)
+	}
+
+	// Call cancel functions after clearing maps to ensure clean shutdown
 	for _, cancel := range cancels {
 		cancel()
 	}
@@ -693,7 +708,8 @@ func (p *GmqProxy) restoreSubscribe() {
 	}
 
 	// Concurrency limit: use semaphore to control concurrency
-	sem := make(chan struct{}, 5) // Restore up to 5 subscriptions concurrently
+	// Limit to 100 concurrent restores to prevent memory overflow
+	sem := make(chan struct{}, 100)
 	var wg sync.WaitGroup
 	var failedKeys []string
 

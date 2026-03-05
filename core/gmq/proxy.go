@@ -648,14 +648,6 @@ func (p *GmqProxy) clearSubscribe() {
 func (p *GmqProxy) restoreSubscribe() {
 	logger := utils.GetLogger().WithPlugin(p.name)
 
-	// Collect subscription information to restore (process outside Range)
-	type restoreInfo struct {
-		subKey   string
-		sub      *subMessage
-		original *types.SubMessage
-	}
-
-	var toRestore []restoreInfo
 	var toCancel []context.CancelFunc
 
 	// Collect existing subscriptions and subscriptions to restore
@@ -693,48 +685,18 @@ func (p *GmqProxy) restoreSubscribe() {
 			p.subscribeParams.Delete(subKey)
 			return true
 		}
-
-		toRestore = append(toRestore, restoreInfo{
-			subKey:   subKey,
-			sub:      info,
-			original: originalMsg,
-		})
+		subCtx, cancel := context.WithCancel(context.Background())
+		if _, loaded := p.subscribe.LoadOrStore(subKey, cancel); !loaded {
+			go p.runSubscribe(subCtx, subKey, info, originalMsg)
+		} else {
+			cancel() // If already exists, cancel the newly created context
+			logger.Warn("subscribe already exists during restore", "subKey", subKey)
+		}
 		return true
 	})
 
 	// Cancel existing subscription goroutines (outside Range)
 	for _, cancel := range toCancel {
 		cancel()
-	}
-
-	// Concurrency limit: use semaphore to control concurrency
-	// Limit to 100 concurrent restores to prevent memory overflow
-	sem := make(chan struct{}, 100)
-	var wg sync.WaitGroup
-	var failedKeys []string
-
-	for _, info := range toRestore {
-		wg.Add(1)
-		go func(info restoreInfo) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			subCtx, cancel := context.WithCancel(context.Background())
-			if _, loaded := p.subscribe.LoadOrStore(info.subKey, cancel); !loaded {
-				go p.runSubscribe(subCtx, info.subKey, info.sub, info.original)
-			} else {
-				cancel() // If already exists, cancel the newly created context
-				logger.Warn("subscribe already exists during restore", "subKey", info.subKey)
-			}
-		}(info)
-	}
-
-	wg.Wait()
-
-	// Clean up subscription parameters for failed restorations (avoid memory leak)
-	for _, subKey := range failedKeys {
-		p.subscribeParams.Delete(subKey)
-		logger.Info("cleaned up failed subscribe", "subKey", subKey)
 	}
 }

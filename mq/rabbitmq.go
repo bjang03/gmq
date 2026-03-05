@@ -196,6 +196,13 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err er
 // Only handles abnormal disconnections, ignores normal close events (err == nil or err.Code == 200)
 // Receives context to allow clean shutdown
 func (c *RabbitMQConn) monitorDisconnect(ctx context.Context, connCloseChan, channelCloseChan chan *amqp.Error) {
+	defer func() {
+		// Panic recovery to prevent goroutine leak on unexpected errors
+		if r := recover(); r != nil {
+			rabbitmqLogger.Error("monitorDisconnect panic recovered", "panic", r)
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -203,6 +210,7 @@ func (c *RabbitMQConn) monitorDisconnect(ctx context.Context, connCloseChan, cha
 			return
 		case err, ok := <-connCloseChan:
 			if !ok {
+				// Channel closed, exit goroutine
 				return
 			}
 			if err != nil && err.Code == amqp.ConnectionForced {
@@ -214,6 +222,7 @@ func (c *RabbitMQConn) monitorDisconnect(ctx context.Context, connCloseChan, cha
 			}
 		case err, ok := <-channelCloseChan:
 			if !ok {
+				// Channel closed, exit goroutine
 				return
 			}
 			if err != nil && err.Code == amqp.ConnectionForced {

@@ -111,7 +111,7 @@ func (c *RedisConn) GmqGetConn(_ context.Context) any {
 //   - cfg: connection configuration parameters
 //
 // Returns error if configuration is invalid
-func (c *RedisConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
+func (c *RedisConn) GmqConnect(ctx context.Context, cfg map[string]any) (err error) {
 	config := new(redisConfig)
 	if err = utils.MapToStruct(config, cfg); err != nil {
 		redisLogger.Error("config parse failed", "error", err)
@@ -126,10 +126,14 @@ func (c *RedisConn) GmqConnect(_ context.Context, cfg map[string]any) (err error
 		return fmt.Errorf("%s: config: %w", redisPluginName, types.ErrConfigPortRequired)
 	}
 
-	// Connection pool already exists, reuse existing connection (go-redis automatically manages connections internally)
+	// Check if existing connection is still valid
 	if c.conn != nil {
-		redisLogger.Debug("connection already exists, reusing")
-		return nil
+		if c.GmqPing(ctx) {
+			redisLogger.Debug("connection already exists and valid, reusing")
+			return nil
+		}
+		c.conn.Close()
+		c.conn = nil
 	}
 	netDialer := &net.Dialer{
 		Timeout:   5 * time.Second,  // connection establishment timeout
@@ -285,6 +289,12 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 		select {
 		case <-ctx.Done():
 			redisLogger.Debug("subscription context done, exiting consume loop", "stream", topic, "consumer", cfg.ConsumerName)
+			// Clean up consumer on context cancellation to prevent resource leak
+			if err := c.conn.XGroupDestroy(ctx, topic, group).Err(); err != nil {
+				if !strings.Contains(err.Error(), "NOGROUP") {
+					redisLogger.Warn("failed to destroy consumer group on context cancel", "stream", topic, "group", group, "error", err)
+				}
+			}
 			return ctx.Err()
 		default:
 		}

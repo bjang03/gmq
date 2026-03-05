@@ -155,7 +155,59 @@ func (m *subscribeMonitor) tick() {
 	// Attempt to restore subscriptions when connection is disconnected
 	if atomic.LoadInt32(&m.proxy.subscribed) == subscribeDisconnected {
 		if m.proxy.plugin.GmqPing(context.Background()) {
-			m.proxy.restoreSubscribe()
+			logger := utils.GetLogger().WithPlugin(m.name)
+
+			var toCancel []context.CancelFunc
+
+			// Collect existing subscriptions and subscriptions to restore
+			m.proxy.subscribe.Range(func(key, value any) bool {
+				if cancel, ok := value.(context.CancelFunc); ok && cancel != nil {
+					toCancel = append(toCancel, cancel)
+				}
+				m.proxy.subscribe.Delete(key.(string))
+				return true
+			})
+
+			m.proxy.subscribeParams.Range(func(key, value any) bool {
+				subKey, ok := key.(string)
+				if !ok {
+					logger.Error("invalid subscribe key type", "key", key)
+					return true
+				}
+				info, ok := value.(*subMessage)
+				if !ok {
+					logger.Error("invalid subMessage info", "key", subKey)
+					m.proxy.subscribeParams.Delete(subKey)
+					return true
+				}
+
+				subMsg, ok := info.SubMsg.(types.Subscribe)
+				if !ok {
+					logger.Error("invalid SubMsg type", "key", subKey)
+					m.proxy.subscribeParams.Delete(subKey)
+					return true
+				}
+
+				originalMsg, ok := subMsg.GetSubMsg().(*types.SubMessage)
+				if !ok {
+					logger.Error("invalid original message type", "key", subKey)
+					m.proxy.subscribeParams.Delete(subKey)
+					return true
+				}
+				subCtx, cancel := context.WithCancel(context.Background())
+				if _, loaded := m.proxy.subscribe.LoadOrStore(subKey, cancel); !loaded {
+					go m.proxy.runSubscribe(subCtx, subKey, info, originalMsg)
+				} else {
+					cancel() // If already exists, cancel the newly created context
+					logger.Warn("subscribe already exists during restore", "subKey", subKey)
+				}
+				return true
+			})
+
+			// Cancel existing subscription goroutines (outside Range)
+			for _, cancel := range toCancel {
+				cancel()
+			}
 		}
 	}
 }
@@ -640,63 +692,6 @@ func (p *GmqProxy) clearSubscribe() {
 
 	// Call cancel functions after clearing maps to ensure clean shutdown
 	for _, cancel := range cancels {
-		cancel()
-	}
-}
-
-// restoreSubscribe re-establishes all subscriptions (after reconnection)
-func (p *GmqProxy) restoreSubscribe() {
-	logger := utils.GetLogger().WithPlugin(p.name)
-
-	var toCancel []context.CancelFunc
-
-	// Collect existing subscriptions and subscriptions to restore
-	p.subscribe.Range(func(key, value any) bool {
-		if cancel, ok := value.(context.CancelFunc); ok && cancel != nil {
-			toCancel = append(toCancel, cancel)
-		}
-		p.subscribe.Delete(key.(string))
-		return true
-	})
-
-	p.subscribeParams.Range(func(key, value any) bool {
-		subKey, ok := key.(string)
-		if !ok {
-			logger.Error("invalid subscribe key type", "key", key)
-			return true
-		}
-		info, ok := value.(*subMessage)
-		if !ok {
-			logger.Error("invalid subMessage info", "key", subKey)
-			p.subscribeParams.Delete(subKey)
-			return true
-		}
-
-		subMsg, ok := info.SubMsg.(types.Subscribe)
-		if !ok {
-			logger.Error("invalid SubMsg type", "key", subKey)
-			p.subscribeParams.Delete(subKey)
-			return true
-		}
-
-		originalMsg, ok := subMsg.GetSubMsg().(*types.SubMessage)
-		if !ok {
-			logger.Error("invalid original message type", "key", subKey)
-			p.subscribeParams.Delete(subKey)
-			return true
-		}
-		subCtx, cancel := context.WithCancel(context.Background())
-		if _, loaded := p.subscribe.LoadOrStore(subKey, cancel); !loaded {
-			go p.runSubscribe(subCtx, subKey, info, originalMsg)
-		} else {
-			cancel() // If already exists, cancel the newly created context
-			logger.Warn("subscribe already exists during restore", "subKey", subKey)
-		}
-		return true
-	})
-
-	// Cancel existing subscription goroutines (outside Range)
-	for _, cancel := range toCancel {
 		cancel()
 	}
 }

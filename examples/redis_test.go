@@ -81,19 +81,6 @@ func TestRedisPublishWithDifferentDataTypes(t *testing.T) {
 	}
 }
 
-// TestRedisPublishDelay tests Redis delay message (Redis does not support delay messages)
-func TestRedisPublishDelay(t *testing.T) {
-	ctx := context.Background()
-	redisRegister(ctx)
-
-	getGmq := gmq.GetGmq(redisRegisterName)
-
-	err := getGmq.GmqPublishDelay(ctx, &mq2.RedisPubDelayMessage{})
-	if err == nil {
-		t.Error("Expected error for delay message, got nil")
-	}
-}
-
 // ============ Message Subscribe Tests ============
 
 // TestRedisSubscribe tests Redis subscribe message

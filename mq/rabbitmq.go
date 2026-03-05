@@ -29,6 +29,7 @@ var rabbitmqLogger = utils.GetLogger().WithPlugin(rabbitmqPluginName)
 // Embeds PubMessage for basic message fields.
 type RabbitMQPubMessage struct {
 	types.PubMessage
+	Durable bool
 }
 
 // RabbitMQPubDelayMessage represents a RabbitMQ delayed publish message.
@@ -36,12 +37,15 @@ type RabbitMQPubMessage struct {
 // Embeds PubDelayMessage for delayed message fields.
 type RabbitMQPubDelayMessage struct {
 	types.PubDelayMessage
+	Durable bool
 }
 
 // RabbitMQSubMessage represents a RabbitMQ subscription configuration.
 // Embeds SubMessage for basic subscription fields.
 type RabbitMQSubMessage struct {
 	types.SubMessage
+	Durable    bool
+	IsDelayMsg bool
 }
 
 // RabbitMQConn is the RabbitMQ message queue implementation.
@@ -280,7 +284,7 @@ func (c *RabbitMQConn) GmqClose(_ context.Context) (err error) {
 //   - delayMsg: whether this is a delayed message queue
 //
 // Returns exchange name, routing key, and error if any operation fails
-func (c *RabbitMQConn) setupQueue(topic string, delayMsg bool) (string, string, error) {
+func (c *RabbitMQConn) setupQueue(topic string, durable, delayMsg bool) (string, string, error) {
 
 	// 0. ensure unified dead letter exchange and queue are created (idempotent)
 	if err := c.setupUnifiedDeadLetter(); err != nil {
@@ -311,7 +315,7 @@ func (c *RabbitMQConn) setupQueue(topic string, delayMsg bool) (string, string, 
 	if err := c.channel.ExchangeDeclare(
 		exchangeName, // business exchange name
 		exchangeType, // exchange type (normal/fanout or delayed/x-delayed-message)
-		true,         // durable - always persist
+		durable,      // durable - always persist
 		false,        // autoDelete
 		false,        // internal
 		false,        // noWait
@@ -324,7 +328,7 @@ func (c *RabbitMQConn) setupQueue(topic string, delayMsg bool) (string, string, 
 	// 4. declare business queue
 	if _, err := c.channel.QueueDeclare(
 		topic,     // business queue name
-		true,      // durable - always persist
+		durable,   // durable - always persist
 		false,     // autoDelete
 		false,     // exclusive
 		false,     // noWait
@@ -415,7 +419,7 @@ func (c *RabbitMQConn) GmqPublish(ctx context.Context, msg types.Publish) (err e
 		rabbitmqLogger.Error("publish:invalid message type", "expected", "*RabbitMQPubMessage", "plugin", rabbitmqPluginName)
 		return fmt.Errorf("%s: publish: %w: expected *RabbitMQPubMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
 	}
-	if err = c.createPublish(ctx, cfg.Topic, 0, cfg.Data); err != nil {
+	if err = c.createPublish(ctx, cfg.Topic, cfg.Durable, 0, cfg.Data); err != nil {
 		rabbitmqLogger.Error("publish failed", "topic", cfg.Topic, "error", err)
 		return err
 	}
@@ -435,7 +439,7 @@ func (c *RabbitMQConn) GmqPublishDelay(ctx context.Context, msg types.PublishDel
 		rabbitmqLogger.Error("publish_delay:invalid message type", "expected", "*RabbitMQPubDelayMessage", "plugin", rabbitmqPluginName)
 		return fmt.Errorf("%s: publish_delay: %w: expected *RabbitMQPubDelayMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
 	}
-	if err = c.createPublish(ctx, cfg.Topic, cfg.DelaySeconds, cfg.Data); err != nil {
+	if err = c.createPublish(ctx, cfg.Topic, cfg.Durable, cfg.DelaySeconds, cfg.Data); err != nil {
 		rabbitmqLogger.Error("publish delay failed", "topic", cfg.Topic, "delay", cfg.DelaySeconds, "error", err)
 		return err
 	}
@@ -452,10 +456,10 @@ func (c *RabbitMQConn) GmqPublishDelay(ctx context.Context, msg types.PublishDel
 //   - data: message payload
 //
 // Returns error if any operation fails
-func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, delayTime int, data any) error {
+func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, durable bool, delayTime int, data any) error {
 
 	delayMsg := delayTime > 0
-	exchangeName, routingKey, err := c.setupQueue(topic, delayMsg)
+	exchangeName, routingKey, err := c.setupQueue(topic, durable, delayMsg)
 	if err != nil {
 		return err
 	}
@@ -514,7 +518,7 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (e
 		return fmt.Errorf("%s: subscribe: %w: expected *RabbitMQSubMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
 	}
 
-	_, _, err = c.setupQueue(cfg.Topic, false)
+	_, _, err = c.setupQueue(cfg.Topic, cfg.Durable, cfg.IsDelayMsg)
 	if err != nil {
 		rabbitmqLogger.Error("setup queue failed", "queue", cfg.Topic, "error", err)
 		return fmt.Errorf("%s: setup_queue: %w", rabbitmqPluginName, err)

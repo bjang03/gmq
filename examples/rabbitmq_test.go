@@ -160,6 +160,8 @@ func TestRabbitMQSubscribe(t *testing.T) {
 				return nil
 			},
 		},
+		Durable:    false,
+		IsDelayMsg: false,
 	}
 
 	if err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {

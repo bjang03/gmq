@@ -1,0 +1,36 @@
+# GMQ Message Queue Configuration
+# This file configures multiple message queue instances (NATS, Redis, RabbitMQ)
+
+gmq:
+  # NATS configuration with JetStream support
+  nats:
+    nats-test:
+      addr: "localhost"
+      port: "4222"
+      # Optional authentication
+      # username: "your-username"
+      # password: "your-password"
+  
+  # Redis configuration for Redis Streams
+  redis:
+    redis-test:
+      addr: "localhost"
+      port: "6379"
+      db: 0
+      # Optional authentication
+      # username: "default"
+      # password: "your-password"
+      # Connection pool settings
+      poolSize: 10
+      minIdleConns: 2
+      maxRetries: 3
+  
+  # RabbitMQ configuration with delayed message plugin support
+  rabbitmq:
+    rabbitmq-test:
+      addr: "localhost"
+      port: "5672"
+      username: "guest"
+      password: "guest"
+      vhost: "/"
+

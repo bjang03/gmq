@@ -263,6 +263,13 @@ func newGmqProxy(name string, plugin Gmq) *GmqProxy {
 	if plugin == nil {
 		panic(fmt.Sprintf("plugin cannot be nil for %s", name))
 	}
+
+	// Initialize pluginUnique interface - the same plugin instance implements both Gmq and GmqUnique
+	// Some plugins may not support delayed messages or negative acknowledgment (e.g., Redis)
+	if pluginUnique, ok := plugin.(GmqUnique); ok {
+		p.pluginUnique = pluginUnique
+	}
+
 	if stateSetter, ok := plugin.(GmqStateSetter); ok {
 		stateSetter.SetSubscribedSetter(p.setSubscribedState)
 	}

@@ -251,6 +251,7 @@ func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool
 		natsLogger.Error("create stream failed", "topic", topic, "durable", durable, "error", err)
 		return fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
 	}
+
 	// build message
 	m := nats.NewMsg(topic)
 	payload, err := json.Marshal(data)
@@ -260,13 +261,16 @@ func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool
 	}
 	m.Data = payload
 
-	// delayed message
+	// delayed message - use custom delay mechanism instead of NATS native scheduling
+	// NATS native scheduling causes message overwriting issues
 	if delayTime > 0 {
-		// use @at to specify specific delay time, not @every for repeated execution
-		futureTime := time.Now().Add(time.Duration(delayTime) * time.Second).Format(time.RFC3339Nano)
-		m.Header.Set("Nats-Schedule", fmt.Sprintf("@at %s", futureTime))
-		m.Subject = topic + ".schedule"
-		m.Header.Set("Nats-Schedule-Target", topic)
+		// Store delay until timestamp in header
+		futureTime := time.Now().Add(time.Duration(delayTime) * time.Second)
+		m.Header.Set("X-Delay-Until", futureTime.Format(time.RFC3339Nano))
+		m.Header.Set("X-Delay-Seconds", fmt.Sprintf("%d", delayTime))
+
+		// Add unique message ID to prevent deduplication
+		m.Header.Set("Nats-Msg-Id", fmt.Sprintf("%s-%d-%d", topic, time.Now().UnixNano(), delayTime))
 	}
 
 	// publish message
@@ -280,6 +284,7 @@ func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool
 
 // GmqSubscribe subscribes to NATS messages using JetStream consumer.
 // Creates stream and durable consumer if they don't exist.
+// For delayed messages, checks the X-Delay-Until header and processes only when due.
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - msg: subscription configuration (must be *NatsSubMessage)
@@ -302,13 +307,13 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 	consumerConfig := &nats.ConsumerConfig{
 		Durable:        cfg.ConsumerName,
 		AckPolicy:      nats.AckExplicitPolicy,
-		AckWait:        30 * time.Second,
+		AckWait:        10 * time.Second, // Short enough for quick retry, long enough for processing
 		MaxAckPending:  cfg.FetchCount,
 		FilterSubject:  cfg.Topic,
 		DeliverSubject: fmt.Sprintf("DELIVER.%s.%s", streamName, cfg.ConsumerName),
 		DeliverPolicy:  nats.DeliverAllPolicy,
-		MaxDeliver:     3,
-		BackOff:        []time.Duration{time.Second, 3 * time.Second, 6 * time.Second},
+		MaxDeliver:     -1, // Unlimited redeliveries for delayed messages
+		BackOff:        []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second},
 	}
 
 	// create Durable Consumer
@@ -330,6 +335,27 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 
 	// use Subscribe to create push subscription
 	_, err = c.js.Subscribe(cfg.Topic, func(natsMsg *nats.Msg) {
+		// Check if this is a delayed message and if it's due
+		if cfg.IsDelayMsg {
+			delayUntilStr := natsMsg.Header.Get("X-Delay-Until")
+			if delayUntilStr != "" {
+				delayUntil, parseErr := time.Parse(time.RFC3339Nano, delayUntilStr)
+				if parseErr == nil && time.Now().Before(delayUntil) {
+					// Message is not yet due, negative acknowledge to redeliver later
+					// Don't call Terminate() as we want redelivery
+					natsLogger.Debug("message not yet due, nak for redelivery",
+						"subject", natsMsg.Subject,
+						"delay_until", delayUntil,
+						"now", time.Now())
+					if err := natsMsg.Nak(); err != nil {
+						natsLogger.Error("nak failed for delayed message", "error", err)
+					}
+					return
+				}
+			}
+		}
+
+		// Message is due (or not a delayed message), process it
 		if err = msg.GetAckHandleFunc()(ctx, &types.AckMessage{
 			MessageData:     natsMsg.Data,
 			AckRequiredAttr: natsMsg,
@@ -385,22 +411,18 @@ func (c *NatsConn) createStream(_ context.Context, topic string, durable, isDela
 	}
 
 	// build stream configuration
-	// for delayed messages, need to include two subjects:
-	// 1. subject.schedule - for sending scheduled messages
-	// 2. subject - for actual delivery target
+	// Disable NATS native scheduling as it causes message overwriting
+	// Use custom delay mechanism with headers instead
 	subjects := []string{topic}
-	if isDelayMsg {
-		subjects = []string{topic, topic + ".schedule"}
-	}
 	jsConfig := &streamConfig{
 		Name:              streamName,
 		Subjects:          subjects,
-		AllowMsgSchedules: isDelayMsg, // delayed message core switch
+		AllowMsgSchedules: false, // Disable NATS native scheduling - it causes bugs!
 		Storage:           storage,
 		Discard:           nats.DiscardOld,    // delete old messages when limit reached
 		MaxMsgs:           100000,             // keep up to 100k messages
 		MaxAge:            7 * 24 * time.Hour, // keep messages for 7 days
-		Retention:         nats.InterestPolicy,
+		Retention:         nats.LimitsPolicy,  // Use LimitsPolicy to prevent premature message deletion
 		MaxConsumers:      -1,
 	}
 

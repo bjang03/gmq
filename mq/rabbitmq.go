@@ -71,16 +71,17 @@ type RabbitMQConn struct {
 	activeConsumers   map[string]string  // track active consumer tags for each topic (topic -> consumer tag)
 	monitorCtx        context.Context    // monitor goroutine context for cleanup
 	monitorCancel     context.CancelFunc // monitor goroutine cancel function
+	RabbitMQConfig
 }
 
-// rabbitMQConfig holds RabbitMQ connection configuration parameters.
+// RabbitMQConfig holds RabbitMQ connection configuration parameters.
 // Used with MapToStruct to convert config map to struct.
-type rabbitMQConfig struct {
-	Addr     string // RabbitMQ server address
-	Port     string // RabbitMQ server port
-	Username string // authentication username
-	Password string // authentication password
-	VHost    string // virtual host name
+type RabbitMQConfig struct {
+	Addr  string // RabbitMQ server address
+	Port  string // RabbitMQ server port
+	User  string // authentication user
+	Pass  string // authentication pass
+	VHost string // virtual host name
 }
 
 // GmqPing checks if RabbitMQ connection is alive.
@@ -113,11 +114,16 @@ func (c *RabbitMQConn) GmqGetConn(_ context.Context) any {
 //
 // Returns error if connection or channel creation fails
 func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
-	config := new(rabbitMQConfig)
-	if err = utils.MapToStruct(config, cfg); err != nil {
-		rabbitmqLogger.Error("config parse failed", "error", err)
-		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, err)
+	config := new(RabbitMQConfig)
+	if cfg != nil {
+		if err = utils.MapToStruct(config, cfg); err != nil {
+			rabbitmqLogger.Error("config parse failed", "error", err)
+			return fmt.Errorf("%s: config: %w", rabbitmqPluginName, err)
+		}
+	} else {
+		config = &c.RabbitMQConfig
 	}
+
 	if config.Addr == "" {
 		rabbitmqLogger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, types.ErrConfigAddrRequired)
@@ -126,11 +132,11 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err er
 		rabbitmqLogger.Error("config validation failed", "error", types.ErrConfigPortRequired)
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, types.ErrConfigPortRequired)
 	}
-	if config.Username == "" {
+	if config.User == "" {
 		rabbitmqLogger.Error("config validation failed", "error", types.ErrConfigUsernameRequired)
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, types.ErrConfigUsernameRequired)
 	}
-	if config.Password == "" {
+	if config.Pass == "" {
 		rabbitmqLogger.Error("config validation failed", "error", types.ErrConfigPasswordRequired)
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, types.ErrConfigPasswordRequired)
 	}
@@ -155,7 +161,7 @@ func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err er
 	}
 
 	// build connection URL
-	url := fmt.Sprintf("amqp://%s:%s@%s:%s/%s", config.Username, config.Password, config.Addr, config.Port, config.VHost)
+	url := fmt.Sprintf("amqp://%s:%s@%s:%s/%s", config.User, config.Pass, config.Addr, config.Port, config.VHost)
 
 	// create connection
 	newConn, err := amqp.DialConfig(url, amqp.Config{

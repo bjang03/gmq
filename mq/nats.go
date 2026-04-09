@@ -78,19 +78,20 @@ type NatsConn struct {
 	conn          *nats.Conn            // NATS connection object for basic messaging
 	js            nats.JetStreamContext // JetStream context for persistent messaging and consumer management
 	setSubscribed func(bool)            // setter function to report connection state changes to proxy
+	NatsConfig
 }
 
 func (c *NatsConn) SetSubscribedSetter(setter func(bool)) {
 	c.setSubscribed = setter
 }
 
-// natsConfig holds NATS connection configuration parameters.
+// NatsConfig holds NATS connection configuration parameters.
 // Used with MapToStruct to convert config map to struct.
-type natsConfig struct {
-	Addr     string // NATS server address
-	Port     string // NATS server port
-	Username string // authentication username
-	Password string // authentication password
+type NatsConfig struct {
+	Addr string // NATS server address
+	Port string // NATS server port
+	User string // authentication user
+	Pass string // authentication pass
 }
 
 // GmqPing checks if NATS connection is alive.
@@ -120,12 +121,16 @@ func (c *NatsConn) GmqGetConn(_ context.Context) any {
 //
 // Returns error if connection or JetStream initialization fails
 func (c *NatsConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
-
-	config := new(natsConfig)
-	if err = utils.MapToStruct(config, cfg); err != nil {
-		natsLogger.Error("config parse failed", "error", err)
-		return fmt.Errorf("%s: config: %w", natsPluginName, err)
+	config := new(NatsConfig)
+	if cfg != nil {
+		if err = utils.MapToStruct(config, cfg); err != nil {
+			natsLogger.Error("config parse failed", "error", err)
+			return fmt.Errorf("%s: config: %w", natsPluginName, err)
+		}
+	} else {
+		config = &c.NatsConfig
 	}
+
 	if config.Addr == "" {
 		natsLogger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
 		return fmt.Errorf("%s: config: %w", natsPluginName, types.ErrConfigAddrRequired)
@@ -156,8 +161,8 @@ func (c *NatsConn) GmqConnect(_ context.Context, cfg map[string]any) (err error)
 			}
 		}),
 	}
-	if config.Username != "" && config.Password != "" {
-		opts = append(opts, nats.UserInfo(config.Username, config.Password))
+	if config.User != "" && config.Pass != "" {
+		opts = append(opts, nats.UserInfo(config.User, config.Pass))
 	}
 
 	conn, err := nats.Connect(fmt.Sprintf("nats://%s:%s", config.Addr, config.Port), opts...)

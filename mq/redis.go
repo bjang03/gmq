@@ -61,6 +61,7 @@ type RedisSubMessage struct {
 type RedisConn struct {
 	conn          *redis.Client // Redis client connection (go-redis client)
 	setSubscribed func(bool)
+	RedisConfig
 }
 
 // SetSubscribedSetter sets the callback function to update subscription status.
@@ -71,14 +72,14 @@ func (c *RedisConn) SetSubscribedSetter(setter func(bool)) {
 	c.setSubscribed = setter
 }
 
-// redisConfig holds Redis connection configuration parameters.
+// RedisConfig holds Redis connection configuration parameters.
 // Used with MapToStruct to convert config map to struct.
-type redisConfig struct {
+type RedisConfig struct {
 	Addr           string // Redis server address
 	Port           string // Redis server port
-	Db             int    // Redis database number
-	Username       string // authentication username
-	Password       string // authentication password
+	DB             int    // Redis database number
+	User           string // authentication user
+	Pass           string // authentication pass
 	PoolSize       int    // connection pool size
 	MinIdleConns   int    // minimum idle connections
 	MaxActiveConns int    // maximum active connections (deprecated, use PoolSize)
@@ -112,11 +113,16 @@ func (c *RedisConn) GmqGetConn(_ context.Context) any {
 //
 // Returns error if configuration is invalid
 func (c *RedisConn) GmqConnect(ctx context.Context, cfg map[string]any) (err error) {
-	config := new(redisConfig)
-	if err = utils.MapToStruct(config, cfg); err != nil {
-		redisLogger.Error("config parse failed", "error", err)
-		return fmt.Errorf("%s: config: %w", redisPluginName, err)
+	config := new(RedisConfig)
+	if cfg != nil {
+		if err = utils.MapToStruct(config, cfg); err != nil {
+			redisLogger.Error("config parse failed", "error", err)
+			return fmt.Errorf("%s: config: %w", redisPluginName, err)
+		}
+	} else {
+		config = &c.RedisConfig
 	}
+
 	if config.Addr == "" {
 		redisLogger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
 		return fmt.Errorf("%s: config: %w", redisPluginName, types.ErrConfigAddrRequired)
@@ -144,13 +150,15 @@ func (c *RedisConn) GmqConnect(ctx context.Context, cfg map[string]any) (err err
 	}
 	options := redis.Options{
 		Addr:         config.Addr + ":" + config.Port,
-		DB:           config.Db,
+		DB:           config.DB,
 		Dialer:       redisDialer,
 		MinIdleConns: 2, // maintain 2 idle connections to avoid empty connection pool
 	}
-	if config.Username != "" && config.Password != "" {
-		options.Username = config.Username
-		options.Password = config.Password
+	if config.User != "" {
+		options.Username = config.User
+	}
+	if config.Pass != "" {
+		options.Password = config.Pass
 	}
 	if config.PoolSize > 0 {
 		options.PoolSize = config.PoolSize
@@ -202,6 +210,12 @@ func (c *RedisConn) GmqPublish(ctx context.Context, msg types.Publish) (err erro
 	if err != nil {
 		redisLogger.Error("convert data to map failed", "error", err)
 		return fmt.Errorf("%s: convert_data: %w", redisPluginName, err)
+	}
+
+	var args []interface{}
+	for k, v := range toMap {
+		valStr := cast.ToString(v)
+		args = append(args, k, valStr)
 	}
 
 	// Build XAdd argument structure (type-safe, clear parameter meaning)

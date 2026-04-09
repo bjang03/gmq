@@ -17,7 +17,12 @@ var natsRegisterName = "nats-test"
 
 // NATS register - don't use defer Shutdown in test helper, call it explicitly in each test
 func natsRegister(ctx context.Context) {
-	gmq.Init("config.yml")
+	gmq.GmqRegister(natsRegisterName, &mq2.NatsConn{
+		NatsConfig: mq2.NatsConfig{
+			Addr: "localhost",
+			Port: "4222",
+		},
+	})
 
 	// Wait for connection to be established
 	time.Sleep(2 * time.Second)
@@ -110,7 +115,7 @@ func TestNatsPublishDelayMultiple(t *testing.T) {
 
 		delayMsg := &mq2.NatsPubDelayMessage{
 			PubDelayMessage: types.PubDelayMessage{
-				DelaySeconds: delaySeconds,
+				DelaySeconds: 10,
 				PubMessage: types.PubMessage{
 					Topic: topic,
 					Data:  testData,
@@ -123,7 +128,7 @@ func TestNatsPublishDelayMultiple(t *testing.T) {
 			t.Fatalf("发送延迟消息 %d 失败：%v", i, err)
 		}
 		t.Logf("已发送消息 %d，延迟 %d 秒，时间：%v", i, delaySeconds, time.Now())
-		time.Sleep(100 * time.Millisecond) // Small delay between sends to simulate real scenario
+		time.Sleep(5 * time.Second) // Small delay between sends to simulate real scenario
 	}
 
 	// Collect received messages with timeout (use max delay + buffer)

@@ -53,6 +53,17 @@ func (m *SubMessage) GetAckHandleFunc() func(ctx context.Context, message *AckMe
 	return nil
 }
 
+// DelMessage represents a delete message base structure for topic/queue deletion operations.
+// This structure is used to specify which topic or queue should be deleted from the message queue system.
+type DelMessage struct {
+	Topic string // topic name to be deleted
+}
+
+// GetDelTopic gets the topic name to be deleted.
+func (m *DelMessage) GetDelTopic() string {
+	return m.Topic
+}
+
 // AckMessage acknowledgment message structure used for message processing feedback.
 // This structure wraps the original message and provides attributes required for acknowledgment operations.
 type AckMessage struct {
@@ -73,8 +84,14 @@ type PublishDelay interface {
 	GetDelaySeconds() int // Get the delay time in seconds
 }
 
-// Subscribe subscribe message interface (type constraint for subscription operations)
+// Subscribe message interface (type constraint for subscription operations)
 type Subscribe interface {
 	GetSubMsg() any                                                         // Get the subscription message configuration
 	GetAckHandleFunc() func(ctx context.Context, message *AckMessage) error // Get the acknowledgment handler function
+}
+
+// Delete interface defines the contract for delete operations.
+// All delete message types must implement this interface to provide the topic name for deletion.
+type Delete interface {
+	GetDelTopic() string // Get the topic name to be deleted
 }

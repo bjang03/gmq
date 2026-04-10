@@ -15,10 +15,10 @@ var rabbitMQRegisterName = "rabbitmq-test"
 func rabbitMQRegister(ctx context.Context) {
 	gmq.GmqRegister(rabbitMQRegisterName, &mq2.RabbitMQConn{
 		RabbitMQConfig: mq2.RabbitMQConfig{
-			Addr: "localhost",
-			Port: "5672",
-			User: "guest",
-			Pass: "guest",
+			Addr:     "localhost",
+			Port:     "5672",
+			Username: "guest",
+			Password: "guest",
 		},
 	})
 	defer gmq.Shutdown(ctx)

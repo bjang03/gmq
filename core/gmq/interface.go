@@ -5,6 +5,7 @@ package core
 
 import (
 	"context"
+
 	"github.com/bjang03/gmq/types"
 )
 
@@ -28,6 +29,7 @@ type Gmq interface {
 	GmqSubscribe(ctx context.Context, msg types.Subscribe) error // Subscribe to messages from a topic with a consumer
 	GmqPing(ctx context.Context) bool                            // Check if the connection is alive and working
 	GmqClose(ctx context.Context) error                          // Close the connection and cleanup resources
+	GmqDelete(ctx context.Context, msg types.Delete) error       // Delete a topic/queue and all its messages
 	GmqAck(ctx context.Context, msg *types.AckMessage) error     // Acknowledge successful message processing
 }
 
@@ -37,5 +39,6 @@ type GmqStateSetter interface {
 
 type GmqUnique interface {
 	GmqPublishDelay(ctx context.Context, msg types.PublishDelay) error // Publish a delayed message with specified delay time
+	GmqDeleteDelay(ctx context.Context, msg types.Delete) error        // Delete a delayed topic/queue and all its messages
 	GmqNak(ctx context.Context, msg *types.AckMessage) error           // Negatively acknowledge message (processing failed)
 }

@@ -40,6 +40,12 @@ type RedisSubMessage struct {
 	types.SubMessage
 }
 
+// RedisDelMessage represents a Redis delete message structure.
+// Embeds DelMessage for basic delete fields.
+type RedisDelMessage struct {
+	types.DelMessage
+}
+
 // RedisConn is the Redis message queue implementation using Redis Streams.
 // Provides publish, subscribe, and acknowledgment capabilities.
 // Note: Delayed messages are not supported in this implementation.
@@ -78,8 +84,8 @@ type RedisConfig struct {
 	Addr           string // Redis server address
 	Port           string // Redis server port
 	DB             int    // Redis database number
-	User           string // authentication user
-	Pass           string // authentication pass
+	Username       string // authentication username
+	Password       string // authentication password
 	PoolSize       int    // connection pool size
 	MinIdleConns   int    // minimum idle connections
 	MaxActiveConns int    // maximum active connections (deprecated, use PoolSize)
@@ -154,11 +160,11 @@ func (c *RedisConn) GmqConnect(ctx context.Context, cfg map[string]any) (err err
 		Dialer:       redisDialer,
 		MinIdleConns: 2, // maintain 2 idle connections to avoid empty connection pool
 	}
-	if config.User != "" {
-		options.Username = config.User
+	if config.Username != "" {
+		options.Username = config.Username
 	}
-	if config.Pass != "" {
-		options.Password = config.Pass
+	if config.Password != "" {
+		options.Password = config.Password
 	}
 	if config.PoolSize > 0 {
 		options.PoolSize = config.PoolSize
@@ -358,6 +364,29 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 			}
 		}
 	}
+}
+
+// GmqDelete deletes a Redis Stream (topic) from Redis.
+// This operation removes the entire stream and all its messages.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delete message configuration (must be *RedisDelMessage)
+//
+// Returns error if deletion fails
+func (c *RedisConn) GmqDelete(ctx context.Context, msg types.Delete) (err error) {
+	cfg, ok := msg.(*RedisDelMessage)
+	if !ok {
+		redisLogger.Error("delete:invalid message type", "expected", "*RedisDelMessage", "delete", redisPluginName)
+		return fmt.Errorf("%s: delete: %w: expected *RedisDelMessage", redisPluginName, types.ErrInvalidMessageType)
+	}
+	result := c.conn.Del(ctx, cfg.Topic)
+	deletedCount := result.Val()
+	if err = result.Err(); err != nil {
+		redisLogger.Error("delete failed", "topic", cfg.Topic, "error", err)
+		return fmt.Errorf("%s: delete: %w", redisPluginName, err)
+	}
+	redisLogger.Info("delete success", "topic", cfg.Topic, "deletedCount", deletedCount)
+	return
 }
 
 // GmqAck acknowledges successful processing of a Redis Stream message.

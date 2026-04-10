@@ -58,6 +58,13 @@ type NatsSubMessage struct {
 	IsDelayMsg bool // whether this is a delayed message stream (requires AllowMsgSchedules)
 }
 
+// NatsDelMessage represents a NATS delete message structure.
+// Embeds DelMessage for basic delete fields.
+type NatsDelMessage struct {
+	types.DelMessage
+	Durable bool // whether to delete a file-based stream (true) or memory-based stream (false)
+}
+
 // NatsConn is the NATS message queue implementation using JetStream for persistent messaging.
 // Provides publish, subscribe, delayed message, and acknowledgment capabilities.
 //
@@ -88,10 +95,10 @@ func (c *NatsConn) SetSubscribedSetter(setter func(bool)) {
 // NatsConfig holds NATS connection configuration parameters.
 // Used with MapToStruct to convert config map to struct.
 type NatsConfig struct {
-	Addr string // NATS server address
-	Port string // NATS server port
-	User string // authentication user
-	Pass string // authentication pass
+	Addr     string // NATS server address
+	Port     string // NATS server port
+	Username string // authentication username
+	Password string // authentication password
 }
 
 // GmqPing checks if NATS connection is alive.
@@ -161,8 +168,8 @@ func (c *NatsConn) GmqConnect(_ context.Context, cfg map[string]any) (err error)
 			}
 		}),
 	}
-	if config.User != "" && config.Pass != "" {
-		opts = append(opts, nats.UserInfo(config.User, config.Pass))
+	if config.Username != "" && config.Password != "" {
+		opts = append(opts, nats.UserInfo(config.Username, config.Password))
 	}
 
 	conn, err := nats.Connect(fmt.Sprintf("nats://%s:%s", config.Addr, config.Port), opts...)
@@ -385,8 +392,35 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 //   - isDelayMsg: whether this is a delayed message stream
 //
 // Returns stream name, storage type, and error
-func (c *NatsConn) createStream(_ context.Context, topic string, durable, isDelayMsg bool) (string, nats.StorageType, error) {
+func (c *NatsConn) createStream(ctx context.Context, topic string, durable, isDelayMsg bool) (string, nats.StorageType, error) {
+	streamName, storage := c.spliceStreamName(ctx, topic, durable, isDelayMsg)
+	// build stream configuration
+	// Disable NATS native scheduling as it causes message overwriting
+	// Use custom delay mechanism with headers instead
+	subjects := []string{topic}
+	jsConfig := &streamConfig{
+		Name:              streamName,
+		Subjects:          subjects,
+		AllowMsgSchedules: false, // Disable NATS native scheduling - it causes bugs!
+		Storage:           storage,
+		Discard:           nats.DiscardOld,    // delete old messages when limit reached
+		MaxMsgs:           100000,             // keep up to 100k messages
+		MaxAge:            7 * 24 * time.Hour, // keep messages for 7 days
+		Retention:         nats.LimitsPolicy,  // Use LimitsPolicy to prevent premature message deletion
+		MaxConsumers:      -1,
+	}
 
+	// create stream
+	if err := jsStreamCreate(c.conn, jsConfig); err != nil {
+		natsLogger.Error("create stream failed", "stream", streamName, "error", err)
+		return "", 0, fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
+	}
+
+	natsLogger.Debug("stream created/updated", "stream", streamName, "storage", storage, "subjects", subjects)
+	return streamName, storage, nil
+}
+
+func (c *NatsConn) spliceStreamName(_ context.Context, topic string, durable, isDelayMsg bool) (string, nats.StorageType) {
 	// build stream name and storage type
 	// use topic name as unique identifier to avoid conflicts
 	// replace special characters in topic name with underscores
@@ -414,31 +448,65 @@ func (c *NatsConn) createStream(_ context.Context, topic string, durable, isDela
 			streamName, storage = fmt.Sprintf("ordinary_memory_%s", safeTopicName), nats.MemoryStorage
 		}
 	}
+	return streamName, storage
+}
 
-	// build stream configuration
-	// Disable NATS native scheduling as it causes message overwriting
-	// Use custom delay mechanism with headers instead
-	subjects := []string{topic}
-	jsConfig := &streamConfig{
-		Name:              streamName,
-		Subjects:          subjects,
-		AllowMsgSchedules: false, // Disable NATS native scheduling - it causes bugs!
-		Storage:           storage,
-		Discard:           nats.DiscardOld,    // delete old messages when limit reached
-		MaxMsgs:           100000,             // keep up to 100k messages
-		MaxAge:            7 * 24 * time.Hour, // keep messages for 7 days
-		Retention:         nats.LimitsPolicy,  // Use LimitsPolicy to prevent premature message deletion
-		MaxConsumers:      -1,
+// GmqDelete deletes a NATS JetStream stream.
+// This operation removes the stream and all its messages based on the topic and durability settings.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delete message configuration (must be *NatsDelMessage)
+//
+// Returns error if deletion fails
+func (c *NatsConn) GmqDelete(ctx context.Context, msg types.Delete) error {
+	cfg, ok := msg.(*NatsDelMessage)
+	if !ok {
+		redisLogger.Error("delete:invalid message type", "expected", "*NatsDelMessage", "delete", natsPluginName)
+		return fmt.Errorf("%s: delete: %w: expected *NatsDelMessage", natsPluginName, types.ErrInvalidMessageType)
 	}
-
-	// create stream
-	if err := jsStreamCreate(c.conn, jsConfig); err != nil {
-		natsLogger.Error("create stream failed", "stream", streamName, "error", err)
-		return "", 0, fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
+	streamName, err := c.delete(ctx, cfg.Topic, cfg.Durable, false)
+	if err != nil {
+		natsLogger.Error("delete stream failed", "topic", streamName, "error", err)
+		return fmt.Errorf("%s: delete_stream: %w", natsPluginName, err)
 	}
+	natsLogger.Info("stream deleted", "topic", streamName)
+	return nil
+}
 
-	natsLogger.Debug("stream created/updated", "stream", streamName, "storage", storage, "subjects", subjects)
-	return streamName, storage, nil
+// GmqDeleteDelay deletes a NATS JetStream delayed stream.
+// This operation removes the delayed stream (with delay configuration) and all its messages.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delete message configuration (must be *NatsDelMessage)
+//
+// Returns error if deletion fails
+func (c *NatsConn) GmqDeleteDelay(ctx context.Context, msg types.Delete) error {
+	cfg, ok := msg.(*NatsDelMessage)
+	if !ok {
+		redisLogger.Error("deleteDelay:invalid message type", "expected", "*NatsDelMessage", "deleteDelay", natsPluginName)
+		return fmt.Errorf("%s: deleteDelay: %w: expected *NatsDelMessage", natsPluginName, types.ErrInvalidMessageType)
+	}
+	streamName, err := c.delete(ctx, cfg.Topic, cfg.Durable, true)
+	if err != nil {
+		natsLogger.Error("deleteDelay stream failed", "topic", streamName, "error", err)
+		return fmt.Errorf("%s: delete_stream: %w", natsPluginName, err)
+	}
+	natsLogger.Info("stream deleted", "topic", streamName)
+	return nil
+}
+
+// delete is an internal helper method to delete a NATS JetStream stream.
+// It determines the stream name based on topic, durability, and delay configuration, then deletes it.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - topic: the topic/stream name to delete
+//   - durable: whether to delete a file-based stream (true) or memory-based stream (false)
+//   - isDelayMsg: whether this is a delayed message stream
+//
+// Returns the stream name and any error encountered
+func (c *NatsConn) delete(ctx context.Context, topic string, durable, isDelayMsg bool) (string, error) {
+	streamName, _ := c.spliceStreamName(ctx, topic, durable, isDelayMsg)
+	return streamName, c.js.DeleteStream(streamName)
 }
 
 // GmqAck acknowledges successful processing of a NATS message.

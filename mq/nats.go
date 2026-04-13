@@ -506,7 +506,7 @@ func (c *NatsConn) GmqDeleteDelay(ctx context.Context, msg types.Delete) error {
 // Returns the stream name and any error encountered
 func (c *NatsConn) delete(ctx context.Context, topic string, durable, isDelayMsg bool) (string, error) {
 	streamName, _ := c.spliceStreamName(ctx, topic, durable, isDelayMsg)
-	return streamName, c.js.DeleteStream(streamName)
+	return streamName, c.js.PurgeStream(streamName)
 }
 
 // GmqAck acknowledges successful processing of a NATS message.

@@ -258,7 +258,7 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 		redisLogger.Error("connection is nil")
 		return fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
 	}
-
+LOOP:
 	topic := "gmq:stream:" + cfg.Topic
 	group := fmt.Sprintf("%s:default:group", cfg.ConsumerName)
 
@@ -275,6 +275,10 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 	// Proxy layer already runs this in a goroutine, so we don't need another one
 	err = c.consumeLoop(ctx, cfg, group, sub, topic)
 	if err != nil && ctx.Err() == nil {
+		if strings.Contains(err.Error(), "No such key") {
+			time.Sleep(time.Second)
+			goto LOOP
+		}
 		// Error occurred but context wasn't cancelled, notify proxy layer
 		redisLogger.Error("consume loop failed", "stream", topic, "consumer", cfg.ConsumerName, "error", err)
 		if c.setSubscribed != nil {
@@ -282,7 +286,6 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 		}
 		return err
 	}
-	redisLogger.Info("subscribe success", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
 	return nil
 }
 
@@ -296,6 +299,7 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 //   - sub: subscription interface with callback handlers
 //   - topic: stream topic name (with prefix)
 func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group string, sub types.Subscribe, topic string) error {
+	redisLogger.Info("subscribe success", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
 	// Build structured parameters (clear parameter meaning, no need to remember command order)
 	readArgs := &redis.XReadGroupArgs{
 		Group:    group,                        // consumer group name

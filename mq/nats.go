@@ -58,6 +58,13 @@ type NatsSubMessage struct {
 	IsDelayMsg bool // whether this is a delayed message stream (requires AllowMsgSchedules)
 }
 
+// NatsDelMessage represents a NATS delete message structure.
+// Embeds DelMessage for basic delete fields.
+type NatsDelMessage struct {
+	types.DelMessage
+	Durable bool // whether to delete a file-based stream (true) or memory-based stream (false)
+}
+
 // NatsConn is the NATS message queue implementation using JetStream for persistent messaging.
 // Provides publish, subscribe, delayed message, and acknowledgment capabilities.
 //
@@ -78,15 +85,16 @@ type NatsConn struct {
 	conn          *nats.Conn            // NATS connection object for basic messaging
 	js            nats.JetStreamContext // JetStream context for persistent messaging and consumer management
 	setSubscribed func(bool)            // setter function to report connection state changes to proxy
+	NatsConfig
 }
 
 func (c *NatsConn) SetSubscribedSetter(setter func(bool)) {
 	c.setSubscribed = setter
 }
 
-// natsConfig holds NATS connection configuration parameters.
+// NatsConfig holds NATS connection configuration parameters.
 // Used with MapToStruct to convert config map to struct.
-type natsConfig struct {
+type NatsConfig struct {
 	Addr     string // NATS server address
 	Port     string // NATS server port
 	Username string // authentication username
@@ -120,12 +128,16 @@ func (c *NatsConn) GmqGetConn(_ context.Context) any {
 //
 // Returns error if connection or JetStream initialization fails
 func (c *NatsConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
-
-	config := new(natsConfig)
-	if err = utils.MapToStruct(config, cfg); err != nil {
-		natsLogger.Error("config parse failed", "error", err)
-		return fmt.Errorf("%s: config: %w", natsPluginName, err)
+	config := new(NatsConfig)
+	if cfg != nil {
+		if err = utils.MapToStruct(config, cfg); err != nil {
+			natsLogger.Error("config parse failed", "error", err)
+			return fmt.Errorf("%s: config: %w", natsPluginName, err)
+		}
+	} else {
+		config = &c.NatsConfig
 	}
+
 	if config.Addr == "" {
 		natsLogger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
 		return fmt.Errorf("%s: config: %w", natsPluginName, types.ErrConfigAddrRequired)
@@ -251,6 +263,7 @@ func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool
 		natsLogger.Error("create stream failed", "topic", topic, "durable", durable, "error", err)
 		return fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
 	}
+
 	// build message
 	m := nats.NewMsg(topic)
 	payload, err := json.Marshal(data)
@@ -260,13 +273,16 @@ func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool
 	}
 	m.Data = payload
 
-	// delayed message
+	// delayed message - use custom delay mechanism instead of NATS native scheduling
+	// NATS native scheduling causes message overwriting issues
 	if delayTime > 0 {
-		// use @at to specify specific delay time, not @every for repeated execution
-		futureTime := time.Now().Add(time.Duration(delayTime) * time.Second).Format(time.RFC3339Nano)
-		m.Header.Set("Nats-Schedule", fmt.Sprintf("@at %s", futureTime))
-		m.Subject = topic + ".schedule"
-		m.Header.Set("Nats-Schedule-Target", topic)
+		// Store delay until timestamp in header
+		futureTime := time.Now().Add(time.Duration(delayTime) * time.Second)
+		m.Header.Set("X-Delay-Until", futureTime.Format(time.RFC3339Nano))
+		m.Header.Set("X-Delay-Seconds", fmt.Sprintf("%d", delayTime))
+
+		// Add unique message ID to prevent deduplication
+		m.Header.Set("Nats-Msg-Id", fmt.Sprintf("%s-%d-%d", topic, time.Now().UnixNano(), delayTime))
 	}
 
 	// publish message
@@ -280,6 +296,7 @@ func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool
 
 // GmqSubscribe subscribes to NATS messages using JetStream consumer.
 // Creates stream and durable consumer if they don't exist.
+// For delayed messages, checks the X-Delay-Until header and processes only when due.
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - msg: subscription configuration (must be *NatsSubMessage)
@@ -302,13 +319,13 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 	consumerConfig := &nats.ConsumerConfig{
 		Durable:        cfg.ConsumerName,
 		AckPolicy:      nats.AckExplicitPolicy,
-		AckWait:        30 * time.Second,
+		AckWait:        10 * time.Second, // Short enough for quick retry, long enough for processing
 		MaxAckPending:  cfg.FetchCount,
 		FilterSubject:  cfg.Topic,
 		DeliverSubject: fmt.Sprintf("DELIVER.%s.%s", streamName, cfg.ConsumerName),
 		DeliverPolicy:  nats.DeliverAllPolicy,
-		MaxDeliver:     3,
-		BackOff:        []time.Duration{time.Second, 3 * time.Second, 6 * time.Second},
+		MaxDeliver:     -1, // Unlimited redeliveries for delayed messages
+		BackOff:        []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second},
 	}
 
 	// create Durable Consumer
@@ -330,6 +347,27 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 
 	// use Subscribe to create push subscription
 	_, err = c.js.Subscribe(cfg.Topic, func(natsMsg *nats.Msg) {
+		// Check if this is a delayed message and if it's due
+		if cfg.IsDelayMsg {
+			delayUntilStr := natsMsg.Header.Get("X-Delay-Until")
+			if delayUntilStr != "" {
+				delayUntil, parseErr := time.Parse(time.RFC3339Nano, delayUntilStr)
+				if parseErr == nil && time.Now().Before(delayUntil) {
+					// Message is not yet due, negative acknowledge to redeliver later
+					// Don't call Terminate() as we want redelivery
+					natsLogger.Debug("message not yet due, nak for redelivery",
+						"subject", natsMsg.Subject,
+						"delay_until", delayUntil,
+						"now", time.Now())
+					if err := natsMsg.Nak(); err != nil {
+						natsLogger.Error("nak failed for delayed message", "error", err)
+					}
+					return
+				}
+			}
+		}
+
+		// Message is due (or not a delayed message), process it
 		if err = msg.GetAckHandleFunc()(ctx, &types.AckMessage{
 			MessageData:     natsMsg.Data,
 			AckRequiredAttr: natsMsg,
@@ -354,8 +392,35 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 //   - isDelayMsg: whether this is a delayed message stream
 //
 // Returns stream name, storage type, and error
-func (c *NatsConn) createStream(_ context.Context, topic string, durable, isDelayMsg bool) (string, nats.StorageType, error) {
+func (c *NatsConn) createStream(ctx context.Context, topic string, durable, isDelayMsg bool) (string, nats.StorageType, error) {
+	streamName, storage := c.spliceStreamName(ctx, topic, durable, isDelayMsg)
+	// build stream configuration
+	// Disable NATS native scheduling as it causes message overwriting
+	// Use custom delay mechanism with headers instead
+	subjects := []string{topic}
+	jsConfig := &streamConfig{
+		Name:              streamName,
+		Subjects:          subjects,
+		AllowMsgSchedules: false, // Disable NATS native scheduling - it causes bugs!
+		Storage:           storage,
+		Discard:           nats.DiscardOld,    // delete old messages when limit reached
+		MaxMsgs:           100000,             // keep up to 100k messages
+		MaxAge:            7 * 24 * time.Hour, // keep messages for 7 days
+		Retention:         nats.LimitsPolicy,  // Use LimitsPolicy to prevent premature message deletion
+		MaxConsumers:      -1,
+	}
 
+	// create stream
+	if err := jsStreamCreate(c.conn, jsConfig); err != nil {
+		natsLogger.Error("create stream failed", "stream", streamName, "error", err)
+		return "", 0, fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
+	}
+
+	natsLogger.Debug("stream created/updated", "stream", streamName, "storage", storage, "subjects", subjects)
+	return streamName, storage, nil
+}
+
+func (c *NatsConn) spliceStreamName(_ context.Context, topic string, durable, isDelayMsg bool) (string, nats.StorageType) {
 	// build stream name and storage type
 	// use topic name as unique identifier to avoid conflicts
 	// replace special characters in topic name with underscores
@@ -383,35 +448,65 @@ func (c *NatsConn) createStream(_ context.Context, topic string, durable, isDela
 			streamName, storage = fmt.Sprintf("ordinary_memory_%s", safeTopicName), nats.MemoryStorage
 		}
 	}
+	return streamName, storage
+}
 
-	// build stream configuration
-	// for delayed messages, need to include two subjects:
-	// 1. subject.schedule - for sending scheduled messages
-	// 2. subject - for actual delivery target
-	subjects := []string{topic}
-	if isDelayMsg {
-		subjects = []string{topic, topic + ".schedule"}
+// GmqDelete deletes a NATS JetStream stream.
+// This operation removes the stream and all its messages based on the topic and durability settings.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delete message configuration (must be *NatsDelMessage)
+//
+// Returns error if deletion fails
+func (c *NatsConn) GmqDelete(ctx context.Context, msg types.Delete) error {
+	cfg, ok := msg.(*NatsDelMessage)
+	if !ok {
+		redisLogger.Error("delete:invalid message type", "expected", "*NatsDelMessage", "delete", natsPluginName)
+		return fmt.Errorf("%s: delete: %w: expected *NatsDelMessage", natsPluginName, types.ErrInvalidMessageType)
 	}
-	jsConfig := &streamConfig{
-		Name:              streamName,
-		Subjects:          subjects,
-		AllowMsgSchedules: isDelayMsg, // delayed message core switch
-		Storage:           storage,
-		Discard:           nats.DiscardOld,    // delete old messages when limit reached
-		MaxMsgs:           100000,             // keep up to 100k messages
-		MaxAge:            7 * 24 * time.Hour, // keep messages for 7 days
-		Retention:         nats.InterestPolicy,
-		MaxConsumers:      -1,
+	streamName, err := c.delete(ctx, cfg.Topic, cfg.Durable, false)
+	if err != nil {
+		natsLogger.Error("delete stream failed", "topic", streamName, "error", err)
+		return fmt.Errorf("%s: delete_stream: %w", natsPluginName, err)
 	}
+	natsLogger.Info("stream deleted", "topic", streamName)
+	return nil
+}
 
-	// create stream
-	if err := jsStreamCreate(c.conn, jsConfig); err != nil {
-		natsLogger.Error("create stream failed", "stream", streamName, "error", err)
-		return "", 0, fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
+// GmqDeleteDelay deletes a NATS JetStream delayed stream.
+// This operation removes the delayed stream (with delay configuration) and all its messages.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delete message configuration (must be *NatsDelMessage)
+//
+// Returns error if deletion fails
+func (c *NatsConn) GmqDeleteDelay(ctx context.Context, msg types.Delete) error {
+	cfg, ok := msg.(*NatsDelMessage)
+	if !ok {
+		redisLogger.Error("deleteDelay:invalid message type", "expected", "*NatsDelMessage", "deleteDelay", natsPluginName)
+		return fmt.Errorf("%s: deleteDelay: %w: expected *NatsDelMessage", natsPluginName, types.ErrInvalidMessageType)
 	}
+	streamName, err := c.delete(ctx, cfg.Topic, cfg.Durable, true)
+	if err != nil {
+		natsLogger.Error("deleteDelay stream failed", "topic", streamName, "error", err)
+		return fmt.Errorf("%s: delete_stream: %w", natsPluginName, err)
+	}
+	natsLogger.Info("stream deleted", "topic", streamName)
+	return nil
+}
 
-	natsLogger.Debug("stream created/updated", "stream", streamName, "storage", storage, "subjects", subjects)
-	return streamName, storage, nil
+// delete is an internal helper method to delete a NATS JetStream stream.
+// It determines the stream name based on topic, durability, and delay configuration, then deletes it.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - topic: the topic/stream name to delete
+//   - durable: whether to delete a file-based stream (true) or memory-based stream (false)
+//   - isDelayMsg: whether this is a delayed message stream
+//
+// Returns the stream name and any error encountered
+func (c *NatsConn) delete(ctx context.Context, topic string, durable, isDelayMsg bool) (string, error) {
+	streamName, _ := c.spliceStreamName(ctx, topic, durable, isDelayMsg)
+	return streamName, c.js.PurgeStream(streamName)
 }
 
 // GmqAck acknowledges successful processing of a NATS message.

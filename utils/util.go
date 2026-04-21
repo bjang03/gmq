@@ -5,12 +5,14 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/bjang03/gmq/types"
-	"github.com/spf13/cast"
-	"gopkg.in/yaml.v3"
 	"os"
 	"reflect"
 	"strings"
+	"time"
+
+	"github.com/bjang03/gmq/types"
+	"github.com/spf13/cast"
+	"gopkg.in/yaml.v3"
 )
 
 // MapToStruct converts map[string]interface{} to struct field values.
@@ -82,102 +84,121 @@ func LoadGMQConfig(configPath string) (*types.GMQConfig, error) {
 	return config, nil
 }
 
-// ConvertToMap converts generic data to map[string]interface{} for Redis compatibility.
-// Core improvements:
-// 1. Uses type assertion and cast package for common types
-// 2. Serializes slices/arrays directly to JSON strings (avoid []interface{})
-// 3. All values end up as string/int/float/bool, can be directly stored in Redis
-// Parameters:
-//   - data: input data to convert (supports maps, basic types, slices, structs)
-//
-// Returns converted map or error if conversion fails
 func ConvertToMap(data interface{}) (map[string]interface{}, error) {
 	if data == nil {
-		return nil, fmt.Errorf("convert failed: data is nil (input type: nil)")
+		return map[string]interface{}{"data": ""}, nil
 	}
 
-	// handle level-1 pointers (no reflection, only support common pointer types)
-	switch v := data.(type) {
-	case *map[string]interface{}:
-		if v == nil {
-			return nil, fmt.Errorf("convert failed: nil *map[string]interface{}")
+	v := reflect.ValueOf(data)
+	for v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return map[string]interface{}{"data": ""}, nil
 		}
-		return *v, nil
-	case *map[string]string:
-		if v == nil {
-			return nil, fmt.Errorf("convert failed: nil *map[string]string")
+		v = v.Elem()
+	}
+	data = v.Interface()
+
+	if v.Kind() == reflect.Struct {
+		if timeStr, ok := getTimeStringFromStruct(v); ok {
+			return map[string]interface{}{"data": timeStr}, nil
 		}
-		res := make(map[string]interface{}, len(*v))
-		for k, val := range *v {
-			res[k] = val
-		}
-		return res, nil
-	case *string, *int, *int8, *int16, *int32, *int64,
-		*uint, *uint8, *uint16, *uint32, *uint64,
-		*float32, *float64, *bool:
-		// use cast package to safely dereference
-		return ConvertToMap(cast.ToString(v))
-	case *[]string, *[]int, *[]int64:
-		// slice pointer: dereference then serialize to JSON
-		if v == nil {
-			return nil, fmt.Errorf("convert failed: nil slice pointer (type: %T)", data)
-		}
-		jsonBytes, err := json.Marshal(v)
-		if err != nil {
-			return nil, fmt.Errorf("convert failed: marshal slice pointer error (%v) (type: %T)", err, data)
-		}
-		return map[string]interface{}{"data": string(jsonBytes)}, nil
 	}
 
-	// 1. prioritize handling native map types
-	switch v := data.(type) {
+	switch m := data.(type) {
 	case map[string]interface{}:
-		return v, nil
+		cleanMap := make(map[string]interface{}, len(m))
+		for k, val := range m {
+			if val == nil {
+				cleanMap[k] = ""
+			} else {
+				cleanMap[k] = val
+			}
+		}
+		return cleanMap, nil
 	case map[string]string:
-		res := make(map[string]interface{}, len(v))
-		for k, val := range v {
+		res := make(map[string]interface{}, len(m))
+		for k, val := range m {
 			res[k] = val
 		}
 		return res, nil
 	case map[string]int, map[string]int64, map[string]float64, map[string]bool:
-		res := cast.ToStringMap(v)
-		return res, nil
+		return cast.ToStringMap(m), nil
 	}
 
-	// 2. handle basic types (direct wrapping)
-	switch v := data.(type) {
+	switch data.(type) {
 	case string, int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64,
 		float32, float64, bool:
-		return map[string]interface{}{"data": v}, nil
+		return map[string]interface{}{"data": data}, nil
 	}
 
-	// 3. handle slice/array types (core fix: serialize directly to JSON string)
-	switch v := data.(type) {
-	case []string, []int, []int64, []float64, []bool, []interface{}:
-		jsonBytes, err := json.Marshal(v)
+	if v.Kind() == reflect.Slice || v.Kind() == reflect.Array {
+		jsonBytes, err := json.Marshal(data)
 		if err != nil {
-			return nil, fmt.Errorf("convert failed: marshal slice error (%v) (type: %T)", err, data)
+			return nil, fmt.Errorf("marshal slice failed: %v", err)
 		}
 		return map[string]interface{}{"data": string(jsonBytes)}, nil
 	}
 
-	// 4. fallback: JSON serialize all complex types (structs/custom types)
-	jsonBytes, err := json.Marshal(data)
-	if err != nil {
-		res := cast.ToStringMap(data)
-		if len(res) > 0 {
-			return res, nil
+	if v.Kind() == reflect.Struct {
+		structVal := v
+		structType := structVal.Type()
+		res := make(map[string]interface{}, structVal.NumField())
+		for i := 0; i < structVal.NumField(); i++ {
+			field := structType.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
+			fieldVal := structVal.Field(i).Interface()
+			fieldMap, err := ConvertToMap(fieldVal)
+			if err != nil {
+				return nil, fmt.Errorf("convert field %s failed: %v", field.Name, err)
+			}
+			var finalVal interface{} = ""
+			if dataVal, ok := fieldMap["data"]; ok {
+				finalVal = dataVal
+			} else if len(fieldMap) > 0 {
+				jsonBytes, _ := json.Marshal(fieldMap)
+				finalVal = string(jsonBytes)
+			}
+			res[field.Name] = finalVal
 		}
-		return nil, fmt.Errorf("convert failed: json marshal error (%v), cast also return empty (type: %T)", err, data)
-	}
-
-	// try to deserialize to map (structs/JSON objects)
-	var res map[string]interface{}
-	if err = json.Unmarshal(jsonBytes, &res); err == nil {
 		return res, nil
 	}
 
-	// final fallback: serialize to JSON string wrapper
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshal failed: %v (type: %T)", err, data)
+	}
 	return map[string]interface{}{"data": string(jsonBytes)}, nil
+}
+
+// 辅助函数：行为检测提取时间字符串
+func getTimeStringFromStruct(v reflect.Value) (string, bool) {
+	stringMethod := v.MethodByName("String")
+	if stringMethod.IsValid() && stringMethod.Type().NumIn() == 0 && stringMethod.Type().NumOut() == 1 &&
+		stringMethod.Type().Out(0).Kind() == reflect.String {
+		results := stringMethod.Call(nil)
+		if len(results) > 0 {
+			return results[0].String(), true
+		}
+	}
+
+	formatMethod := v.MethodByName("Format")
+	if formatMethod.IsValid() && formatMethod.Type().NumIn() == 1 && formatMethod.Type().NumOut() == 1 &&
+		formatMethod.Type().In(0).Kind() == reflect.String && formatMethod.Type().Out(0).Kind() == reflect.String {
+		formats := []string{"Y-m-d H:i:s", time.RFC3339}
+		for _, fmtStr := range formats {
+			results := formatMethod.Call([]reflect.Value{reflect.ValueOf(fmtStr)})
+			if len(results) > 0 && results[0].String() != "" {
+				return results[0].String(), true
+			}
+		}
+	}
+
+	if timeVal, ok := v.Interface().(time.Time); ok {
+		return timeVal.Format(time.RFC3339), true
+	}
+
+	return "", false
 }

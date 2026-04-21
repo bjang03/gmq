@@ -48,6 +48,12 @@ type RabbitMQSubMessage struct {
 	IsDelayMsg bool
 }
 
+// RabbitMQDelMessage represents a RabbitMQ delete message structure.
+// Embeds DelMessage for basic delete fields.
+type RabbitMQDelMessage struct {
+	types.DelMessage
+}
+
 // RabbitMQConn is the RabbitMQ message queue implementation.
 // Provides publish, subscribe, delayed message (with plugin), and acknowledgment capabilities.
 // Uses a unified dead letter exchange for failed messages.
@@ -71,11 +77,12 @@ type RabbitMQConn struct {
 	activeConsumers   map[string]string  // track active consumer tags for each topic (topic -> consumer tag)
 	monitorCtx        context.Context    // monitor goroutine context for cleanup
 	monitorCancel     context.CancelFunc // monitor goroutine cancel function
+	RabbitMQConfig
 }
 
-// rabbitMQConfig holds RabbitMQ connection configuration parameters.
+// RabbitMQConfig holds RabbitMQ connection configuration parameters.
 // Used with MapToStruct to convert config map to struct.
-type rabbitMQConfig struct {
+type RabbitMQConfig struct {
 	Addr     string // RabbitMQ server address
 	Port     string // RabbitMQ server port
 	Username string // authentication username
@@ -113,11 +120,16 @@ func (c *RabbitMQConn) GmqGetConn(_ context.Context) any {
 //
 // Returns error if connection or channel creation fails
 func (c *RabbitMQConn) GmqConnect(_ context.Context, cfg map[string]any) (err error) {
-	config := new(rabbitMQConfig)
-	if err = utils.MapToStruct(config, cfg); err != nil {
-		rabbitmqLogger.Error("config parse failed", "error", err)
-		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, err)
+	config := new(RabbitMQConfig)
+	if cfg != nil {
+		if err = utils.MapToStruct(config, cfg); err != nil {
+			rabbitmqLogger.Error("config parse failed", "error", err)
+			return fmt.Errorf("%s: config: %w", rabbitmqPluginName, err)
+		}
+	} else {
+		config = &c.RabbitMQConfig
 	}
+
 	if config.Addr == "" {
 		rabbitmqLogger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
 		return fmt.Errorf("%s: config: %w", rabbitmqPluginName, types.ErrConfigAddrRequired)
@@ -571,6 +583,66 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (e
 	}
 
 	return nil
+}
+
+// GmqDelete deletes a RabbitMQ queue.
+// This operation removes the queue and all its messages.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delete message configuration (must be *RabbitMQDelMessage)
+//
+// Returns error if deletion fails
+func (c *RabbitMQConn) GmqDelete(_ context.Context, msg types.Delete) (err error) {
+	cfg, ok := msg.(*RabbitMQDelMessage)
+	if !ok {
+		redisLogger.Error("delete:invalid message type", "expected", "*RabbitMQDelMessage", "delete", rabbitmqPluginName)
+		return fmt.Errorf("%s: delete: %w: expected *RabbitMQDelMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
+	}
+	count, err := c.delete(cfg.Topic)
+	if err != nil {
+		rabbitmqLogger.Error("delete queue failed", "topic", cfg.Topic, "error", err)
+		return fmt.Errorf("%s: delete: %w", rabbitmqPluginName, err)
+	}
+	rabbitmqLogger.Info("delete queue success", "topic", cfg.Topic, "count", count)
+	return
+}
+
+// GmqDeleteDelay deletes a RabbitMQ delayed queue.
+// This operation removes the delayed queue (topic.delayed) and all its messages.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delete message configuration (must be *RabbitMQDelMessage)
+//
+// Returns error if deletion fails
+func (c *RabbitMQConn) GmqDeleteDelay(_ context.Context, msg types.Delete) (err error) {
+	cfg, ok := msg.(*RabbitMQDelMessage)
+	if !ok {
+		redisLogger.Error("deleteDelay:invalid message type", "expected", "*RabbitMQDelMessage", "deleteDelay", rabbitmqPluginName)
+		return fmt.Errorf("%s: deleteDelay: %w: expected *RabbitMQDelMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
+	}
+	delayedQueueName := cfg.Topic + ".delayed"
+	count, err := c.delete(delayedQueueName)
+	if err != nil {
+		rabbitmqLogger.Error("delete delayed queue failed", "topic", delayedQueueName, "error", err)
+		return fmt.Errorf("%s: delete delayed: %w", rabbitmqPluginName, err)
+	}
+	rabbitmqLogger.Info("delete delayed queue success", "topic", delayedQueueName, "count", count)
+	return
+}
+
+// delete is an internal helper method to delete a RabbitMQ queue.
+// Parameters:
+//   - queueName: name of the queue to delete
+//
+// Returns the number of messages deleted and any error encountered
+func (c *RabbitMQConn) delete(queueName string) (int, error) {
+	count, err := c.channel.QueueDelete(
+		queueName, // queue name
+		false,     // ifUnused - delete even if in use
+		false,     // ifEmpty - delete even if not empty
+		false,     // noWait - wait for server response
+	)
+	return count, err
 }
 
 // GmqAck acknowledges successful processing of a RabbitMQ message.

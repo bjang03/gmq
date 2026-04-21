@@ -2,17 +2,25 @@ package mq
 
 import (
 	"context"
+	"testing"
+
 	gmq "github.com/bjang03/gmq/core/gmq"
 	mq2 "github.com/bjang03/gmq/mq"
 	"github.com/bjang03/gmq/types"
-	"testing"
 )
 
 var rabbitMQRegisterName = "rabbitmq-test"
 
 // RabbitMQ register
 func rabbitMQRegister(ctx context.Context) {
-	gmq.Init("config.yml")
+	gmq.GmqRegister(rabbitMQRegisterName, &mq2.RabbitMQConn{
+		RabbitMQConfig: mq2.RabbitMQConfig{
+			Addr:     "localhost",
+			Port:     "5672",
+			Username: "guest",
+			Password: "guest",
+		},
+	})
 	defer gmq.Shutdown(ctx)
 }
 

@@ -263,6 +263,13 @@ func newGmqProxy(name string, plugin Gmq) *GmqProxy {
 	if plugin == nil {
 		panic(fmt.Sprintf("plugin cannot be nil for %s", name))
 	}
+
+	// Initialize pluginUnique interface - the same plugin instance implements both Gmq and GmqUnique
+	// Some plugins may not support delayed messages or negative acknowledgment (e.g., Redis)
+	if pluginUnique, ok := plugin.(GmqUnique); ok {
+		p.pluginUnique = pluginUnique
+	}
+
 	if stateSetter, ok := plugin.(GmqStateSetter); ok {
 		stateSetter.SetSubscribedSetter(p.setSubscribedState)
 	}
@@ -600,6 +607,45 @@ func (p *GmqProxy) cleanupSubscribe(subKey string) {
 
 	// Reset subscription state
 	p.setSubscribedState(false)
+}
+
+// validateDeleteMsg validates the delete message structure.
+// Ensures the topic name is provided for deletion.
+func validateDeleteMsg(msg types.Delete) error {
+	if msg.GetDelTopic() == "" {
+		return types.ErrTopicRequired
+	}
+	return nil
+}
+
+// GmqDelete deletes a topic/queue with unified monitoring and validation.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delete message configuration
+//
+// Returns error if validation fails or deletion fails
+func (p *GmqProxy) GmqDelete(ctx context.Context, msg types.Delete) error {
+	logger := utils.GetLogger().WithPlugin(p.name)
+	if err := validateDeleteMsg(msg); err != nil {
+		logger.Error("validate delete message failed", "error", err)
+		return fmt.Errorf("validate delete message failed: %w", err)
+	}
+	return p.plugin.GmqDelete(ctx, msg)
+}
+
+// GmqDeleteDelay deletes a delayed topic/queue with unified monitoring and validation.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delete message configuration
+//
+// Returns error if validation fails or deletion fails
+func (p *GmqProxy) GmqDeleteDelay(ctx context.Context, msg types.Delete) error {
+	logger := utils.GetLogger().WithPlugin(p.name)
+	if err := validateDeleteMsg(msg); err != nil {
+		logger.Error("validate delete message failed", "error", err)
+		return fmt.Errorf("validate delete message failed: %w", err)
+	}
+	return p.pluginUnique.GmqDeleteDelay(ctx, msg)
 }
 
 // ============================================================

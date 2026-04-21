@@ -40,6 +40,12 @@ type RedisSubMessage struct {
 	types.SubMessage
 }
 
+// RedisDelMessage represents a Redis delete message structure.
+// Embeds DelMessage for basic delete fields.
+type RedisDelMessage struct {
+	types.DelMessage
+}
+
 // RedisConn is the Redis message queue implementation using Redis Streams.
 // Provides publish, subscribe, and acknowledgment capabilities.
 // Note: Delayed messages are not supported in this implementation.
@@ -61,6 +67,7 @@ type RedisSubMessage struct {
 type RedisConn struct {
 	conn          *redis.Client // Redis client connection (go-redis client)
 	setSubscribed func(bool)
+	RedisConfig
 }
 
 // SetSubscribedSetter sets the callback function to update subscription status.
@@ -71,12 +78,12 @@ func (c *RedisConn) SetSubscribedSetter(setter func(bool)) {
 	c.setSubscribed = setter
 }
 
-// redisConfig holds Redis connection configuration parameters.
+// RedisConfig holds Redis connection configuration parameters.
 // Used with MapToStruct to convert config map to struct.
-type redisConfig struct {
+type RedisConfig struct {
 	Addr           string // Redis server address
 	Port           string // Redis server port
-	Db             int    // Redis database number
+	DB             int    // Redis database number
 	Username       string // authentication username
 	Password       string // authentication password
 	PoolSize       int    // connection pool size
@@ -112,11 +119,16 @@ func (c *RedisConn) GmqGetConn(_ context.Context) any {
 //
 // Returns error if configuration is invalid
 func (c *RedisConn) GmqConnect(ctx context.Context, cfg map[string]any) (err error) {
-	config := new(redisConfig)
-	if err = utils.MapToStruct(config, cfg); err != nil {
-		redisLogger.Error("config parse failed", "error", err)
-		return fmt.Errorf("%s: config: %w", redisPluginName, err)
+	config := new(RedisConfig)
+	if cfg != nil {
+		if err = utils.MapToStruct(config, cfg); err != nil {
+			redisLogger.Error("config parse failed", "error", err)
+			return fmt.Errorf("%s: config: %w", redisPluginName, err)
+		}
+	} else {
+		config = &c.RedisConfig
 	}
+
 	if config.Addr == "" {
 		redisLogger.Error("config validation failed", "error", types.ErrConfigAddrRequired)
 		return fmt.Errorf("%s: config: %w", redisPluginName, types.ErrConfigAddrRequired)
@@ -144,12 +156,14 @@ func (c *RedisConn) GmqConnect(ctx context.Context, cfg map[string]any) (err err
 	}
 	options := redis.Options{
 		Addr:         config.Addr + ":" + config.Port,
-		DB:           config.Db,
+		DB:           config.DB,
 		Dialer:       redisDialer,
 		MinIdleConns: 2, // maintain 2 idle connections to avoid empty connection pool
 	}
-	if config.Username != "" && config.Password != "" {
+	if config.Username != "" {
 		options.Username = config.Username
+	}
+	if config.Password != "" {
 		options.Password = config.Password
 	}
 	if config.PoolSize > 0 {
@@ -204,6 +218,12 @@ func (c *RedisConn) GmqPublish(ctx context.Context, msg types.Publish) (err erro
 		return fmt.Errorf("%s: convert_data: %w", redisPluginName, err)
 	}
 
+	var args []interface{}
+	for k, v := range toMap {
+		valStr := cast.ToString(v)
+		args = append(args, k, valStr)
+	}
+
 	// Build XAdd argument structure (type-safe, clear parameter meaning)
 	addArgs := &redis.XAddArgs{
 		Stream: cfg.Topic, // stream name
@@ -238,7 +258,7 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 		redisLogger.Error("connection is nil")
 		return fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
 	}
-
+LOOP:
 	topic := "gmq:stream:" + cfg.Topic
 	group := fmt.Sprintf("%s:default:group", cfg.ConsumerName)
 
@@ -255,6 +275,10 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 	// Proxy layer already runs this in a goroutine, so we don't need another one
 	err = c.consumeLoop(ctx, cfg, group, sub, topic)
 	if err != nil && ctx.Err() == nil {
+		if strings.Contains(err.Error(), "No such key") {
+			time.Sleep(time.Second)
+			goto LOOP
+		}
 		// Error occurred but context wasn't cancelled, notify proxy layer
 		redisLogger.Error("consume loop failed", "stream", topic, "consumer", cfg.ConsumerName, "error", err)
 		if c.setSubscribed != nil {
@@ -262,7 +286,6 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 		}
 		return err
 	}
-	redisLogger.Info("subscribe success", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
 	return nil
 }
 
@@ -276,6 +299,7 @@ func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err 
 //   - sub: subscription interface with callback handlers
 //   - topic: stream topic name (with prefix)
 func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group string, sub types.Subscribe, topic string) error {
+	redisLogger.Info("subscribe success", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
 	// Build structured parameters (clear parameter meaning, no need to remember command order)
 	readArgs := &redis.XReadGroupArgs{
 		Group:    group,                        // consumer group name
@@ -344,6 +368,29 @@ func (c *RedisConn) consumeLoop(ctx context.Context, cfg *RedisSubMessage, group
 			}
 		}
 	}
+}
+
+// GmqDelete deletes a Redis Stream (topic) from Redis.
+// This operation removes the entire stream and all its messages.
+// Parameters:
+//   - ctx: context for timeout/cancellation control
+//   - msg: delete message configuration (must be *RedisDelMessage)
+//
+// Returns error if deletion fails
+func (c *RedisConn) GmqDelete(ctx context.Context, msg types.Delete) (err error) {
+	cfg, ok := msg.(*RedisDelMessage)
+	if !ok {
+		redisLogger.Error("delete:invalid message type", "expected", "*RedisDelMessage", "delete", redisPluginName)
+		return fmt.Errorf("%s: delete: %w: expected *RedisDelMessage", redisPluginName, types.ErrInvalidMessageType)
+	}
+	result := c.conn.Del(ctx, cfg.Topic)
+	deletedCount := result.Val()
+	if err = result.Err(); err != nil {
+		redisLogger.Error("delete failed", "topic", cfg.Topic, "error", err)
+		return fmt.Errorf("%s: delete: %w", redisPluginName, err)
+	}
+	redisLogger.Info("delete success", "topic", cfg.Topic, "deletedCount", deletedCount)
+	return
 }
 
 // GmqAck acknowledges successful processing of a Redis Stream message.

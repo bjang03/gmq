@@ -2,9 +2,10 @@ package mq
 
 import (
 	"context"
+	"testing"
+
 	gmq "github.com/bjang03/gmq/core/gmq"
 	mq2 "github.com/bjang03/gmq/mq"
-	"testing"
 
 	"github.com/bjang03/gmq/types"
 )
@@ -13,7 +14,13 @@ var redisRegisterName = "redis-test"
 
 // Redis register
 func redisRegister(ctx context.Context) {
-	gmq.Init("config.yml")
+	gmq.GmqRegister(redisRegisterName, &mq2.RedisConn{
+		RedisConfig: mq2.RedisConfig{
+			Addr: "localhost",
+			Port: "6379",
+			DB:   0,
+		},
+	})
 	defer gmq.Shutdown(ctx)
 }
 

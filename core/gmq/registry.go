@@ -21,10 +21,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/bjang03/gmq/mq"
 	"github.com/bjang03/gmq/types"
 	"github.com/bjang03/gmq/utils"
-	"github.com/spf13/cast"
 )
 
 // GmqPlugins stores all registered message queue plugins (name -> GmqProxy)
@@ -36,13 +34,18 @@ var (
 	pluginCancelFuncs = make(map[string]context.CancelFunc)
 )
 
-// GmqRegisterPlugins registers a message queue plugin with a given name.
+// GmqRegister registers a message queue plugin with a given name.
 // If the name is empty or already registered, this function logs a warning and returns without error.
 // The plugin is wrapped in a GmqProxy for unified monitoring and retry logic.
 // Parameters:
 //   - name: unique identifier for the plugin (used for logging and plugin retrieval)
 //   - plugin: message queue implementation instance (must implement Gmq interface)
-func GmqRegisterPlugins(name string, plugin Gmq) {
+func GmqRegister(name string, plugin Gmq) {
+	gmqRegisterPlugins(name, plugin)
+	connectPlugins(name, nil)
+}
+
+func gmqRegisterPlugins(name string, plugin Gmq) {
 	utils.GetLogger().Info("registering plugin", "name", name, "plugin", name)
 	if name == "" {
 		utils.GetLogger().Warn("plugin name cannot be empty", "plugin", "registry")
@@ -65,28 +68,28 @@ func GmqRegisterPlugins(name string, plugin Gmq) {
 //
 //	gmq.Init()  // Load config and register plugins
 //	defer gmq.Shutdown(context.Background())  // Clean shutdown
-func Init(configPath string) {
-	config, err := utils.LoadGMQConfig(configPath)
-	if err != nil {
-		utils.GetLogger().Error("failed to load config", "error", err, "plugin", "registry")
-		return
-	}
-	for secondLevel, thirdLevelData := range config.GMQ {
-		for thirdLevel, configItems := range thirdLevelData {
-			configMap := cast.ToStringMap(configItems)
-			if secondLevel == "nats" {
-				GmqRegisterPlugins(thirdLevel, &mq.NatsConn{})
-			}
-			if secondLevel == "redis" {
-				GmqRegisterPlugins(thirdLevel, &mq.RedisConn{})
-			}
-			if secondLevel == "rabbitmq" {
-				GmqRegisterPlugins(thirdLevel, &mq.RabbitMQConn{})
-			}
-			connectPlugins(thirdLevel, configMap)
-		}
-	}
-}
+//func Init(configPath string) {
+//	config, err := utils.LoadGMQConfig(configPath)
+//	if err != nil {
+//		utils.GetLogger().Error("failed to load config", "error", err, "plugin", "registry")
+//		return
+//	}
+//	for secondLevel, thirdLevelData := range config.GMQ {
+//		for thirdLevel, configItems := range thirdLevelData {
+//			configMap := cast.ToStringMap(configItems)
+//			if secondLevel == "nats" {
+//				GmqRegisterPlugins(thirdLevel, &mq.NatsConn{})
+//			}
+//			if secondLevel == "redis" {
+//				GmqRegisterPlugins(thirdLevel, &mq.RedisConn{})
+//			}
+//			if secondLevel == "rabbitmq" {
+//				GmqRegisterPlugins(thirdLevel, &mq.RabbitMQConn{})
+//			}
+//			connectPlugins(thirdLevel, configMap)
+//		}
+//	}
+//}
 
 // connectPlugins starts background goroutine to automatically maintain connection status and reconnect on disconnect.
 // It implements exponential backoff retry logic with configurable delay limits.

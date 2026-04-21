@@ -2,52 +2,62 @@ package mq
 
 import (
 	"context"
-	gmq "github.com/bjang03/gmq/core/gmq"
-	"github.com/bjang03/gmq/types"
 	"testing"
+
+	gmq "github.com/bjang03/gmq/core/gmq"
+	mq2 "github.com/bjang03/gmq/mq"
+	"github.com/bjang03/gmq/types"
 )
 
-var natsRegisterName = "nats-test"
+var rabbitMQRegisterName = "rabbitmq-test"
 
-// NATS 注册
-func natsRegister(ctx context.Context) {
-	gmq.GmqRegisterPlugins(natsRegisterName, &NatsConn{})
-	gmq.Init()
+// RabbitMQ register
+func rabbitMQRegister(ctx context.Context) {
+	gmq.GmqRegister(rabbitMQRegisterName, &mq2.RabbitMQConn{
+		RabbitMQConfig: mq2.RabbitMQConfig{
+			Addr:     "localhost",
+			Port:     "5672",
+			Username: "guest",
+			Password: "guest",
+		},
+	})
 	defer gmq.Shutdown(ctx)
 }
 
-// ============ 消息发布测试 ============
+// ============ Message Publish Tests ============
 
-// TestNatsPublish NATS发布消息
-func TestNatsPublish(t *testing.T) {
+// TestRabbitMQPublish tests RabbitMQ publish message
+func TestRabbitMQPublish(t *testing.T) {
 	ctx := context.Background()
-	natsRegister(ctx)
+	rabbitMQRegister(ctx)
 
-	getGmq := gmq.GetGmq(natsRegisterName)
+	getGmq := gmq.GetGmq(rabbitMQRegisterName)
 
-	topic := "test-publish-topic"
+	topic := "test.publish.topic"
 	testData := map[string]interface{}{
 		"message": "Test message for publish",
 		"index":   1,
 	}
-	pubMsg := &NatsPubMessage{
+
+	pubMsg := &mq2.RabbitMQPubMessage{
 		PubMessage: types.PubMessage{
 			Topic: topic,
 			Data:  testData,
 		},
 		Durable: true,
 	}
+
 	if err := getGmq.GmqPublish(ctx, pubMsg); err != nil {
 		t.Fatalf("Failed to publish message: %v", err)
 	}
 }
 
-// TestNatsPublishWithDifferentDataTypes NATS发布不同类型的数据
-func TestNatsPublishWithDifferentDataTypes(t *testing.T) {
+// TestRabbitMQPublishWithDifferentDataTypes tests RabbitMQ publish with different data types
+func TestRabbitMQPublishWithDifferentDataTypes(t *testing.T) {
 	ctx := context.Background()
-	natsRegister(ctx)
+	rabbitMQRegister(ctx)
 
-	getGmq := gmq.GetGmq(natsRegisterName)
+	getGmq := gmq.GetGmq(rabbitMQRegisterName)
 
 	topic := "test.datatypes.topic"
 
@@ -65,7 +75,7 @@ func TestNatsPublishWithDifferentDataTypes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			pubMsg := &NatsPubMessage{
+			pubMsg := &mq2.RabbitMQPubMessage{
 				PubMessage: types.PubMessage{
 					Topic: topic,
 					Data:  tc.data,
@@ -80,19 +90,19 @@ func TestNatsPublishWithDifferentDataTypes(t *testing.T) {
 	}
 }
 
-// TestNatsPublishNonDurable NATS发布非持久化消息
-func TestNatsPublishNonDurable(t *testing.T) {
+// TestRabbitMQPublishNonDurable tests RabbitMQ publish non-durable message
+func TestRabbitMQPublishNonDurable(t *testing.T) {
 	ctx := context.Background()
-	natsRegister(ctx)
+	rabbitMQRegister(ctx)
 
-	getGmq := gmq.GetGmq(natsRegisterName)
+	getGmq := gmq.GetGmq(rabbitMQRegisterName)
 
-	topic := "test-nondurable-topic"
+	topic := "test.nondurable.topic"
 	testData := map[string]interface{}{
 		"message": "Test non-durable message",
 	}
 
-	pubMsg := &NatsPubMessage{
+	pubMsg := &mq2.RabbitMQPubMessage{
 		PubMessage: types.PubMessage{
 			Topic: topic,
 			Data:  testData,
@@ -105,22 +115,22 @@ func TestNatsPublishNonDurable(t *testing.T) {
 	}
 }
 
-// ============ 延迟消息测试 ============
+// ============ Delay Message Tests ============
 
-// TestNatsPublishDelay NATS发布延迟消息
-func TestNatsPublishDelay(t *testing.T) {
+// TestRabbitMQPublishDelay tests RabbitMQ publish delay message
+func TestRabbitMQPublishDelay(t *testing.T) {
 	ctx := context.Background()
-	natsRegister(ctx)
+	rabbitMQRegister(ctx)
 
-	getGmq := gmq.GetGmq(natsRegisterName)
+	getGmq := gmq.GetGmq(rabbitMQRegisterName)
 
-	topic := "test-delay-topic"
+	topic := "test.delay.topic"
 	testData := map[string]interface{}{
 		"message": "Test delay message",
 		"index":   1,
 	}
 
-	delayMsg := &NatsPubDelayMessage{
+	delayMsg := &mq2.RabbitMQPubDelayMessage{
 		PubDelayMessage: types.PubDelayMessage{
 			DelaySeconds: 2,
 			PubMessage: types.PubMessage{
@@ -136,18 +146,18 @@ func TestNatsPublishDelay(t *testing.T) {
 	}
 }
 
-// ============ 消息订阅测试 ============
+// ============ Message Subscribe Tests ============
 
-// TestNatsSubscribe NATS订阅消息
-func TestNatsSubscribe(t *testing.T) {
+// TestRabbitMQSubscribe tests RabbitMQ subscribe message
+func TestRabbitMQSubscribe(t *testing.T) {
 	ctx := context.Background()
-	natsRegister(ctx)
+	rabbitMQRegister(ctx)
 
-	getGmq := gmq.GetGmq(natsRegisterName)
+	getGmq := gmq.GetGmq(rabbitMQRegisterName)
 
 	topic := "test.subscribe.topic"
 
-	subMsg := &NatsSubMessage{
+	subMsg := &mq2.RabbitMQSubMessage{
 		SubMessage: types.SubMessage{
 			Topic:        topic,
 			ConsumerName: "test-consumer",
@@ -158,37 +168,10 @@ func TestNatsSubscribe(t *testing.T) {
 				return nil
 			},
 		},
-		Durable:    true,
+		Durable:    false,
 		IsDelayMsg: false,
 	}
-	if err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
-		t.Logf("Subscribe error: %v", err)
-	}
-}
 
-// TestNatsSubscribeDelay NATS订阅延迟消息
-func TestNatsSubscribeDelay(t *testing.T) {
-	ctx := context.Background()
-	natsRegister(ctx)
-
-	getGmq := gmq.GetGmq(natsRegisterName)
-
-	topic := "test.subscribe.delay.topic"
-
-	subMsg := &NatsSubMessage{
-		SubMessage: types.SubMessage{
-			Topic:        topic,
-			ConsumerName: "test-delay-consumer",
-			AutoAck:      true,
-			FetchCount:   1,
-			HandleFunc: func(ctx context.Context, message any) error {
-				t.Logf("Received delay message: %s", message)
-				return nil
-			},
-		},
-		Durable:    true,
-		IsDelayMsg: true,
-	}
 	if err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
 		t.Logf("Subscribe error: %v", err)
 	}

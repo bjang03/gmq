@@ -1,3 +1,5 @@
+// Package utils provides utility functions for the GMQ message queue system.
+// It includes logging utilities, validation, configuration loading, and type conversion helpers.
 package utils
 
 import (
@@ -12,9 +14,12 @@ var (
 	validate *validator.Validate
 )
 
+// init initializes the validator package.
+// Creates a new validator instance and registers a custom tag name parsing function
+// that uses json field names instead of struct field names for validation error messages.
 func init() {
 	validate = validator.New()
-	// 注册自定义标签名解析函数
+	// Register custom tag name parsing function
 	validate.RegisterTagNameFunc(func(fld reflect.StructField) string {
 		name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
 		if name == "-" {
@@ -24,18 +29,26 @@ func init() {
 	})
 }
 
-// ValidateStruct 验证结构体
+// ValidateStruct validates a struct using registered validation rules.
+// Uses go-playground/validator for field validation.
+// Parameters:
+//   - s: the struct to validate (should be a pointer to struct)
+// Returns formatted error message if validation fails
 func ValidateStruct(s interface{}) error {
 	if err := validate.Struct(s); err != nil {
 		if validationErrors, ok := err.(validator.ValidationErrors); ok {
-			return fmt.Errorf("参数校验失败: %s", FormatValidationError(validationErrors))
+			return fmt.Errorf("validation failed: %s", FormatValidationError(validationErrors))
 		}
-		return fmt.Errorf("参数校验失败: %v", err)
+		return fmt.Errorf("validation failed: %v", err)
 	}
 	return nil
 }
 
-// FormatValidationError 格式化验证错误
+// FormatValidationError formats validation errors into human-readable messages.
+// Converts validator.ValidationErrors to a semicolon-separated string of field-level errors.
+// Parameters:
+//   - errs: validation errors from the validator
+// Returns formatted error message string
 func FormatValidationError(errs validator.ValidationErrors) string {
 	var errMsgs []string
 	for _, err := range errs {
@@ -45,19 +58,19 @@ func FormatValidationError(errs validator.ValidationErrors) string {
 
 		switch tag {
 		case "required":
-			errMsgs = append(errMsgs, fmt.Sprintf("%s 不能为空", field))
+			errMsgs = append(errMsgs, fmt.Sprintf("%s is required", field))
 		case "min":
-			errMsgs = append(errMsgs, fmt.Sprintf("%s 长度不能小于 %s", field, param))
+			errMsgs = append(errMsgs, fmt.Sprintf("%s length must be at least %s", field, param))
 		case "max":
-			errMsgs = append(errMsgs, fmt.Sprintf("%s 长度不能大于 %s", field, param))
+			errMsgs = append(errMsgs, fmt.Sprintf("%s length must be at most %s", field, param))
 		case "email":
-			errMsgs = append(errMsgs, fmt.Sprintf("%s 邮箱格式不正确", field))
+			errMsgs = append(errMsgs, fmt.Sprintf("%s must be a valid email", field))
 		case "url":
-			errMsgs = append(errMsgs, fmt.Sprintf("%s URL格式不正确", field))
+			errMsgs = append(errMsgs, fmt.Sprintf("%s must be a valid URL", field))
 		case "oneof":
-			errMsgs = append(errMsgs, fmt.Sprintf("%s 必须是以下值之一: %s", field, param))
+			errMsgs = append(errMsgs, fmt.Sprintf("%s must be one of: %s", field, param))
 		default:
-			errMsgs = append(errMsgs, fmt.Sprintf("%s 校验失败: %s", field, tag))
+			errMsgs = append(errMsgs, fmt.Sprintf("%s validation failed: %s", field, tag))
 		}
 	}
 	return strings.Join(errMsgs, "; ")

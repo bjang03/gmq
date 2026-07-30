@@ -35,6 +35,9 @@ const (
 type subMessage struct {
 	SubMsg     any                                                        // Original subscription message
 	HandleFunc func(ctx context.Context, message *types.AckMessage) error // Wrapped handler function for acknowledgment control
+
+	cleanupMu sync.Mutex // guards cleanup
+	mqCleanup func()     // MQ-level cleanup function (e.g. drain/cancel consumer on server side)
 }
 
 // GetSubMsg returns the subscription message
@@ -45,6 +48,27 @@ func (m *subMessage) GetSubMsg() any {
 // GetAckHandleFunc returns the acknowledgment handler function
 func (m *subMessage) GetAckHandleFunc() func(ctx context.Context, message *types.AckMessage) error {
 	return m.HandleFunc
+}
+
+// SetMQCleanup stores the MQ-level cleanup function.
+// The cleanup function is called when the subscription is drained,
+// to release server-side resources (e.g. NATS consumer drain, RabbitMQ cancel).
+func (m *subMessage) SetMQCleanup(cleanup func()) {
+	m.cleanupMu.Lock()
+	defer m.cleanupMu.Unlock()
+	if m.mqCleanup == nil {
+		m.mqCleanup = cleanup
+	}
+}
+
+// GetMQCleanup atomically retrieves and clears the MQ-level cleanup function.
+// Returns nil if no cleanup has been set.
+func (m *subMessage) GetMQCleanup() func() {
+	m.cleanupMu.Lock()
+	defer m.cleanupMu.Unlock()
+	fn := m.mqCleanup
+	m.mqCleanup = nil
+	return fn
 }
 
 // ============================================================
@@ -492,36 +516,42 @@ func (p *GmqProxy) GmqPublishDelay(ctx context.Context, msg types.PublishDelay) 
 // Message Subscribe
 // ============================================================
 
-// GmqSubscribe subscribes to messages with unified monitoring and retry logic
-// This method is non-blocking - it starts a background goroutine to handle the subscription
-func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) error {
+// GmqSubscribe subscribes to messages with unified monitoring and retry logic.
+// This method is non-blocking - it starts a background goroutine to handle the subscription.
+// Returns a Subscription handle that can be used to Unsubscribe later.
+func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) (*Subscription, error) {
 	logger := utils.GetLogger().WithPlugin(p.name)
 
 	// Extract and validate subscription message
 	message, ok := msg.GetSubMsg().(*types.SubMessage)
 	if !ok {
 		logger.Error(types.ErrInvalidMessageType.Error(), "expected", "*types.SubMessage", "got", msg.GetSubMsg())
-		return fmt.Errorf("%w: expected *types.SubMessage", types.ErrInvalidMessageType)
+		return nil, fmt.Errorf("%w: expected *types.SubMessage", types.ErrInvalidMessageType)
 	}
 
 	if err := validateSubscribeMsg(message); err != nil {
 		logger.Error("validate subscribe message failed", "error", err)
-		return fmt.Errorf("validate subscribe message failed: %w", err)
+		return nil, fmt.Errorf("validate subscribe message failed: %w", err)
+	}
+
+	subKey := message.Topic + ":" + message.ConsumerName
+
+	// Build cleanup function for auto-unsubscribe
+	cleanupFn := func() {
+		p.cleanupSubscribe(subKey)
 	}
 
 	// Wrap handler
 	sub := &subMessage{
 		SubMsg:     msg,
-		HandleFunc: p.wrapHandleFunc(message.HandleFunc, message.AutoAck),
+		HandleFunc: p.wrapHandleFunc(message.HandleFunc, message.AutoAck, message.AutoUnsubscribe, cleanupFn),
 	}
 	message.HandleFunc = nil // Avoid duplicate reference
-
-	subKey := message.Topic + ":" + message.ConsumerName
 
 	// Check for duplicate subscription
 	if _, loaded := p.subscribe.Load(subKey); loaded {
 		logger.Warn("already subscribed to topic", "topic", message.Topic, "consumer", message.ConsumerName)
-		return fmt.Errorf("%w: topic=%s, consumer=%s", types.ErrSubscriptionAlreadyExists, message.Topic, message.ConsumerName)
+		return nil, fmt.Errorf("%w: topic=%s, consumer=%s", types.ErrSubscriptionAlreadyExists, message.Topic, message.ConsumerName)
 	}
 
 	// Create subscription-specific context
@@ -532,7 +562,7 @@ func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) error 
 	if loaded {
 		cancel() // Cancel created context to prevent leak
 		logger.Warn("already subscribed to topic", "topic", message.Topic, "consumer", message.ConsumerName)
-		return fmt.Errorf("%w: topic=%s, consumer=%s", types.ErrSubscriptionAlreadyExists, message.Topic, message.ConsumerName)
+		return nil, fmt.Errorf("%w: topic=%s, consumer=%s", types.ErrSubscriptionAlreadyExists, message.Topic, message.ConsumerName)
 	}
 
 	// Store subscription parameters for reconnection recovery
@@ -553,17 +583,28 @@ func (p *GmqProxy) GmqSubscribe(ctx context.Context, msg types.Subscribe) error 
 	// Start monitor (if needed)
 	p.monitor.Start(p.getSubscribeCount())
 
-	return nil
+	// Return subscription handle
+	return &Subscription{
+		topic:        message.Topic,
+		consumerName: message.ConsumerName,
+		subKey:       subKey,
+		proxy:        p,
+	}, nil
 }
 
 // runSubscribe runs the actual subscription in a background goroutine
+// It calls the plugin's GmqSubscribe with retry, captures the MQ-level cleanup function,
+// and handles graceful shutdown when the context is cancelled.
 func (p *GmqProxy) runSubscribe(ctx context.Context, subKey string, sub *subMessage, message *types.SubMessage) {
 	logger := utils.GetLogger().WithPlugin(p.name)
 
-	// Panic recovery
+	// Panic recovery — also perform MQ-level cleanup on panic
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("subscribe goroutine panic recovered", "subKey", subKey, "panic", r)
+			if cleanup := sub.GetMQCleanup(); cleanup != nil {
+				cleanup()
+			}
 			p.cleanupSubscribe(subKey)
 		}
 	}()
@@ -575,9 +616,15 @@ func (p *GmqProxy) runSubscribe(ctx context.Context, subKey string, sub *subMess
 	}
 	// Set subscription flag
 	p.setSubscribedState(true)
-	// Execute subscription with retry
+	// Execute subscription with retry, capturing MQ cleanup
+	var mqCleanup func()
 	err := p.executeWithRetry(ctx, "subscribe", message.Topic, func() error {
-		return p.plugin.GmqSubscribe(ctx, sub)
+		var err error
+		mqCleanup, err = p.plugin.GmqSubscribe(ctx, sub)
+		if mqCleanup != nil {
+			sub.SetMQCleanup(mqCleanup) // Store cleanup immediately after successful subscribe
+		}
+		return err
 	})
 
 	if err != nil {
@@ -588,14 +635,32 @@ func (p *GmqProxy) runSubscribe(ctx context.Context, subKey string, sub *subMess
 	// Wait for context cancellation (subscription ends)
 	<-ctx.Done()
 	logger.Debug("subscribe goroutine exiting", "subKey", subKey, "reason", ctx.Err())
+
+	// Perform MQ-level cleanup after context cancellation
+	// This covers the race window where cleanupSubscribe ran before SetMQCleanup was called
+	if cleanup := sub.GetMQCleanup(); cleanup != nil {
+		cleanup()
+	}
 }
 
-// cleanupSubscribe cleans up subscription resources (clears both subscribe and subscribeParams)
+// cleanupSubscribe cleans up subscription resources (clears both subscribe and subscribeParams).
+// It performs two levels of cleanup:
+//  1. Proxy level: cancels the subscription context and removes internal tracking
+//  2. MQ level:    calls the stored MQ-level cleanup (e.g. drain/cancel server-side subscription)
 func (p *GmqProxy) cleanupSubscribe(subKey string) {
-	// Cancel context
+	// Cancel context (signal the goroutine to stop)
 	if value, loaded := p.subscribe.Load(subKey); loaded {
 		if cancel, ok := value.(context.CancelFunc); ok && cancel != nil {
 			cancel()
+		}
+	}
+
+	// Call MQ-level cleanup (e.g. NATS consumer drain, RabbitMQ cancel, Redis XGroupDestroy)
+	if value, loaded := p.subscribeParams.Load(subKey); loaded {
+		if subMsg, ok := value.(*subMessage); ok {
+			if cleanup := subMsg.GetMQCleanup(); cleanup != nil {
+				cleanup()
+			}
 		}
 	}
 
@@ -667,7 +732,7 @@ func (p *GmqProxy) GmqNak(ctx context.Context, msg *types.AckMessage) error {
 // ============================================================
 
 // wrapHandleFunc wraps the user's handler to control ACK at the proxy layer
-func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool) func(ctx context.Context, message *types.AckMessage) error {
+func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message any) error, autoAck bool, autoUnsubscribe bool, cleanupFn func()) func(ctx context.Context, message *types.AckMessage) error {
 	// Cache necessary references to avoid closure capturing entire GmqProxy
 	plugin := p.plugin
 	pluginUnique := p.pluginUnique
@@ -702,6 +767,11 @@ func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message
 			}
 		}
 
+		// Auto-unsubscribe after successful processing and acknowledgment
+		if autoUnsubscribe && err == nil && cleanupFn != nil {
+			cleanupFn()
+		}
+
 		return err
 	}
 }
@@ -713,6 +783,7 @@ func (p *GmqProxy) wrapHandleFunc(originalFunc func(ctx context.Context, message
 // clearSubscribe clears all active subscriptions
 func (p *GmqProxy) clearSubscribe() {
 	var cancels []context.CancelFunc
+	var cleanups []func()
 	keysToDelete := []string{}
 
 	// Collect cancel functions and keys
@@ -730,6 +801,17 @@ func (p *GmqProxy) clearSubscribe() {
 		return true
 	})
 
+	// Collect MQ-level cleanups
+	for _, subKey := range keysToDelete {
+		if value, loaded := p.subscribeParams.Load(subKey); loaded {
+			if subMsg, ok := value.(*subMessage); ok {
+				if cleanup := subMsg.GetMQCleanup(); cleanup != nil {
+					cleanups = append(cleanups, cleanup)
+				}
+			}
+		}
+	}
+
 	// Clean up both subscribe and subscribeParams maps
 	for _, subKey := range keysToDelete {
 		p.subscribe.Delete(subKey)
@@ -739,5 +821,10 @@ func (p *GmqProxy) clearSubscribe() {
 	// Call cancel functions after clearing maps to ensure clean shutdown
 	for _, cancel := range cancels {
 		cancel()
+	}
+
+	// Call MQ-level cleanups after cancellation
+	for _, cleanup := range cleanups {
+		cleanup()
 	}
 }

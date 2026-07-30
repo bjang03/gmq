@@ -172,7 +172,7 @@ func TestRabbitMQSubscribe(t *testing.T) {
 		IsDelayMsg: false,
 	}
 
-	if err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
+	if _, err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
 		t.Logf("Subscribe error: %v", err)
 	}
 }

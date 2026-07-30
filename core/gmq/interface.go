@@ -23,14 +23,14 @@ import (
 //   - Use context.WithTimeout to set operation timeouts
 //   - Use context.WithCancel for manual cancellation
 type Gmq interface {
-	GmqGetConn(ctx context.Context) any                          // Get the underlying connection object for direct access
-	GmqConnect(ctx context.Context, cfg map[string]any) error    // Establish connection to the message queue server
-	GmqPublish(ctx context.Context, msg types.Publish) error     // Publish a message to the specified topic
-	GmqSubscribe(ctx context.Context, msg types.Subscribe) error // Subscribe to messages from a topic with a consumer
-	GmqPing(ctx context.Context) bool                            // Check if the connection is alive and working
-	GmqClose(ctx context.Context) error                          // Close the connection and cleanup resources
-	GmqDelete(ctx context.Context, msg types.Delete) error       // Delete a topic/queue and all its messages
-	GmqAck(ctx context.Context, msg *types.AckMessage) error     // Acknowledge successful message processing
+	GmqGetConn(ctx context.Context) any                                    // Get the underlying connection object for direct access
+	GmqConnect(ctx context.Context, cfg map[string]any) error              // Establish connection to the message queue server
+	GmqPublish(ctx context.Context, msg types.Publish) error               // Publish a message to the specified topic
+	GmqSubscribe(ctx context.Context, msg types.Subscribe) (func(), error) // Subscribe to messages, returns MQ-level cleanup function
+	GmqPing(ctx context.Context) bool                                      // Check if the connection is alive and working
+	GmqClose(ctx context.Context) error                                    // Close the connection and cleanup resources
+	GmqDelete(ctx context.Context, msg types.Delete) error                 // Delete a topic/queue and all its messages
+	GmqAck(ctx context.Context, msg *types.AckMessage) error               // Acknowledge successful message processing
 }
 
 type GmqStateSetter interface {

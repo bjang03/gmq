@@ -297,22 +297,25 @@ func (c *NatsConn) createPublish(ctx context.Context, topic string, durable bool
 // GmqSubscribe subscribes to NATS messages using JetStream consumer.
 // Creates stream and durable consumer if they don't exist.
 // For delayed messages, checks the X-Delay-Until header and processes only when due.
+// Returns a cleanup function that drains the server-side subscription when called.
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - msg: subscription configuration (must be *NatsSubMessage)
 //
-// Returns error if subscription fails
-func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err error) {
+// Returns:
+//   - cleanup: function to drain/cancel the MQ server-side subscription (nil on error)
+//   - err: error if subscription fails
+func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (func(), error) {
 	cfg, ok := msg.GetSubMsg().(*NatsSubMessage)
 	if !ok {
 		natsLogger.Error("subscribe:invalid message type", "expected", "*NatsSubMessage", "plugin", natsPluginName)
-		return fmt.Errorf("%s: subscribe: %w: expected *NatsSubMessage", natsPluginName, types.ErrInvalidMessageType)
+		return nil, fmt.Errorf("%s: subscribe: %w: expected *NatsSubMessage", natsPluginName, types.ErrInvalidMessageType)
 	}
 	// create Stream
 	streamName, _, err := c.createStream(ctx, cfg.Topic, cfg.Durable, cfg.IsDelayMsg)
 	if err != nil {
 		natsLogger.Error("create stream failed", "topic", cfg.Topic, "error", err)
-		return fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
+		return nil, fmt.Errorf("%s: create_stream: %w", natsPluginName, err)
 	}
 
 	// build Durable Consumer configuration
@@ -333,7 +336,7 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 		// if Consumer already exists, ignore error
 		if !strings.Contains(err.Error(), "consumer name already in use") {
 			natsLogger.Error("add consumer failed", "stream", streamName, "consumer", cfg.ConsumerName, "error", err)
-			return fmt.Errorf("%s: add_consumer: %w", natsPluginName, err)
+			return nil, fmt.Errorf("%s: add_consumer: %w", natsPluginName, err)
 		}
 		natsLogger.Debug("consumer already exists", "stream", streamName, "consumer", cfg.ConsumerName)
 	}
@@ -346,7 +349,7 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 	}
 
 	// use Subscribe to create push subscription
-	_, err = c.js.Subscribe(cfg.Topic, func(natsMsg *nats.Msg) {
+	natsSub, err := c.js.Subscribe(cfg.Topic, func(natsMsg *nats.Msg) {
 		// Check if this is a delayed message and if it's due
 		if cfg.IsDelayMsg {
 			delayUntilStr := natsMsg.Header.Get("X-Delay-Until")
@@ -377,10 +380,16 @@ func (c *NatsConn) GmqSubscribe(ctx context.Context, msg types.Subscribe) (err e
 	}, subOpts...)
 	if err != nil {
 		natsLogger.Error("subscribe failed", "topic", cfg.Topic, "consumer", cfg.ConsumerName, "error", err)
-		return fmt.Errorf("%s: subscribe: %w", natsPluginName, err)
+		return nil, fmt.Errorf("%s: subscribe: %w", natsPluginName, err)
 	}
 	natsLogger.Info("subscribe success", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
-	return nil
+
+	// Return cleanup function: drain the JetStream subscription on the server side
+	return func() {
+		if err = natsSub.Drain(); err != nil {
+			natsLogger.Error("drain nats subscription failed", "subject", cfg.Topic, "consumer", cfg.ConsumerName, "error", err)
+		}
+	}, nil
 }
 
 // createStream creates or updates NATS stream for message persistence.

@@ -247,46 +247,45 @@ func (c *RedisConn) GmqPublish(ctx context.Context, msg types.Publish) (err erro
 //   - sub: subscription configuration (must be *RedisSubMessage)
 //
 // Returns error if subscription fails
-func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err error) {
+func (c *RedisConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (func(), error) {
 	cfg, ok := sub.GetSubMsg().(*RedisSubMessage)
 	if !ok {
 		redisLogger.Error("subscribe:invalid message type", "expected", "*RedisSubMessage", "plugin", redisPluginName)
-		return fmt.Errorf("%s: subscribe: %w: expected *RedisSubMessage", redisPluginName, types.ErrInvalidMessageType)
+		return nil, fmt.Errorf("%s: subscribe: %w: expected *RedisSubMessage", redisPluginName, types.ErrInvalidMessageType)
 	}
 
 	if c.conn == nil {
 		redisLogger.Error("connection is nil")
-		return fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
+		return nil, fmt.Errorf("%s: %w", redisPluginName, types.ErrConnectionNil)
 	}
-LOOP:
+
 	topic := "gmq:stream:" + cfg.Topic
 	group := fmt.Sprintf("%s:default:group", cfg.ConsumerName)
 
-	_, err = c.conn.XGroupCreateMkStream(ctx, topic, group, "0").Result()
+	_, err := c.conn.XGroupCreateMkStream(ctx, topic, group, "0").Result()
 	if err != nil {
 		if !strings.Contains(err.Error(), "BUSYGROUP") && !strings.Contains(err.Error(), "already exists") {
 			redisLogger.Error("create consumer group failed", "stream", topic, "group", group, "error", err)
-			return fmt.Errorf("%s: create_group: %w", redisPluginName, err)
+			return nil, fmt.Errorf("%s: create_group: %w", redisPluginName, err)
 		}
 		redisLogger.Debug("consumer group already exists", "stream", topic, "group", group)
 	}
 
-	// Start consume loop - this will block until context is cancelled
-	// Proxy layer already runs this in a goroutine, so we don't need another one
-	err = c.consumeLoop(ctx, cfg, group, sub, topic)
-	if err != nil && ctx.Err() == nil {
-		if strings.Contains(err.Error(), "No such key") {
-			time.Sleep(time.Second)
-			goto LOOP
+	redisLogger.Info("subscribe success", "topic", cfg.Topic, "consumer", cfg.ConsumerName)
+
+	// Start internal goroutine for the consume loop
+	go c.consumeLoop(ctx, cfg, group, sub, topic)
+
+	// Return cleanup function: destroy the consumer group on Redis server side
+	cleanupTopic := topic
+	cleanupGroup := group
+	return func() {
+		if err = c.conn.XGroupDestroy(ctx, cleanupTopic, cleanupGroup).Err(); err != nil {
+			if !strings.Contains(err.Error(), "NOGROUP") {
+				redisLogger.Warn("xgroup destroy failed during drain", "stream", cleanupTopic, "group", cleanupGroup, "error", err)
+			}
 		}
-		// Error occurred but context wasn't cancelled, notify proxy layer
-		redisLogger.Error("consume loop failed", "stream", topic, "consumer", cfg.ConsumerName, "error", err)
-		if c.setSubscribed != nil {
-			c.setSubscribed(false)
-		}
-		return err
-	}
-	return nil
+	}, nil
 }
 
 // consumeLoop runs in a background goroutine to consume messages from Redis Stream.

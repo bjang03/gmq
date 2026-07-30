@@ -517,23 +517,26 @@ func (c *RabbitMQConn) createPublish(ctx context.Context, topic string, durable 
 // GmqSubscribe subscribes to RabbitMQ messages from a queue.
 // Uses manual acknowledgment mode for reliable message processing.
 // Automatically creates the queue if it doesn't exist.
-// This method blocks until context is cancelled (proxy layer runs it in a goroutine).
+// This method is non-blocking — it starts an internal goroutine for the consume loop
+// and returns a cleanup function to cancel the server-side consumer.
 // Parameters:
 //   - ctx: context for timeout/cancellation control
 //   - sub: subscription configuration (must be *RabbitMQSubMessage)
 //
-// Returns error if subscription fails
-func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (err error) {
+// Returns:
+//   - cleanup: function to cancel the MQ server-side consumer (nil on error)
+//   - err: error if subscription fails
+func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (func(), error) {
 	cfg, ok := sub.GetSubMsg().(*RabbitMQSubMessage)
 	if !ok {
 		rabbitmqLogger.Error("subscribe:invalid message type", "expected", "*RabbitMQSubMessage", "plugin", rabbitmqPluginName)
-		return fmt.Errorf("%s: subscribe: %w: expected *RabbitMQSubMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
+		return nil, fmt.Errorf("%s: subscribe: %w: expected *RabbitMQSubMessage", rabbitmqPluginName, types.ErrInvalidMessageType)
 	}
 
-	_, _, err = c.setupQueue(cfg.Topic, cfg.Durable, cfg.IsDelayMsg)
+	_, _, err := c.setupQueue(cfg.Topic, cfg.Durable, cfg.IsDelayMsg)
 	if err != nil {
 		rabbitmqLogger.Error("setup queue failed", "queue", cfg.Topic, "error", err)
-		return fmt.Errorf("%s: setup_queue: %w", rabbitmqPluginName, err)
+		return nil, fmt.Errorf("%s: setup_queue: %w", rabbitmqPluginName, err)
 	}
 
 	// Cancel existing consumer with same tag before creating new one
@@ -546,11 +549,11 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (e
 
 	if err = c.channel.Qos(cfg.FetchCount, 0, false); err != nil {
 		rabbitmqLogger.Error("set qos failed", "prefetch", cfg.FetchCount, "error", err)
-		return fmt.Errorf("%s: set_qos: %w", rabbitmqPluginName, err)
+		return nil, fmt.Errorf("%s: set_qos: %w", rabbitmqPluginName, err)
 	}
 
 	// Use cfg.ConsumerName as the consumer tag for consistent message distribution
-	// The consumer tag is explicitly cancelled during reconnection to prevent reuse errors
+	// The consumer tag is explicitly cancelled during cleanup to release server-side resources
 	msgs, err := c.channel.Consume(
 		cfg.Topic,        // queue
 		cfg.ConsumerName, // consumer - use configured consumer name as tag
@@ -562,27 +565,40 @@ func (c *RabbitMQConn) GmqSubscribe(ctx context.Context, sub types.Subscribe) (e
 	)
 	if err != nil {
 		rabbitmqLogger.Error("consume failed", "queue", cfg.Topic, "consumerName", cfg.ConsumerName, "error", err)
-		return fmt.Errorf("%s: consume: %w", rabbitmqPluginName, err)
+		return nil, fmt.Errorf("%s: consume: %w", rabbitmqPluginName, err)
 	}
 	rabbitmqLogger.Info("subscribe success", "queue", cfg.Topic, "consumerName", cfg.ConsumerName)
 	// Track active consumer for cleanup during reconnection
 	c.activeConsumers[cfg.Topic] = cfg.ConsumerName
-	// Clean up consumer tracking when exit
-	defer delete(c.activeConsumers, cfg.Topic)
 
-	// Consume messages - this will block until context is cancelled
-	// Proxy layer already runs this in a goroutine, so we don't need another one
-	for msgv := range msgs {
-		if err = sub.GetAckHandleFunc()(ctx, &types.AckMessage{
-			MessageData:     msgv.Body,
-			AckRequiredAttr: &msgv,
-		}); err != nil {
-			rabbitmqLogger.Error("message handler failed", "queue", cfg.Topic, "consumerName", cfg.ConsumerName, "deliveryTag", msgv.DeliveryTag, "error", err)
-			continue
+	// Start internal goroutine for the consume loop
+	go func() {
+		// Clean up consumer tracking when exit
+		defer delete(c.activeConsumers, cfg.Topic)
+		for msgv := range msgs {
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			if err = sub.GetAckHandleFunc()(ctx, &types.AckMessage{
+				MessageData:     msgv.Body,
+				AckRequiredAttr: &msgv,
+			}); err != nil {
+				rabbitmqLogger.Error("message handler failed", "queue", cfg.Topic, "consumerName", cfg.ConsumerName, "deliveryTag", msgv.DeliveryTag, "error", err)
+				continue
+			}
 		}
-	}
+	}()
 
-	return nil
+	// Return cleanup function: cancel the consumer on RabbitMQ server side
+	return func() {
+		if err = c.channel.Cancel(cfg.ConsumerName, false); err != nil {
+			rabbitmqLogger.Warn("cancel consumer failed", "topic", cfg.Topic, "consumer", cfg.ConsumerName, "error", err)
+		}
+	}, nil
 }
 
 // GmqDelete deletes a RabbitMQ queue.

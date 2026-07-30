@@ -90,8 +90,7 @@ func TestNatsPublishDelayMultiple(t *testing.T) {
 			Durable:    true,
 			IsDelayMsg: true,
 		}
-
-		if err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
+		if _, err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
 			t.Fatalf("订阅失败：%v", err)
 		}
 	}()
@@ -307,7 +306,7 @@ func TestNatsSubscribe(t *testing.T) {
 		Durable:    true,
 		IsDelayMsg: false,
 	}
-	if err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
+	if _, err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
 		t.Logf("Subscribe error: %v", err)
 	}
 }
@@ -335,7 +334,7 @@ func TestNatsSubscribeDelay(t *testing.T) {
 		Durable:    true,
 		IsDelayMsg: true,
 	}
-	if err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
+	if _, err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
 		t.Logf("Subscribe error: %v", err)
 	}
 }

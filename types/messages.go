@@ -36,11 +36,12 @@ func (m *PubDelayMessage) GetDelaySeconds() int {
 
 // SubMessage subscription message base structure
 type SubMessage struct {
-	Topic        string                                       // topic name to subscribe to
-	ConsumerName string                                       // consumer name for group consumption (required)
-	AutoAck      bool                                         // when true: acknowledge before processing; when false: acknowledge after successful processing (default: false)
-	FetchCount   int                                          // number of messages to fetch each time (QoS prefetch count, must be > 0)
-	HandleFunc   func(ctx context.Context, message any) error // message handler function (not used directly in wrapped implementation)
+	Topic           string                                       // topic name to subscribe to
+	ConsumerName    string                                       // consumer name for group consumption (required)
+	AutoAck         bool                                         // when true: acknowledge before processing; when false: acknowledge after successful processing (default: false)
+	AutoUnsubscribe bool                                         // when true: automatically unsubscribe after the first successful message processing and acknowledgment
+	FetchCount      int                                          // number of messages to fetch each time (QoS prefetch count, must be > 0)
+	HandleFunc      func(ctx context.Context, message any) error // message handler function (not used directly in wrapped implementation)
 }
 
 // GetSubMsg gets subscription message

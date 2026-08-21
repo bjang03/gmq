@@ -78,13 +78,14 @@ func (m *subMessage) GetMQCleanup() func() {
 // subscribeMonitor manages subscription monitoring and recovery logic
 // Responsibilities: Periodically check connection status, re-establish subscriptions after connection recovery
 type subscribeMonitor struct {
-	name     string        // Monitor name (used for logging)
-	proxy    *GmqProxy     // Associated proxy instance
-	started  int32         // Start state: 0=not started, 1=started
-	stopped  int32         // Stop state: 0=running, 1=stopped
-	stopCh   chan struct{} // Stop signal channel
-	interval time.Duration // Monitoring check interval
-	logger   *utils.Logger // Cached logger instance to avoid repeated creation
+	name        string        // Monitor name (used for logging)
+	proxy       *GmqProxy     // Associated proxy instance
+	started     int32         // Start state: 0=not started, 1=started
+	stopped     int32         // Stop state: 0=running, 1=stopped
+	stopCh      chan struct{} // Stop signal channel
+	noSubLogged int32         // 0=not logged "no subscribe" yet, 1=already logged (only log once per lifecycle)
+	interval    time.Duration // Monitoring check interval
+	logger      *utils.Logger // Cached logger instance to avoid repeated creation
 }
 
 // newSubscribeMonitor creates a new subscription monitor
@@ -143,6 +144,7 @@ func (m *subscribeMonitor) Stop() {
 func (m *subscribeMonitor) Reset() {
 	atomic.StoreInt32(&m.stopped, 0)
 	atomic.StoreInt32(&m.started, 0)
+	atomic.StoreInt32(&m.noSubLogged, 0)
 	// Recreate stop channel to allow restart
 	if m.stopCh == nil {
 		m.stopCh = make(chan struct{})
@@ -171,10 +173,14 @@ func (m *subscribeMonitor) run() {
 func (m *subscribeMonitor) tick() {
 	// Stop monitor when there are no subscriptions
 	if m.proxy.getSubscribeCount() == 0 {
-		m.logger.Info("no subscribe, monitor stopping")
+		if atomic.CompareAndSwapInt32(&m.noSubLogged, 0, 1) {
+			m.logger.Info("no subscribe, monitor stopping")
+		}
 		m.Stop()
 		return
 	}
+	// Reset log flag when subscriptions exist (for next idle cycle)
+	atomic.StoreInt32(&m.noSubLogged, 0)
 
 	// Attempt to restore subscriptions when connection is disconnected
 	if atomic.LoadInt32(&m.proxy.subscribed) == subscribeDisconnected {

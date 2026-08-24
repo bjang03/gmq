@@ -34,7 +34,11 @@ type Gmq interface {
 }
 
 type GmqStateSetter interface {
-	SetSubscribedSetter(setter func(bool))
+	// SetConnectionStateSetter wires the callback plugins call when the underlying
+	// connection state changes (true=connected, false=disconnected). This is kept
+	// separate from subscription activity so the proxy can distinguish "connection
+	// dropped" from "a subscription completed".
+	SetConnectionStateSetter(setter func(bool))
 }
 
 type GmqUnique interface {

@@ -182,9 +182,12 @@ func (m *subscribeMonitor) tick() {
 	// Reset log flag when subscriptions exist (for next idle cycle)
 	atomic.StoreInt32(&m.noSubLogged, 0)
 
-	// Attempt to restore subscriptions when connection is disconnected
-	if atomic.LoadInt32(&m.proxy.subscribed) == subscribeDisconnected {
+	// Attempt to restore subscriptions when the connection was reported down
+	// but is actually up again. This is driven by the connection state, NOT the
+	// subscription-activity flag, so completing subscriptions never trigger a restore.
+	if !m.proxy.isConnected() {
 		if m.proxy.plugin.GmqPing(context.Background()) {
+			atomic.AddInt32(&m.proxy.restoreCount, 1)
 			logger := utils.GetLogger().WithPlugin(m.name)
 
 			var toCancel []context.CancelFunc
@@ -259,8 +262,9 @@ type GmqProxy struct {
 	pluginUnique GmqUnique // Plugin-specific interface (delayed publish, negative acknowledgment)
 
 	// Connection states
-	connected  int32 // Connection state: 0=disconnected, 1=connected (atomic operation)
-	subscribed int32 // Subscription state: 0=disconnected, 1=subscribed (atomic operation)
+	connected    int32 // Connection state: 0=disconnected, 1=connected (atomic operation)
+	subscribed   int32 // Subscription state: 0=disconnected, 1=subscribed (atomic operation)
+	restoreCount int32 // Number of times the monitor entered the subscription-restore path (for tests)
 
 	// Subscription management
 	subscribe       sync.Map // Active subscription tracking: key=subKey, value=context.CancelFunc
@@ -301,7 +305,7 @@ func newGmqProxy(name string, plugin Gmq) *GmqProxy {
 	}
 
 	if stateSetter, ok := plugin.(GmqStateSetter); ok {
-		stateSetter.SetSubscribedSetter(p.setSubscribedState)
+		stateSetter.SetConnectionStateSetter(p.setConnected)
 	}
 
 	return p
@@ -321,14 +325,14 @@ func (p *GmqProxy) getSubscribeCount() int {
 	return count
 }
 
+// getRestoreCount returns how many times the monitor entered the restore path.
+func (p *GmqProxy) getRestoreCount() int {
+	return int(atomic.LoadInt32(&p.restoreCount))
+}
+
 // isConnected checks if the connection is active
 func (p *GmqProxy) isConnected() bool {
 	return atomic.LoadInt32(&p.connected) == connectionConnected
-}
-
-// isSubscribed checks if the subscription is active
-func (p *GmqProxy) isSubscribed() bool {
-	return atomic.LoadInt32(&p.subscribed) == subscribeConnected
 }
 
 // setConnected sets the connection state
@@ -423,22 +427,26 @@ func (p *GmqProxy) executeWithRetry(ctx context.Context, operation, topic string
 // Connection Management
 // ============================================================
 
-// GmqConnect establishes a connection with the message queue server
+// GmqConnect establishes a connection with the message queue server.
+// When subscriptions are already pending, connected stays false so the subscribe
+// monitor can restore them (which flips connected back to true on success).
 func (p *GmqProxy) GmqConnect(ctx context.Context, cfg map[string]any) error {
 	err := p.plugin.GmqConnect(ctx, cfg)
 	if err == nil {
-		p.setConnected(true)
+		if p.getSubscribeCount() == 0 {
+			p.setConnected(true)
+		}
 		logger := utils.GetLogger().WithPlugin(p.name)
 		logger.Info("connection established successfully")
 	}
 	return err
 }
 
-// GmqPing checks if the connection is alive
+// GmqPing checks if the underlying connection is alive. It deliberately checks
+// the live connection rather than the connected flag: the flag is owned by the
+// monitor's restore logic (it stays false while subscriptions are being
+// re-established) and must not make health checks report the connection as down.
 func (p *GmqProxy) GmqPing(ctx context.Context) bool {
-	if !p.isConnected() {
-		return false
-	}
 	return p.plugin.GmqPing(ctx)
 }
 
@@ -638,6 +646,9 @@ func (p *GmqProxy) runSubscribe(ctx context.Context, subKey string, sub *subMess
 		p.cleanupSubscribe(subKey)
 		return
 	}
+	// A live subscription confirms the connection is healthy; this is what the
+	// monitor's restore path converges on (connected=false -> restore -> here).
+	p.setConnected(true)
 	// Wait for context cancellation (subscription ends)
 	<-ctx.Done()
 	logger.Debug("subscribe goroutine exiting", "subKey", subKey, "reason", ctx.Err())
@@ -676,8 +687,13 @@ func (p *GmqProxy) cleanupSubscribe(subKey string) {
 	// Clean up subscription parameter cache (avoid memory leak)
 	p.subscribeParams.Delete(subKey)
 
-	// Reset subscription state
-	p.setSubscribedState(false)
+	// The subscribed flag reflects "at least one active subscription".
+	// Only clear it when the last subscription ends, otherwise a completing
+	// subscription would make the monitor misread a connection drop and
+	// spuriously restore (duplicate) the remaining subscriptions.
+	if p.getSubscribeCount() == 0 {
+		p.setSubscribedState(false)
+	}
 }
 
 // validateDeleteMsg validates the delete message structure.

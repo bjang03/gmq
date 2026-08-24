@@ -91,7 +91,8 @@ func TestNatsPublishDelayMultiple(t *testing.T) {
 			IsDelayMsg: true,
 		}
 		if _, err := getGmq.GmqSubscribe(ctx, subMsg); err != nil {
-			t.Fatalf("订阅失败：%v", err)
+			t.Errorf("订阅失败：%v", err)
+			return
 		}
 	}()
 
@@ -190,6 +191,7 @@ func TestNatsPublish(t *testing.T) {
 func TestNatsPublishWithDifferentDataTypes(t *testing.T) {
 	ctx := context.Background()
 	natsRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(natsRegisterName)
 
@@ -228,6 +230,7 @@ func TestNatsPublishWithDifferentDataTypes(t *testing.T) {
 func TestNatsPublishNonDurable(t *testing.T) {
 	ctx := context.Background()
 	natsRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(natsRegisterName)
 
@@ -287,6 +290,7 @@ func TestNatsPublishDelay(t *testing.T) {
 func TestNatsSubscribe(t *testing.T) {
 	ctx := context.Background()
 	natsRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(natsRegisterName)
 
@@ -315,6 +319,7 @@ func TestNatsSubscribe(t *testing.T) {
 func TestNatsSubscribeDelay(t *testing.T) {
 	ctx := context.Background()
 	natsRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(natsRegisterName)
 

@@ -11,7 +11,7 @@ import (
 
 var rabbitMQRegisterName = "rabbitmq-test"
 
-// RabbitMQ register
+// RabbitMQ register - don't use defer Shutdown in test helper, call it explicitly in each test
 func rabbitMQRegister(ctx context.Context) {
 	gmq.GmqRegister(rabbitMQRegisterName, &mq2.RabbitMQConn{
 		RabbitMQConfig: mq2.RabbitMQConfig{
@@ -21,7 +21,6 @@ func rabbitMQRegister(ctx context.Context) {
 			Password: "guest",
 		},
 	})
-	defer gmq.Shutdown(ctx)
 }
 
 // ============ Message Publish Tests ============
@@ -30,6 +29,7 @@ func rabbitMQRegister(ctx context.Context) {
 func TestRabbitMQPublish(t *testing.T) {
 	ctx := context.Background()
 	rabbitMQRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(rabbitMQRegisterName)
 
@@ -56,6 +56,7 @@ func TestRabbitMQPublish(t *testing.T) {
 func TestRabbitMQPublishWithDifferentDataTypes(t *testing.T) {
 	ctx := context.Background()
 	rabbitMQRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(rabbitMQRegisterName)
 
@@ -94,6 +95,7 @@ func TestRabbitMQPublishWithDifferentDataTypes(t *testing.T) {
 func TestRabbitMQPublishNonDurable(t *testing.T) {
 	ctx := context.Background()
 	rabbitMQRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(rabbitMQRegisterName)
 
@@ -121,6 +123,7 @@ func TestRabbitMQPublishNonDurable(t *testing.T) {
 func TestRabbitMQPublishDelay(t *testing.T) {
 	ctx := context.Background()
 	rabbitMQRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(rabbitMQRegisterName)
 
@@ -152,6 +155,7 @@ func TestRabbitMQPublishDelay(t *testing.T) {
 func TestRabbitMQSubscribe(t *testing.T) {
 	ctx := context.Background()
 	rabbitMQRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(rabbitMQRegisterName)
 

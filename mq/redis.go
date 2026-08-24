@@ -65,17 +65,17 @@ type RedisDelMessage struct {
 //   - Each consumer belongs to its own consumer group
 //   - Messages are consumed with ">" ID to get only new messages
 type RedisConn struct {
-	conn          *redis.Client // Redis client connection (go-redis client)
-	setSubscribed func(bool)
+	conn         *redis.Client // Redis client connection (go-redis client)
+	setConnected func(bool)
 	RedisConfig
 }
 
-// SetSubscribedSetter sets the callback function to update subscription status.
-// This is used to notify the proxy layer when subscription status changes.
+// SetConnectionStateSetter sets the callback function to update connection status.
+// This is used to notify the proxy layer when the underlying connection state changes.
 // Parameters:
-//   - setter: function that accepts a boolean status (true=subscribed, false=unsubscribed)
-func (c *RedisConn) SetSubscribedSetter(setter func(bool)) {
-	c.setSubscribed = setter
+//   - setter: function that accepts a boolean status (true=connected, false=disconnected)
+func (c *RedisConn) SetConnectionStateSetter(setter func(bool)) {
+	c.setConnected = setter
 }
 
 // RedisConfig holds Redis connection configuration parameters.
@@ -185,7 +185,7 @@ func (c *RedisConn) GmqConnect(ctx context.Context, cfg map[string]any) (err err
 // Safe to call multiple times
 func (c *RedisConn) GmqClose(_ context.Context) (err error) {
 	// Clear external callback reference to avoid memory leak
-	c.setSubscribed = nil
+	c.setConnected = nil
 
 	if c.conn != nil {
 		if err = c.conn.Close(); err != nil {

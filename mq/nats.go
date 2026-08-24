@@ -82,14 +82,14 @@ type NatsDelMessage struct {
 //
 // Topic names are sanitized by replacing special characters with underscores.
 type NatsConn struct {
-	conn          *nats.Conn            // NATS connection object for basic messaging
-	js            nats.JetStreamContext // JetStream context for persistent messaging and consumer management
-	setSubscribed func(bool)            // setter function to report connection state changes to proxy
+	conn         *nats.Conn            // NATS connection object for basic messaging
+	js           nats.JetStreamContext // JetStream context for persistent messaging and consumer management
+	setConnected func(bool)            // setter function to report connection state changes to proxy
 	NatsConfig
 }
 
-func (c *NatsConn) SetSubscribedSetter(setter func(bool)) {
-	c.setSubscribed = setter
+func (c *NatsConn) SetConnectionStateSetter(setter func(bool)) {
+	c.setConnected = setter
 }
 
 // NatsConfig holds NATS connection configuration parameters.
@@ -151,20 +151,29 @@ func (c *NatsConn) GmqConnect(_ context.Context, cfg map[string]any) (err error)
 	opts := []nats.Option{
 		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
 			natsLogger.Error("connection disconnected", "url", nc.ConnectedUrl(), "error", err)
-			if c.setSubscribed != nil {
-				c.setSubscribed(false)
+			if c.setConnected != nil {
+				c.setConnected(false)
 			}
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			natsLogger.Info("connection reconnected", "url", nc.ConnectedUrl())
+			if c.setConnected != nil {
+				// NATS auto-re-subscribes active subscriptions on reconnect, so the
+				// proxy only needs to know the connection is back; subscription
+				// re-establishment is handled by the client.
+				c.setConnected(true)
+			}
 		}),
 		nats.ConnectHandler(func(nc *nats.Conn) {
 			natsLogger.Info("connection established", "url", nc.ConnectedUrl())
+			if c.setConnected != nil {
+				c.setConnected(true)
+			}
 		}),
 		nats.ClosedHandler(func(nc *nats.Conn) {
 			natsLogger.Info("connection closed")
-			if c.setSubscribed != nil {
-				c.setSubscribed(false)
+			if c.setConnected != nil {
+				c.setConnected(false)
 			}
 		}),
 	}
@@ -194,7 +203,7 @@ func (c *NatsConn) GmqConnect(_ context.Context, cfg map[string]any) (err error)
 // Safe to call multiple times
 func (c *NatsConn) GmqClose(_ context.Context) error {
 	// Clear external callback reference to avoid memory leak
-	c.setSubscribed = nil
+	c.setConnected = nil
 
 	if c.conn == nil {
 		natsLogger.Debug("connection already nil")

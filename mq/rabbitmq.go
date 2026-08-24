@@ -73,7 +73,7 @@ type RabbitMQConn struct {
 	channel           *amqp.Channel      // RabbitMQ channel for operations (channels are lightweight)
 	unifiedDLExchange string             // unified dead letter exchange name for all failed messages
 	unifiedDLQueue    string             // unified dead letter queue name for collecting failed messages
-	setSubscribed     func(bool)         // setter function to report connection state changes to proxy
+	setConnected      func(bool)         // setter function to report connection state changes to proxy
 	activeConsumers   map[string]string  // track active consumer tags for each topic (topic -> consumer tag)
 	monitorCtx        context.Context    // monitor goroutine context for cleanup
 	monitorCancel     context.CancelFunc // monitor goroutine cancel function
@@ -232,8 +232,8 @@ func (c *RabbitMQConn) monitorDisconnect(ctx context.Context, connCloseChan, cha
 			if err != nil && err.Code == amqp.ConnectionForced {
 				// 清空 consumer tag 记录
 				c.activeConsumers = make(map[string]string)
-				if c.setSubscribed != nil {
-					c.setSubscribed(false)
+				if c.setConnected != nil {
+					c.setConnected(false)
 				}
 			}
 		case err, ok := <-channelCloseChan:
@@ -244,18 +244,18 @@ func (c *RabbitMQConn) monitorDisconnect(ctx context.Context, connCloseChan, cha
 			if err != nil && err.Code == amqp.ConnectionForced {
 				// 清空 consumer tag 记录
 				c.activeConsumers = make(map[string]string)
-				if c.setSubscribed != nil {
-					c.setSubscribed(false)
+				if c.setConnected != nil {
+					c.setConnected(false)
 				}
 			}
 		}
 	}
 }
 
-// SetSubscribedSetter sets the callback function to update subscription status.
+// SetConnectionStateSetter sets the callback function to update connection status.
 // The setter function is called when connection or channel disconnects.
-func (c *RabbitMQConn) SetSubscribedSetter(setter func(bool)) {
-	c.setSubscribed = setter
+func (c *RabbitMQConn) SetConnectionStateSetter(setter func(bool)) {
+	c.setConnected = setter
 }
 
 // GmqClose closes the RabbitMQ connection and channel.
@@ -270,7 +270,7 @@ func (c *RabbitMQConn) GmqClose(_ context.Context) (err error) {
 	}
 
 	// Clear external callback reference to avoid memory leak
-	c.setSubscribed = nil
+	c.setConnected = nil
 
 	// Clear active consumers map
 	c.activeConsumers = nil

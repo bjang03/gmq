@@ -126,7 +126,10 @@ func connectPlugins(name string, cfg map[string]any) {
 				return
 			default:
 				pingCtx, pingCancel := context.WithTimeout(mgrCtx, 5*time.Second)
-				isConnected := p.GmqPing(pingCtx)
+				// Check the live connection directly: proxy.GmqPing is gated on the
+				// connected flag, which the monitor intentionally keeps false while it
+				// re-establishes subscriptions after a reconnect.
+				isConnected := p.plugin.GmqPing(pingCtx)
 				pingCancel()
 
 				if isConnected {
@@ -197,6 +200,11 @@ func Shutdown(ctx context.Context) error {
 	for name := range GmqPlugins {
 		delete(GmqPlugins, name)
 	}
+
+	// Recreate the shutdown signal so a later GmqRegister starts fresh connection
+	// goroutines. Without this, the closed channel made them exit immediately on
+	// the next connectPlugins select, silently never connecting.
+	globalShutdown = make(chan struct{})
 
 	return lastErr
 }

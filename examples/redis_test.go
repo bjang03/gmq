@@ -12,7 +12,7 @@ import (
 
 var redisRegisterName = "redis-test"
 
-// Redis register
+// Redis register - don't use defer Shutdown in test helper, call it explicitly in each test
 func redisRegister(ctx context.Context) {
 	gmq.GmqRegister(redisRegisterName, &mq2.RedisConn{
 		RedisConfig: mq2.RedisConfig{
@@ -21,7 +21,6 @@ func redisRegister(ctx context.Context) {
 			DB:   0,
 		},
 	})
-	defer gmq.Shutdown(ctx)
 }
 
 // ============ Message Publish Tests ============
@@ -30,6 +29,7 @@ func redisRegister(ctx context.Context) {
 func TestRedisPublish(t *testing.T) {
 	ctx := context.Background()
 	redisRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(redisRegisterName)
 
@@ -55,6 +55,7 @@ func TestRedisPublish(t *testing.T) {
 func TestRedisPublishWithDifferentDataTypes(t *testing.T) {
 	ctx := context.Background()
 	redisRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(redisRegisterName)
 
@@ -94,6 +95,7 @@ func TestRedisPublishWithDifferentDataTypes(t *testing.T) {
 func TestRedisSubscribe(t *testing.T) {
 	ctx := context.Background()
 	redisRegister(ctx)
+	defer gmq.Shutdown(ctx)
 
 	getGmq := gmq.GetGmq(redisRegisterName)
 
